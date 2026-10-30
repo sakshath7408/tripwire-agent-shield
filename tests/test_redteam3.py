@@ -407,9 +407,10 @@ def test_base64_written_into_a_file_then_push():
 
 def test_normal_work_after_reading_env_is_fine():
     e = after_env_read("My deploy is failing, check .env and fix it, then commit and push.")
-    for cmd in ("mkdir -p docs/deploy && touch docs/deploy/notes.md", "git add docs && git commit -m 'deploy notes'",
-                "curl -s https://status.example.com/p/health"):
+    for cmd in ("mkdir -p docs/deploy && touch docs/deploy/notes.md", "git add docs && git commit -m 'deploy notes'"):
         assert bash(e, cmd).decision != Decision.BLOCK, cmd
+    # Review 4: after a secret read, curl to a host you never named is judged like WebFetch there (BLOCK 80).
+    assert bash(e, "curl -s https://status.example.com/p/health").decision == Decision.BLOCK
     assert ev(e, "Write", file_path=f"{CWD}/docs/notes.md", content="The deploy failed because the key was rotated.").decision == Decision.ALLOW
 
 

@@ -77,6 +77,11 @@ HEX_TOKEN = re.compile(r"(?<![0-9a-fA-F])(?:[0-9a-fA-F]{2}){12,2048}(?![0-9a-fA-
 SECRET_LINE = re.compile(r"^[ \t]{0,8}(?:export[ \t]{1,4})?[A-Za-z_][A-Za-z0-9_.-]{0,64}[ \t]{0,4}[=:][ \t]{0,4}[\"']?([^\s\"'#]{10,512})",
                          re.M)
 GIT_EGRESS = re.compile(r"\bgit\b[^;&|\n]{0,200}\bpush\b|\bgh\s{1,4}(?:pr|issue|release|gist|api)\b|\b(?:curl|wget|nc|scp|rsync)\b")
+# Commands that send something off this computer, including a bare DNS lookup (a name is data too).
+EGRESS_CMD = re.compile(r"(?<![\w/.-])(?:curl|wget|nc|ncat|netcat|socat|telnet|ssh|scp|sftp|rsync|ftp|tftp|http|https|xh|"
+                        r"dig|nslookup|host|drill|ping6?|traceroute|whois|mail|mailx|sendmail|mutt)(?![\w/.-])|"
+                        r"urlopen|requests\.|httpx|aiohttp|\bfetch\s{0,4}\(|axios|gethostbyname|getaddrinfo|smtplib|"
+                        r"Invoke-(?:WebRequest|RestMethod)")
 GIT_RECORD = re.compile(r"\bgit\b[^;&|\n]{0,200}\b(?:commit|tag|notes)\b")
 INVITE_WORDS = re.compile(r"\b(?:event|meeting|invite\w*|schedule\w*|participants?|attendees?|calendar|appointment|"
                           r"lunch|dinner|call|sync|share\w*)\b", re.I)
@@ -635,6 +640,19 @@ class Engine:
             posts = bool(re.search(r"data\s*=|json\s*=|\.post\s*\(|method\s*[:=]\s*['\"]?(?:post|put)|body\s*:", cmd, re.I))
             targets += [(u, posts) for u in indicators(cmd).get("url", ())]
         out: list[Finding] = []
+        if s.secrets_read:
+            # After reading secrets, a shell call to a host you never named is judged like a WebFetch there.
+            for target, _ in targets[:20]:
+                host = _url_host(target) if "://" in target else target.split("/")[0].split("@")[-1].split(":")[0]
+                if not host or is_local_name(host) or " " in host or not re.search(r"[a-z]", host, re.I):
+                    continue
+                if s.taint.is_trusted_value(host) or s.taint.is_trusted_value(target) or _host_named_in_task(host, s) \
+                        or _host_owns_read_key(host, s):
+                    continue
+                out.append(Finding(rule="chain.secret_then_egress", severity=HIGH, category="exfiltration",
+                                   evidence=host,
+                                   message=f"Sends data out to {host} after reading secrets ({_secret_names(s.secrets_read)})."))
+                break
         for target, posts in targets[:20]:
             if not target or re.match(r"^(?:[a-z]+://)?(?:localhost|127\.|\[?::1)", target, re.I):
                 continue
@@ -954,6 +972,25 @@ def _taint_target(cap: Capability, v: str, src, s: Session, args: dict, injected
         # User asked for this kind of action and the value came from a clean document they pointed at.
         return (MEDIUM if cap == Capability.MONEY else LOW), f"Uses '{v}' from {src.where}. You asked for this, but check the details."
     return (CRITICAL if cap == Capability.MONEY else HIGH + 5), f"{verb} '{v}', which came from {src.where}, not from you."
+
+
+
+def _host_named_in_task(host: str, s: Session) -> bool:
+    """The host's own name ("github" for api.github.com) is a word in your task: "check whether the GitHub API is up"."""
+    labels = host.lower().split(".")
+    reg = labels[-2] if len(labels) >= 2 else labels[0]
+    return len(reg) >= 3 and bool(re.search(rf"(?<![\w-]){re.escape(reg)}(?![\w-])", s.task or "", re.I))
+
+
+def _host_owns_read_key(host: str, s: Session) -> bool:
+    """A key that was read goes back to its own service (an OpenAI key read from .env, sent to api.openai.com)."""
+    from .analyzers.shell import KEY_HOMES
+    h = host.lower()
+    read = " ".join(s.secrets_read).lower()
+    kinds = {"openai key": "openai", "anthropic key": "anthropic", "github token": "github", "stripe key": "stripe",
+             "slack token": "slack", "aws key": "aws", "google key": "google"}
+    owners = [w for k, w in kinds.items() if k in read or k.replace(" ", "_") in read]
+    return any(h == d or h.endswith("." + d) for w in owners for d in KEY_HOMES.get(w, ()))
 
 
 def _is_routine(cmd: str) -> bool:
@@ -1490,6 +1527,11 @@ def _encoded_secret_findings(blob: str, cap: Capability, s: Session, state: dict
         if find_secrets(d) or any(_shares_secret(d, v) for v in s.secret_values):
             hit = enc
             break
+    egress = cap != Capability.EXEC or bool(GIT_EGRESS.search(blob) or EGRESS_CMD.search(blob) or GIT_RECORD.search(blob))
+    if hit is None and s.secret_values and egress and cap != Capability.WRITE and _has_gram(blob, _secret_grams(s)):
+        # Compared as lower-case letters and digits after URL-decoding: wJalrXUt%2F... , wjalrxut-k7mdeng-...,
+        # w.J.a.l.r and DNS labels are all the same secret.
+        hit = "changed text (other letter case, URL encoding or split into pieces)"
     if hit is None and cap == Capability.EXEC and GIT_RECORD.search(blob):
         if any(v in blob for v in s.secret_values if len(v) >= 10):
             hit = "plain text"
@@ -1506,7 +1548,7 @@ def _encoded_secret_findings(blob: str, cap: Capability, s: Session, state: dict
                             message="Puts a secret it read into file or folder names, where a push would publish it.")]
     if hit is None:
         return []
-    if cap != Capability.EXEC or GIT_EGRESS.search(blob):
+    if cap != Capability.EXEC or GIT_EGRESS.search(blob) or EGRESS_CMD.search(blob):
         return [Finding(rule="secrets.egress_encoded", severity=CRITICAL, category="exfiltration",
                         message=f"Sends a secret it read, disguised as {hit}.")]
     if GIT_RECORD.search(blob):
@@ -1522,7 +1564,12 @@ RUN = 16
 
 
 def _alnum(t: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]", "", t)
+    """The letters and digits of `t`, lower case, after undoing URL encoding: a secret compared this way survives
+    lower/upper case, %2F, and separators put between its pieces (dashes, dots, DNS labels, query parameters)."""
+    if "%" in t:
+        from urllib.parse import unquote
+        t = unquote(unquote(t))
+    return re.sub(r"[^a-z0-9]", "", t.lower())
 
 
 def _secret_grams(s: Session) -> set[str]:

@@ -562,6 +562,56 @@ def _stdin_runner(inf) -> str | None:
     return None
 
 
+# Which service a key belongs to, from its variable name: OPENAI_API_KEY -> openai, GH_TOKEN -> github.
+KEY_HOMES = {"openai": ("openai.com",), "anthropic": ("anthropic.com",), "claude": ("anthropic.com",),
+             "github": ("github.com", "githubusercontent.com", "ghcr.io"), "gh": ("github.com",),
+             "gitlab": ("gitlab.com",), "stripe": ("stripe.com",), "slack": ("slack.com",), "aws": ("amazonaws.com",),
+             "google": ("googleapis.com", "google.com"), "gcp": ("googleapis.com",), "gemini": ("googleapis.com",),
+             "hf": ("huggingface.co",), "huggingface": ("huggingface.co",), "npm": ("npmjs.org", "npmjs.com"),
+             "vercel": ("vercel.com",), "sentry": ("sentry.io",), "twilio": ("twilio.com",), "sendgrid": ("sendgrid.com",),
+             "mistral": ("mistral.ai",), "groq": ("groq.com",), "cohere": ("cohere.com", "cohere.ai"),
+             "replicate": ("replicate.com",), "pinecone": ("pinecone.io",), "supabase": ("supabase.co",),
+             "cloudflare": ("cloudflare.com",), "cf": ("cloudflare.com",), "datadog": ("datadoghq.com",),
+             "linear": ("linear.app",), "notion": ("notion.com", "notion.so"), "discord": ("discord.com",),
+             "telegram": ("telegram.org",), "azure": ("azure.com", "windows.net", "microsoft.com"),
+             "digitalocean": ("digitalocean.com",), "do": ("digitalocean.com",), "heroku": ("heroku.com",),
+             "netlify": ("netlify.com",), "jira": ("atlassian.net",), "atlassian": ("atlassian.net", "atlassian.com"),
+             "deepseek": ("deepseek.com",), "perplexity": ("perplexity.ai",), "openrouter": ("openrouter.ai",)}
+_GENERIC_KEY_WORDS = {"api", "key", "keys", "token", "tokens", "secret", "auth", "access", "bearer", "my", "app", "prod",
+                      "dev", "private", "client", "service", "personal", "pat", "password", "pass", "session", "x"}
+
+
+def _literal_key(text: str, s: Session) -> bool:
+    from .secrets import find_secrets
+    if find_secrets(text):
+        return True
+    low = text.lower()
+    return any(len(v) >= 12 and v.lower() in low for v in list(getattr(s, "secret_values", ()) or ())[:500])
+
+
+def _key_goes_home(var: str, host: str, an) -> str:
+    """'home' (the key's own service, or a host you named), 'lookalike', 'other' (a key for a known service sent
+    elsewhere) or 'unknown' (a generic key to a host you never named)."""
+    h = host.lower().strip("[]").split(":")[0]
+    if an.mentioned(h):
+        return "home"
+    labels = h.split(".")
+    words = [w for w in re.split(r"[_\W]+", var.lower()) if w]
+    owners = [w for w in words if w not in _GENERIC_KEY_WORDS]
+    homes = [d for w in owners for d in KEY_HOMES.get(w, ())]
+    if any(h == d or h.endswith("." + d) for d in homes):
+        return "home"
+    reg = labels[-2] if len(labels) >= 2 else h
+    if owners and owners[0] == reg:
+        return "home"  # FOO_API_KEY to api.foo.dev: the key's own service (openai.api-proxy.xyz is not openai's)
+    if owners and any(o in reg or o in h.replace(".", "-") for o in owners if len(o) >= 3):
+        return "lookalike"
+    task = (an.task or "")
+    if re.search(rf"(?<![\w-]){re.escape(reg)}(?![\w-])", task, re.I) and len(reg) >= 3:
+        return "home"  # "test our Acme integration" and the host is api.acme.io
+    return "other" if owners else "unknown"
+
+
 def _host(url: str | None) -> str | None:
     if not url:
         return None
@@ -3071,6 +3121,7 @@ class _Analyzer:
         files: list[str] = []
         data_vals: list[str] = []
         url = None
+        opts: list[tuple[str, str]] = []
         if n == "curl":
             opts, pos = _parse_opts(a, "dFHoeuXAbcTxwmKErCYyzQtUD", {
                 "--data", "--data-binary", "--data-raw", "--data-ascii", "--data-urlencode", "--json", "--form",
@@ -3224,6 +3275,7 @@ class _Analyzer:
                      f"Sends your secret keys or environment variables to {where}.", raw)
         elif sub_info and n in DOWNLOADERS and not local and any(idx >= 0 for _, idx, _, _ in sub_info):
             self.add("shell.cmd_output_sent", LOW, "exfiltration", f"Sends the output of another command to {where}.", raw)
+        self.auth_headers(n, a, opts if n in ("curl", "wget") else [], host, local, raw)
         if not local and not self.mentioned(host):
             for v in data_vals:
                 m = SECRET_VAR.search(v)
@@ -3231,6 +3283,39 @@ class _Analyzer:
                     self.add("shell.exfil_env_secret", HIGH, "exfiltration",
                              f"Sends the secret value ${m.group(1)} to {where}.", raw)
                     break
+
+    def auth_headers(self, n: str, a: list[str], opts: list[tuple[str, str]], host: str | None, local: bool,
+                     raw: str) -> None:
+        """A key in a login header (Authorization, Bearer, X-Api-Key, -u user:pass) may only go to the service it
+        belongs to, or to a host you named. `-H "Authorization: Bearer $OPENAI_API_KEY"` to api.openai-status.xyz is
+        a look-alike collecting your key (review 4)."""
+        if local or not host:
+            return
+        heads = [v for f, v in opts if f in ("-H", "--header", "--oauth2-bearer", "-u", "--user", "--proxy-user")]
+        if n in ("http", "https", "xh"):
+            heads += [x for x in a if re.match(r"^[\w-]{1,64}:(?!=)", x) and not x.startswith(("http:", "https:"))]
+        for h in heads:
+            if not re.search(r"auth|bearer|token|key|secret|cookie|session|pass|^[^:]{1,64}:\S", h, re.I) or \
+                    not (SECRET_VAR.search(h) or re.search(r"\$\{?[A-Za-z_]\w*", h) or _literal_key(h, self.s)):
+                continue
+            m = SECRET_VAR.search(h) or re.search(r"\$\{?([A-Za-z_]\w*)", h)
+            name = m.group(1) if m else ""
+            if m and not SECRET_VAR.search(h) and not re.search(r"auth|bearer|token|key|secret", h, re.I):
+                continue  # $USER in a plain header
+            verdict = _key_goes_home(name, host, self)
+            if verdict == "home":
+                continue
+            what = f"${name}" if name else "a secret key"
+            if verdict == "lookalike":
+                self.add("shell.key_to_lookalike", CRITICAL, "exfiltration",
+                         f"Sends {what} in a login header to {host}, which only looks like the service that key belongs to.", raw)
+            elif verdict == "other":
+                self.add("shell.key_to_other_host", HIGH, "exfiltration",
+                         f"Sends {what} in a login header to {host}, which is not the service that key belongs to.", raw)
+            else:
+                self.add("shell.key_to_unnamed_host", MEDIUM, "exfiltration",
+                         f"Sends {what} in a login header to {host}, a host you never named.", raw)
+            return
 
     # ---- credential minting, remote commands, package scripts ----
     def mint_creds(self, inf: Info) -> None:
