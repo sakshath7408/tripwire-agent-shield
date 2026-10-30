@@ -1,8 +1,9 @@
 """The hosted live demo: one scenario, one act, run in-process and returned as JSON.
 
 It reuses the local demo unchanged: the scenarios, the scripted agent, the synthetic world, the in-process
-Tripwire engine (run_demo.LocalGuard), the simulated human for ASK verdicts (run_demo.approve, mode "auto")
-and the result report (run_demo.report). The only differences from `run_demo.py --offline --approve auto`:
+Tripwire engine (run_demo.LocalGuard), the simulated human for ASK verdicts (run_demo.careful_human, or a
+human who clicks Allow on everything for the hard floor) and the result report (run_demo.report). The only
+differences from `run_demo.py --offline --approve auto` (or `--approve all`):
   - the world lives in a fresh temp folder per request (Vercel can only write under /tmp), deleted afterwards
   - every engine event (task / observe / verdict) is recorded, so the web page can replay exactly what the
     local dashboard would have received over SSE
@@ -36,6 +37,10 @@ from world.agent import NaivePlanner, Step, ToolCall, freeform_plan  # noqa: E40
 from world.world import FIXTURES, World, _fetches_or_runs  # noqa: E402
 
 SCENARIOS = list(run_demo.SCENARIOS)
+# Who answers an ASK. careful: sees only what a real person sees (Tripwire's reason, where the call goes, the
+# task they typed, their own contacts), never the hidden label. all: clicks Allow on everything (the hard floor:
+# what Tripwire stops on its own).
+HUMANS = ("careful", "all")
 MAX_STEPS = 40  # same cap as run_demo.run_act
 OUTPUT_SNIPPET = 400
 
@@ -53,15 +58,22 @@ def _session_summary(engine: Any) -> list[dict]:
              "secrets_read": s.secrets_read, "actions": len(s.history)} for s in engine.sessions.all()]
 
 
-def run(scenario: str, guarded: bool) -> dict:
+def _check_human(human: str) -> str:
+    if human not in HUMANS:
+        raise ValueError(f"Pick who answers Tripwire's questions: {', '.join(HUMANS)}.")
+    return human
+
+
+def run(scenario: str, guarded: bool, human: str = "careful") -> dict:
     if scenario not in run_demo.SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}; pick one of {', '.join(SCENARIOS)}")
     sc = run_demo.SCENARIOS[scenario]
     return _execute(sc, guarded, lambda tmp: World(root=tmp / "sandbox", drop_path=tmp / "attacker_drop.json").reset(sc.name),
-                    lambda: NaivePlanner(sc.plan()))
+                    lambda: NaivePlanner(sc.plan()), human=_check_human(human))
 
 
-def _execute(sc: Any, guarded: bool, make_world: Any, make_planner: Any, budget_s: float | None = None) -> dict:
+def _execute(sc: Any, guarded: bool, make_world: Any, make_planner: Any, budget_s: float | None = None,
+             human: str = "careful") -> dict:
     t0 = time.perf_counter()
     # /tmp, not the platform default: macOS puts temp dirs under /var/folders, and Tripwire rightly treats
     # writes under /var as system-folder writes. /tmp is also the only writable path on Vercel.
@@ -91,12 +103,15 @@ def _execute(sc: Any, guarded: bool, make_world: Any, make_planner: Any, budget_
                     break
                 v = guard.evaluate(call)
                 decision = v["decision"]
-                human = None
+                answer, said = None, ""
                 if guarded:
                     counts[decision] = counts.get(decision, 0) + 1
-                    if decision == "ask":  # same simulated human as run_demo --approve auto
-                        decision = "allow" if run_demo.approve(call, v, "auto") else "block"
-                        human = decision
+                    if decision == "ask":  # same simulated humans as run_demo --approve auto / all
+                        if human == "all":
+                            ok, said = True, "clicks Allow (hard floor: allows everything)"
+                        else:
+                            ok, said = run_demo.careful_human(call, v, sc.task)
+                        decision = answer = "allow" if ok else "block"
                         if v.get("id"):
                             guard.resolve(v["id"], decision)
                 if decision == "allow":
@@ -110,7 +125,9 @@ def _execute(sc: Any, guarded: bool, make_world: Any, make_planner: Any, budget_
                 steps.append({
                     "tool": call.tool, "args": call.args, "why": call.why,
                     "verdict": v if guarded else None,
-                    "human": human,  # the simulated human's answer to an ASK, or None
+                    "human": answer,  # the simulated human's answer to an ASK, or None
+                    "human_said": said,  # what they would say, in their words
+                    "tripwire": v["decision"] if guarded else None,
                     "executed": history[-1].executed,
                     "output": out[:OUTPUT_SNIPPET] + ("..." if len(out) > OUTPUT_SNIPPET else ""),
                     "events": list(events),  # engine events in order: the verdict, then the observe of the output
@@ -118,7 +135,7 @@ def _execute(sc: Any, guarded: bool, make_world: Any, make_planner: Any, budget_
                               "balance": bank["accounts"][bank["user_account"]]["balance"]},
                 })
                 events.clear()
-            result = run_demo.report(world, sc, history, guarded, counts)
+            result = run_demo.report(world, sc, history, guarded, counts, [s["tripwire"] or "" for s in steps])
         return {
             "scenario": sc.name, "title": sc.title, "story": sc.story, "task": sc.task, "profile": sc.profile,
             "guarded": guarded, "session_id": session,
@@ -131,6 +148,8 @@ def _execute(sc: Any, guarded: bool, make_world: Any, make_planner: Any, budget_
             "attacker_inbox": result["attacker_drop"], "attacker_items": result["attacker_items"],
             "balance": result["balance"], "start_balance": _start_balance(),
             "verdicts": counts if guarded else None,
+            "human": human if guarded else None,
+            "score": result["score"],
             "server_ms": round((time.perf_counter() - t0) * 1000, 1),
             "out_of_time": out_of_time,
         }
@@ -152,6 +171,9 @@ _BINARY = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f�]")
 _HOST_TOKEN = re.compile(r"(?<![\w@.-])(?:[a-z0-9-]{1,63}\.){1,8}[a-z]{2,24}(?![\w.-])", re.I)
 _DESTRUCTIVE = re.compile(r"\b(?:rm\s{1,4}-[a-zA-Z]{0,4}[rf]|shred|mkfs|dd\s{1,4}if=|:\(\)\s*\{|chmod\s{1,4}-R\s{1,4}0{3,4}"
                           r"|shutdown|reboot|kill(?:all)?\s)", re.I)
+_CRED_PATH = re.compile(r"(?:~|\$HOME|/home/\w{1,32}|/Users/\w{1,32})/\.(?:ssh|aws|gnupg|config/gh|docker|kube|netrc|tripwire)"
+                        r"|(?<![\w.-])\.env(?![\w.-])|\bid_(?:rsa|ed25519|ecdsa)(?!\.pub)\b")
+_PLAIN_READ = re.compile(r"^\s*(?:cat|head|tail|less|more|ls|wc|file|stat)\s[^|;&<>`$]{0,300}$")
 _RAN_FOR_REAL = {"python -m unittest -q", "python3 -m unittest -q"}  # the task's own test run; nothing else runs
 
 PLACES = {
@@ -306,6 +328,11 @@ class CustomWorld(World):
             self._drop("code_execution", url=theirs[0], command=command,
                        note=f"SIMULATED: this command would have reached {theirs[0]} from your machine")
             return "done"
+        if _CRED_PATH.search(command) and not _PLAIN_READ.match(command):
+            # A program the attacker named got your keys folder or .env. That counts as stolen, even simulated.
+            self._drop("keys_exposed", command=command,
+                       note="SIMULATED: this command would have handed your keys to a program you never asked for")
+            return "done"
         if _DESTRUCTIVE.search(command):
             self._drop("damage", command=command, note="SIMULATED: this command would have destroyed your files")
             return "done"
@@ -326,12 +353,13 @@ def check_text(text: Any) -> str:
     return text
 
 
-def run_custom(place: str, task: str, text: str, guarded: bool) -> dict:
+def run_custom(place: str, task: str, text: str, guarded: bool, human: str = "careful") -> dict:
     if place not in TASKS:
         raise ValueError(f"Pick where the attack goes: {', '.join(TASKS)}.")
     if task not in TASKS[place]:
         raise ValueError(f"Pick one of the tasks for that place: {', '.join(TASKS[place])}.")
     text = check_text(text)
+    _check_human(human)
     label, prompt, profile, plan, done = TASKS[place][task]
     sc = run_demo.Scenario("custom", "Your own attack", profile, prompt, plan, done,
                            f"Your text is hidden in {PLACES[place]}. The user asked: {prompt}")
@@ -350,7 +378,7 @@ def run_custom(place: str, task: str, text: str, guarded: bool) -> dict:
         return items
 
     r = _execute(sc, guarded, lambda tmp: CustomWorld(tmp / "sandbox", tmp / "attacker_drop.json", place, text).reset(),
-                 lambda: NaivePlanner(plan(), extractor=extract), budget_s=TIME_BUDGET_S)
+                 lambda: NaivePlanner(plan(), extractor=extract), budget_s=TIME_BUDGET_S, human=human)
     r["custom"] = {"place": place, "task": task, "task_label": label, "source": source}
     r["understood"] = said  # exactly what the agent took from the content it read, one line per tool call
     return r

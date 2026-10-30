@@ -21,6 +21,10 @@
   ];
   const MAX_BYTES = 4096;
   const custom = { place: "repo", task: "fix", edited: false };
+  const HUMAN_NOTE = {
+    careful: "When Tripwire asks, a simulated human answers. It sees only what you would: Tripwire's reason, where the call goes and your task. It never sees which steps are the attack, so it can be fooled.",
+    all: "Hard floor is on: the simulated human clicks Allow on everything. What's left is what Tripwire stops on its own.",
+  };
   const STEP_MS = 650; // gap between agent steps, so the run reads live
   const HUMAN_MS = 1100; // how long an ASK waits before the simulated human answers
 
@@ -31,6 +35,19 @@
   const params = new URLSearchParams(location.search);
 
   let current = SCENARIOS.some((s) => s.id === params.get("scenario")) ? params.get("scenario") : "injected-doc";
+  if (params.get("floor") === "1") $("hard-floor").checked = true;
+  const human = () => ($("hard-floor").checked ? "all" : "careful");
+  function paintHuman() {
+    document.body.classList.toggle("floor-on", human() === "all");
+    $("human-note").textContent = HUMAN_NOTE[human()];
+    $("run-on").lastChild.textContent = human() === "all" ? "Run with Tripwire, allow everything" : "Run with Tripwire";
+  }
+  $("hard-floor").addEventListener("change", () => {
+    const u = new URL(location.href);
+    if (human() === "all") u.searchParams.set("floor", "1"); else u.searchParams.delete("floor");
+    history.replaceState(null, "", u);
+    paintHuman();
+  });
   let running = false;
   const last = {}; // scenario -> { off: result, on: result }
 
@@ -142,6 +159,7 @@
     if (d.kind === "http_post") return { what: "Upload", to: d.url, body: d.data || "" };
     if (d.kind === "code_execution") return { what: "Ran their script", to: d.url, body: d.note || d.command || "" };
     if (d.kind === "http_get") return { what: "Visit", to: d.url, body: "" };
+    if (d.kind === "keys_exposed") return { what: "Keys handed over", to: d.command || "", body: d.note || "" };
     if (d.kind === "damage") return { what: "Wrecked files", to: d.command || "", body: d.note || "" };
     return { what: d.kind, to: d.url || d.to || "", body: d.data || "" };
   }
@@ -170,11 +188,23 @@
     $("oc-task-sub").textContent = r.detail;
   }
 
+  /** "Stopped on its own: N of M · with a careful human: K of M", from the run's own score. */
+  function stopped(r) {
+    const s = r && r.score;
+    if (!s || !s.attack_steps) return "";
+    const own = `Stopped on its own: ${s.stopped_alone} of ${s.attack_steps} attack steps`;
+    const rest = s.attack_steps - s.stopped_alone;
+    if (r.human === "all") return rest ? `${own} · the human allowed the other ${rest}` : own;
+    return `${own} · with a careful human: ${s.stopped_alone + s.stopped_by_human} of ${s.attack_steps}`;
+  }
   function paintCompare() {
     const c = last[current] || {};
     const line = (r) => r ? `${r.attacker_items ? `attacker got ${r.attacker_items}` : "attacker got nothing"}, ${money(r.balance)}, task ${r.task_completed ? "done" : "not done"}` : "not run yet";
-    $("compare").hidden = !(c.off || c.on);
-    $("compare").innerHTML = `<span><b>Without Tripwire:</b> ${esc(line(c.off))}</span><span><b>With Tripwire:</b> ${esc(line(c.on))}</span>`;
+    const why = (r) => (stopped(r) ? `. ${stopped(r)}` : "");
+    $("compare").hidden = !(c.off || c.on || c.floor);
+    $("compare").innerHTML = `<span><b>Without Tripwire:</b> ${esc(line(c.off))}</span>`
+      + `<span><b>With Tripwire, careful human:</b> ${esc(line(c.on) + why(c.on))}</span>`
+      + (c.floor ? `<span class="floor-line"><b>Hard floor, human allows everything:</b> ${esc(line(c.floor) + why(c.floor))}</span>` : "");
   }
 
   // ---- the run -----------------------------------------------------------------------------------------
@@ -185,6 +215,7 @@
     document.body.classList.toggle("is-running", on);
     $("run-off").disabled = on;
     $("run-on").disabled = on;
+    $("hard-floor").disabled = on;
     if (!on && current === "custom") countText();
     $("run-off").classList.toggle("is-active", on && !guarded);
     $("run-on").classList.toggle("is-active", on && guarded);
@@ -224,13 +255,14 @@
     setRunning(true, guarded);
     status(guarded ? "Starting the agent, with Tripwire checking every call..." : "Starting the agent, with no guard...");
     const scn = current;
+    const who = human();
     let r;
     try {
       const t0 = performance.now();
       const resp = scn === "custom"
         ? await fetch("/api/run", { method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ place: custom.place, task: custom.task, text: $("c-text").value, guard: guarded ? 1 : 0 }) })
-        : await fetch(`/api/run?scenario=${encodeURIComponent(scn)}&guard=${guarded ? 1 : 0}`);
+          body: JSON.stringify({ place: custom.place, task: custom.task, text: $("c-text").value, guard: guarded ? 1 : 0, human: who }) })
+        : await fetch(`/api/run?scenario=${encodeURIComponent(scn)}&guard=${guarded ? 1 : 0}&human=${who}`);
       r = await resp.json().catch(() => null); // a gateway timeout answers with a plain-text page, not JSON
       if (resp.status >= 400 && resp.status < 500 && r && typeof r.error === "string") {
         if (gone()) return;
@@ -278,7 +310,7 @@
           if (gone()) return;
           TW.event(ev.kind, ev.data);
           if (ev.kind === "verdict" && step.human) {
-            status(`Step ${i + 1} of ${n}: waiting for an OK. A simulated human answers ${step.human === "allow" ? "yes, it is part of the task" : "no, nobody asked for this"}.`);
+            status(`Step ${i + 1} of ${n}: waiting for an OK. The simulated human says ${step.human_said || (step.human === "allow" ? "yes" : "no")}.`);
             await sleep(HUMAN_MS);
             if (gone()) return;
             TW.resolved(ev.data.id, step.human, "simulated human");
@@ -298,10 +330,11 @@
     setInbox(r.attacker_inbox, "done");
     setBank(r.balance, r.start_balance, "done");
     setTask(r);
-    (last[scn] = last[scn] || {})[guarded ? "on" : "off"] = r;
+    (last[scn] = last[scn] || {})[!guarded ? "off" : r.human === "all" ? "floor" : "on"] = r;
     const v = r.verdicts;
+    const sw = stopped(r);
     status(guarded
-      ? `Done. Tripwire made ${n} decisions: ${v.allow} allowed, ${v.ask} asked, ${v.block} blocked. Server time ${Math.round(r.server_ms)} ms.`
+      ? `Done. ${sw ? `${sw}. ` : ""}Tripwire made ${n} decisions: ${v.allow} allowed, ${v.ask} asked, ${v.block} blocked. Server time ${Math.round(r.server_ms)} ms.`
       : `Done. ${n} tool calls ran with nobody checking. ${r.attacker_items ? "The attacker got what they wanted." : "Nothing reached the attacker."}`);
     setRunning(false);
   };
@@ -352,6 +385,7 @@
     try { await navigator.clipboard.writeText(b.dataset.copy); b.classList.add("is-done"); setTimeout(() => b.classList.remove("is-done"), 1400); } catch (_) { /* no clipboard */ }
   });
 
+  paintHuman();
   paintScenarios();
   idleOutcome();
   if (location.hash === "#demo" || params.get("tab") === "demo" || params.has("scenario") || params.has("autorun")) enterDemo();

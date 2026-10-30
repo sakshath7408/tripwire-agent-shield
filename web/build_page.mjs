@@ -44,8 +44,10 @@ const DEMO = `          <section class="demo" id="demo" aria-label="Live demo co
         <div class="demo-buttons">
           <button type="button" class="btn-run btn-run-off" id="run-off"><svg aria-hidden="true"><use href="#i-play"/></svg>Run without Tripwire</button>
           <button type="button" class="btn-run btn-run-on" id="run-on"><svg aria-hidden="true"><use href="#i-shield"/></svg>Run with Tripwire</button>
+          <label class="floor" id="floor-label"><input type="checkbox" id="hard-floor" aria-describedby="human-note"><span class="floor-switch" aria-hidden="true"></span><span>Hard floor</span></label>
           <span class="run-status" id="run-status" role="status" aria-live="polite"></span>
         </div>
+        <p class="human-note" id="human-note"></p>
       </div>
       <div class="outcome" id="outcome" aria-label="What happened">
         <div class="oc oc-inbox" id="oc-inbox" data-state="idle">

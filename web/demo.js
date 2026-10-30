@@ -32,7 +32,7 @@
     if (p === "/v1/reset") { TW.reset(); return json({ ok: true }); }
     if (p === "/v1/pair") return json({ ok: true }); // no daemon here, nothing to pair with
     if (/^\/v1\/verdicts\/[^/]+\/resolve$/.test(p)) {
-      return json({ detail: "On the hosted demo a simulated human answers: yes to task steps, no to everything else." }, 409);
+      return json({ detail: "On the hosted demo a simulated human answers. It sees only Tripwire's reason, where the call goes and your task." }, 409);
     }
     return json({ detail: "not available on the hosted demo" }, 404);
   };

@@ -140,7 +140,21 @@ body.unguarded .tally, body.unguarded #ms-note { visibility: hidden; }
 /* ASKs are answered by a simulated human here, so the Allow / Block buttons are not shown */
 .q-actions, .d-decide, .queue-hint { display: none !important; }
 .q-item { grid-template-columns: minmax(0, 1fr); }
-.q-item::after { content: "A simulated human answers in a moment: yes to task steps, no to anything else."; font-size: var(--t-s); color: var(--ask); }
+.q-item::after { content: "A simulated human answers in a moment. It sees only the reason, where it goes and your task."; font-size: var(--t-s); color: var(--ask); }
+body.floor-on .q-item::after { content: "Hard floor: the simulated human clicks Allow in a moment."; }
+
+/* hard floor: the simulated human clicks Allow on everything */
+.floor { display: inline-flex; align-items: center; gap: .4rem; font-size: var(--t-s); font-weight: 600; color: var(--ink-2); cursor: pointer; user-select: none; white-space: nowrap; }
+.floor input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.floor-switch { width: 2rem; height: 1.15rem; border-radius: 999px; background: var(--surface-3); border: 1px solid var(--line-strong); position: relative; transition: background .14s, border-color .14s; flex: none; }
+.floor-switch::after { content: ""; position: absolute; top: .1rem; left: .1rem; width: .85rem; height: .85rem; border-radius: 50%; background: var(--surface); box-shadow: var(--shadow); transition: transform .18s var(--ease); }
+.floor input:checked + .floor-switch { background: var(--ask); border-color: var(--ask); }
+.floor input:checked + .floor-switch::after { transform: translateX(.85rem); }
+.floor input:focus-visible + .floor-switch { outline: 2px solid var(--you); outline-offset: 2px; }
+.floor input:disabled + .floor-switch { opacity: .55; }
+.human-note { margin: 0; font-size: var(--t-xs); color: var(--muted); line-height: 1.4; }
+body.floor-on .human-note { color: var(--ask); }
+.compare .floor-line b { color: var(--ask); }
 
 @media (max-height: 760px) and (min-width: 821px) {
   .scenarios button { padding: .233rem .667rem; }
@@ -164,6 +178,7 @@ body.unguarded .tally, body.unguarded #ms-note { visibility: hidden; }
   .demo-buttons { display: grid; grid-template-columns: 1fr 1fr; }
   .btn-run { justify-content: center; padding: .6rem .5rem; font-size: var(--t-s); }
   .run-status { grid-column: 1 / -1; }
+  .floor { grid-column: 1 / -1; }
   .outcome { grid-template-columns: 1fr 1fr; }
   .oc-big { font-size: var(--t-l); overflow-wrap: normal; }
   .oc-inbox { grid-column: 1 / -1; }

@@ -1,7 +1,9 @@
 """Vercel Python function for the live demo.
 
-GET  /api/run?scenario=<name>&guard=0|1      one act of a canned scenario
-POST /api/run  {"place", "task", "text", "guard"}  one act of the visitor's own attack ("Try your own attack")
+GET  /api/run?scenario=<name>&guard=0|1[&human=careful|all]      one act of a canned scenario
+POST /api/run  {"place", "task", "text", "guard", "human"}      one act of the visitor's own attack
+human: who answers Tripwire's questions. careful (default) sees only what a real person sees; all clicks
+Allow on everything, so the run shows what Tripwire stops on its own (the hard floor).
 
 Runs the real Tripwire engine in-process against the synthetic world (see web/demo_runner.py). Stateless:
 every request builds its own world under /tmp and deletes it afterwards. The visitor's text is data only: it
@@ -27,12 +29,15 @@ def respond(query: str) -> tuple[int, dict]:
     q = parse_qs(query)
     scenario = (q.get("scenario") or ["injected-doc"])[0]
     guard = (q.get("guard") or ["1"])[0]
+    human = (q.get("human") or ["careful"])[0]
     if scenario not in demo_runner.SCENARIOS:
         return 400, {"error": f"unknown scenario; pick one of: {', '.join(demo_runner.SCENARIOS)}"}
     if guard not in ("0", "1"):
         return 400, {"error": "guard must be 0 or 1"}
+    if human not in demo_runner.HUMANS:
+        return 400, {"error": "human must be careful or all"}
     try:
-        return 200, demo_runner.run(scenario, guard == "1")
+        return 200, demo_runner.run(scenario, guard == "1", human)
     except Exception as e:  # never leak a traceback to the page; it goes to the function log
         traceback.print_exc()
         return 500, {"error": f"the demo run failed ({type(e).__name__})"}
@@ -52,7 +57,11 @@ def respond_custom(raw: bytes) -> tuple[int, dict]:
     if guard not in (0, 1, True, False):
         return 400, {"error": "guard must be 0 or 1"}
     try:
-        return 200, demo_runner.run_custom(str(req.get("place", "")), str(req.get("task", "")), req.get("text"), bool(guard))
+        human = req.get("human", "careful")
+        if human not in demo_runner.HUMANS:
+            return 400, {"error": "human must be careful or all"}
+        return 200, demo_runner.run_custom(str(req.get("place", "")), str(req.get("task", "")), req.get("text"),
+                                           bool(guard), human)
     except ValueError as e:
         return 400, {"error": str(e)}
     except Exception as e:

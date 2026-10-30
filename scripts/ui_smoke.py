@@ -138,6 +138,17 @@ def web(browser, eng: str, base: str, live: bool) -> None:
     p.click("#run-on")
     p.wait_for_function(done, timeout=120000)
     check(p.inner_text("#run-status").startswith("Done."), f"{eng}: a run after an abandoned one finishes")
+    # Hard floor: the simulated human clicks Allow on everything, so the page shows what Tripwire stops on its own.
+    p.click("#floor-label")
+    check(p.is_checked("#hard-floor") and "floor=1" in p.url, f"{eng}: the Hard floor switch turns on")
+    check("Allow on everything" in p.inner_text("#human-note"), f"{eng}: the page says the human allows everything")
+    p.click("#run-on")
+    p.wait_for_function(done, timeout=120000)
+    st, cmp = p.inner_text("#run-status"), p.inner_text("#compare")
+    check("Stopped on its own:" in st and "Hard floor" in cmp, f"{eng}: a hard-floor run shows the floor ({st[:80]!r})")
+    p.click("#floor-label")
+    check(not p.is_checked("#hard-floor") and "sees only what you would" in p.inner_text("#human-note"),
+          f"{eng}: switching it off brings back the careful human")
     # A gateway timeout answers with text, not JSON: say it plainly.
     p.route("**/api/run*", lambda r: r.fulfill(status=504, body="An error occurred", content_type="text/plain"))
     p.click("#run-on")
