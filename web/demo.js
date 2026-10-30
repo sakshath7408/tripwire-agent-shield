@@ -23,8 +23,9 @@
   const realFetch = window.fetch.bind(window);
   window.fetch = async (input, opts = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.href);
-    if (url.origin !== location.origin || !url.pathname.startsWith("/v1/")) return realFetch(input, opts);
     const p = url.pathname;
+    if (url.origin === location.origin && p === "/healthz") return json({ ok: true, demo: true });
+    if (url.origin !== location.origin || !p.startsWith("/v1/")) return realFetch(input, opts);
     if (p === "/v1/verdicts") return json(store.verdicts.slice(0, Number(url.searchParams.get("limit")) || 500));
     if (p === "/v1/stats") return json(stats());
     if (p === "/v1/sessions") return json(store.sessions);
