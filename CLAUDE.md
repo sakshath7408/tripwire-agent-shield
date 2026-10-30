@@ -36,3 +36,4 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 ## Lessons
 - Tool-name keyword patterns must anchor at a word start (`(?:^|_)`): plain "cat" matched "frobnicate" and turned an unknown tool into a harmless read, which broke fail-closed.
 - Subagents die on network drops (ECONNRESET) on hotspot. Resume them with SendMessage; their files stay on disk.
+- Every regex that scans untrusted tool output must be bounded (`{1,64}`, not `+`) and anchored with a lookbehind. An unbounded email pattern took 68 s on 200 KB of minified text, which let one big output freeze the guard. `test_huge_observation_is_fast` guards this.

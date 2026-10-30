@@ -106,3 +106,13 @@ def test_routine_command_from_readme_not_blocked():
     e = make()
     e.observe(Observation(session_id="s", tool="Read", output="Tests run with `npm test`"))
     assert ev(e, "Bash", command="npm test").decision == Decision.ALLOW
+
+
+def test_huge_observation_is_fast():
+    import base64, os, time
+    e = Engine()
+    blob = "x" * 200_000 + base64.b64encode(os.urandom(150_000)).decode() + " evil@attacker.xyz " + "a." * 50_000
+    t0 = time.perf_counter()
+    e.observe(Observation(session_id="s", tool="Read", output=blob))
+    assert time.perf_counter() - t0 < 2
+    assert "evil@attacker.xyz" in e.sessions.get("s").taint.untrusted

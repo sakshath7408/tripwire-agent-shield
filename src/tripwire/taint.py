@@ -12,13 +12,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-URL = re.compile(r"https?://[^\s'\"<>)\]]+", re.I)
-EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+URL = re.compile(r"https?://[^\s'\"<>)\]]{1,2048}", re.I)
+EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}")
 IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
-UPI = re.compile(r"\b[\w.-]{2,}@(?:ok\w+|ybl|paytm|upi|ibl|axl|apl|sbi|icici|hdfc\w*|ptyes|yapl)\b", re.I)
+UPI = re.compile(r"(?<![\w.-])[\w.-]{2,64}@(?:ok\w+|ybl|paytm|upi|ibl|axl|apl|sbi|icici|hdfc\w*|ptyes|yapl)\b", re.I)
 IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b")
-PHONE = re.compile(r"\+?\d[\d -]{8,}\d")
-DOMAIN = re.compile(r"\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|xyz|ru|cn|top|sh|dev|app|co|in|me|info|biz|site|online|tk)\b", re.I)
+PHONE = re.compile(r"(?<![\d])\+?\d[\d -]{8,18}\d")
+DOMAIN = re.compile(r"(?<![\w.-])(?:[a-z0-9-]{1,63}\.){1,8}(?:com|net|org|io|xyz|ru|cn|top|sh|dev|app|co|in|me|info|biz|site|online|tk)\b", re.I)
+
+MAX_OBSERVE = 1_000_000  # characters scanned per tool output; keeps a giant output from stalling the guard
 
 INDICATOR_PATTERNS = {
     "url": URL,
@@ -77,6 +79,7 @@ class TaintStore:
             self.trusted.setdefault(kind, set()).update(vals)
 
     def add_untrusted(self, tool: str, text: str) -> None:
+        text = text[:MAX_OBSERVE]
         for vals in indicators(text).values():
             for v in vals:
                 if v not in self.untrusted:
