@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+.DS_Store
+bench/results/*.raw.json

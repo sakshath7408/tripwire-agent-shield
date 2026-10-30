@@ -1,0 +1,11 @@
+# Built-in rules. First match wins and overrides the risk score.
+# Add your own in ~/.tripwire/policy.yaml or ./.tripwire.yaml.
+rules:
+  - id: never-touch-tripwire
+    tool: "*"
+    match: "(\\.tripwire|tripwire hook|claude/settings(\\.local)?\\.json)"
+    capability: write
+    decision: block
+    reason: Agents may not edit or disable their own guard.
+
+capabilities: {}
