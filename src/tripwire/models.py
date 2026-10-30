@@ -43,6 +43,10 @@ class Action(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     source: str = "sdk"  # claude-code | mcp | sdk | bench
     cwd: str | None = None
+    # Cross-agent trail. agent: who is acting (defaults to the session id). parent: the agent that
+    # spawned this one (a Claude Code sub-agent's parent is the main agent of its session).
+    agent: str | None = None
+    parent: str | None = None
 
 
 class Finding(BaseModel):
@@ -70,6 +74,7 @@ class Verdict(BaseModel):
     judge: dict[str, Any] | None = None
     elapsed_ms: float = 0.0
     resolved_by: str | None = None  # "human" when a person approved/denied an ASK
+    trace: str | None = None  # root agent of the agent tree this action belongs to (set by the daemon)
 
 
 class Observation(BaseModel):
@@ -79,6 +84,8 @@ class Observation(BaseModel):
     tool: str
     output: str
     source: str = "sdk"
+    agent: str | None = None
+    parent: str | None = None
 
 
 class TaskSpec(BaseModel):
@@ -88,3 +95,5 @@ class TaskSpec(BaseModel):
     prompt: str
     cwd: str | None = None
     profile: str | None = None  # permission profile name from policy YAML
+    agent: str | None = None
+    parent: str | None = None

@@ -106,18 +106,32 @@ def _pre_output(decision: str, reason: str) -> str:
                                               "permissionDecisionReason": reason}})
 
 
+def agent_of(data: dict, session: str) -> tuple[str, str | None]:
+    """(agent, parent) for the audit trail. Hooks that fire inside a sub-agent (Task/Agent tool) carry
+    `agent_id` and `agent_type`; sub-agents share the session id, so their parent is the main agent."""
+    main = f"claude-code:{session}"
+    aid = str(data.get("agent_id") or "").strip()
+    if not aid:
+        return main, None
+    atype = str(data.get("agent_type") or "subagent").strip() or "subagent"
+    return f"{main}/{atype}:{aid[:12]}", main
+
+
 def handle(event: str, data: dict) -> tuple[int, str]:
     """Pure-ish core: returns (exit_code, stdout). Raises on failure; caller decides fail mode."""
     session = str(data.get("session_id") or "claude-code")
     cwd = data.get("cwd")
+    agent, parent = agent_of(data, session)
 
     if event == "UserPromptSubmit":
-        post("/v1/task", {"session_id": session, "prompt": str(data.get("prompt") or ""), "cwd": cwd})
+        post("/v1/task", {"session_id": session, "prompt": str(data.get("prompt") or ""), "cwd": cwd,
+                          "agent": agent, "parent": parent})
         return 0, ""
 
     if event == "PostToolUse":
         post("/v1/observe", {"session_id": session, "tool": str(data.get("tool_name") or "unknown"),
-                             "output": flatten(data.get("tool_response")), "source": "claude-code"})
+                             "output": flatten(data.get("tool_response")), "source": "claude-code",
+                             "agent": agent, "parent": parent})
         return 0, ""
 
     if event == "PreToolUse":
@@ -126,6 +140,7 @@ def handle(event: str, data: dict) -> tuple[int, str]:
             return 0, _pre_output("deny", "Tripwire could not read which tool this is, so it was blocked.")
         tool_input = data.get("tool_input")
         action = {"session_id": session, "tool": str(tool), "cwd": cwd, "source": "claude-code",
+                  "agent": agent, "parent": parent,
                   "args": tool_input if isinstance(tool_input, dict) else {"input": tool_input}}
         wait = 0.0
         try:

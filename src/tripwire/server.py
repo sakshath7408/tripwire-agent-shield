@@ -5,6 +5,8 @@ POST /v1/observe    untrusted tool output
 POST /v1/evaluate   action -> verdict   (?wait=N holds an ASK up to N s for a human answer)
 POST /v1/verdicts/{id}/resolve {"decision": "allow"|"block"}
 GET  /v1/verdicts   recent verdicts      GET /v1/stats   counts
+GET  /v1/audit      audited verdicts (?agent= ?trace= ?session_id=; ?format=tree for agent trees)
+GET  /v1/audit/events  raw chained records    GET /v1/audit/verify  walk the hash chain
 GET  /v1/events     server-sent events (task | observe | verdict | resolved)
 GET  /              dashboard
 """
@@ -13,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
+import logging
+import os
 import time
 from collections import Counter, deque
 from pathlib import Path
@@ -24,34 +27,24 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from . import audit as auditlib
+from .analyzers.secrets import redact
 from .engine import Engine
 from .models import Action, Decision, Observation, TaskSpec, Verdict
 
 STATIC = Path(__file__).with_name("static")
-HOME = Path.home() / ".tripwire"
+HOME = Path(os.environ.get("TRIPWIRE_HOME") or Path.home() / ".tripwire")
+log = logging.getLogger("tripwire.server")
 
 
 class Resolve(BaseModel):
     decision: Decision
 
 
-class Audit:
-    """Append-only local log. Args are already redacted by the engine."""
-
-    def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, check_same_thread=False)
-        self.db.execute("create table if not exists verdicts (id text primary key, ts real, session text, tool text, decision text, risk int, json text)")
-
-    def write(self, v: Verdict) -> None:
-        self.db.execute("insert or replace into verdicts values (?,?,?,?,?,?,?)",
-                        (v.id, v.ts, v.action.session_id, v.action.tool, v.decision.value, v.risk, v.model_dump_json()))
-        self.db.commit()
-
-
 def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> FastAPI:
     engine = engine or Engine()
-    audit = Audit(audit_path or HOME / "audit.db")
+    audit = auditlib.Audit(audit_path or HOME / "audit.db")
+    app_trace = audit.register
     recent: deque[Verdict] = deque(maxlen=500)
     pending: dict[str, asyncio.Future] = {}
     deadlines: dict[str, float] = {}
@@ -59,27 +52,71 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
     started = time.time()
 
     def broadcast(kind: str, data: dict) -> None:
+        if kind == "verdict" and isinstance(data.get("action"), dict) and not data.get("trace"):
+            a = data["action"].get("agent") or data["action"].get("session_id")
+            data["trace"] = audit.agents.get(a, {}).get("trace")
         for q in list(queues):
             q.put_nowait((kind, data))
 
     engine.listeners.append(broadcast)
     app = FastAPI(title="Tripwire", version="0.1.0")
     app.state.engine = engine
+    app.state.audit = audit
+
+    def who(x: Action | Observation | TaskSpec) -> tuple[str, str | None, str]:
+        """(agent, parent, trace). With no agent given, the session is the agent, as before."""
+        agent = x.agent or x.session_id
+        parent = x.parent if x.parent != agent else None
+        return agent, parent, app_trace(agent, parent)
+
+    def record(kind: str, **kw) -> None:
+        # Never let the audit path break a decision; Audit itself logs and reports failures.
+        try:
+            audit.append(kind, **kw)
+        except Exception as e:  # noqa: BLE001
+            audit.error = f"{type(e).__name__}: {e}"
+            log.error("AUDIT APPEND FAILED: %s", audit.error)
 
     @app.post("/v1/task")
     def task(spec: TaskSpec) -> dict:
         engine.set_task(spec)
+        agent, parent, trace = who(spec)
+        record("task", session=spec.session_id, agent=agent, parent=parent, trace=trace,
+               body={"prompt": redact(spec.prompt[:2000]), "profile": spec.profile, "cwd": spec.cwd})
         return {"ok": True}
 
     @app.post("/v1/observe")
     def observe(obs: Observation) -> dict:
+        s = engine.sessions.get(obs.session_id)
+        before = len(s.taint.injection_seen)
         engine.observe(obs)
+        agent, parent, trace = who(obs)
+        # Metadata only: tool output is untrusted and may hold secrets, so it never goes in the log.
+        record("observe", session=obs.session_id, agent=agent, parent=parent, trace=trace, tool=obs.tool,
+               body={"bytes": len(obs.output), "injection": len(s.taint.injection_seen) > before, "source": obs.source})
         return {"ok": True}
+
+    def record_verdict(v: Verdict, agent: str, parent: str | None) -> None:
+        record("verdict", id=v.id, ref=v.id, ts=v.ts, session=v.action.session_id, agent=agent, parent=parent,
+               trace=v.trace, tool=v.action.tool, decision=v.decision.value, risk=v.risk, body=v.model_dump_json())
+
+    def record_resolution(vid: str, v: Verdict | None, decision: Decision, by: str) -> None:
+        a = v.action if v else None
+        record("resolution", ref=vid, session=a.session_id if a else None, agent=(a.agent or a.session_id) if a else None,
+               parent=a.parent if a else None, trace=v.trace if v else None, tool=a.tool if a else None,
+               decision=decision.value, body={"verdict": vid, "decision": decision.value, "by": by})
 
     @app.post("/v1/evaluate", response_model=Verdict)
     async def evaluate(action: Action, wait: float = 0) -> Verdict:
+        agent, parent, trace = who(action)
+        action.agent, action.parent = agent, parent
         v = engine.evaluate(action)
+        v.trace = trace
+        v.action.agent, v.action.parent = agent, parent
         recent.append(v)
+        # The verdict is recorded as decided, right away (queued, not waited on). A human answer or a
+        # timeout is appended later as its own resolution record; history is never rewritten.
+        record_verdict(v, agent, parent)
         if v.decision == Decision.ASK and wait > 0:
             fut = asyncio.get_running_loop().create_future()
             pending[v.id] = fut
@@ -87,27 +124,27 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
             broadcast("held", {"id": v.id, "deadline": deadlines[v.id]})
             try:
                 v.decision = await asyncio.wait_for(fut, timeout=min(wait, 300))
-                v.resolved_by = "human"
+                v.resolved_by = v.resolved_by or "human"  # the resolve endpoint already recorded it
             except asyncio.TimeoutError:
                 v.decision, v.resolved_by = Decision.BLOCK, "timeout"
                 engine.resolve(v.id, Decision.BLOCK)
+                record_resolution(v.id, v, Decision.BLOCK, "timeout")
                 broadcast("resolved", {"id": v.id, "decision": "block", "by": "timeout"})
             finally:
                 pending.pop(v.id, None)
                 deadlines.pop(v.id, None)
-        audit.write(v)
         return v
 
     @app.post("/v1/verdicts/{vid}/resolve")
     def resolve(vid: str, body: Resolve) -> dict:
-        engine.resolve(vid, body.decision)
         for v in recent:
             if v.id == vid:
-                v.decision, v.resolved_by = body.decision, "human"
-                audit.write(v)
                 break
         else:
             raise HTTPException(404, "unknown verdict")
+        engine.resolve(vid, body.decision)
+        v.decision, v.resolved_by = body.decision, "human"
+        record_resolution(vid, v, body.decision, "human")
         fut = pending.get(vid)
         if fut and not fut.done():
             fut.set_result(body.decision)
@@ -115,8 +152,10 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
         return {"ok": True}
 
     @app.get("/v1/verdicts")
-    def verdicts(limit: int = 200, session_id: str | None = None) -> list[Verdict]:
-        out = [v for v in recent if not session_id or v.action.session_id == session_id]
+    def verdicts(limit: int = 200, session_id: str | None = None, agent: str | None = None,
+                 trace: str | None = None) -> list[Verdict]:
+        out = [v for v in recent if (not session_id or v.action.session_id == session_id)
+               and (not agent or v.action.agent == agent) and (not trace or v.trace == trace)]
         return out[-limit:][::-1]
 
     @app.get("/v1/stats")
@@ -143,6 +182,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
                 fut.set_result(Decision.BLOCK)
         engine.sessions.reset()
         recent.clear()
+        record("reset", body={"note": "live view cleared; the audit log keeps everything"})
         broadcast("reset", {})
         return {"ok": True}
 
@@ -165,14 +205,32 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
         return EventSourceResponse(gen())
 
     @app.get("/v1/audit")
-    def audit_log(limit: int = 1000, session_id: str | None = None) -> list[dict]:
-        q = "select json from verdicts" + (" where session=?" if session_id else "") + " order by ts desc limit ?"
-        rows = audit.db.execute(q, (session_id, limit) if session_id else (limit,)).fetchall()
-        return [json.loads(r[0]) for r in rows]
+    def audit_log(limit: int = 1000, session_id: str | None = None, agent: str | None = None,
+                  trace: str | None = None, format: str = "list"):
+        """Default: audited verdicts newest first, resolutions folded in (same shape as before).
+        format=tree: {"traces": [...]}, each a tree of agents (who spawned whom) with their actions."""
+        audit.flush(2)
+        if format == "tree":
+            return {"traces": audit.traces(trace=trace, agent=agent, session=session_id, limit=min(limit, 100))}
+        return audit.verdicts(limit=limit, session=session_id, agent=agent, trace=trace)
+
+    @app.get("/v1/audit/events")
+    def audit_events(since: int = 0, limit: int = 1000, agent: str | None = None, trace: str | None = None) -> list[dict]:
+        audit.flush(2)
+        return audit.events(since_seq=since, limit=limit, agent=agent, trace=trace)
+
+    @app.get("/v1/audit/verify")
+    def audit_verify() -> dict:
+        audit.flush(2)
+        r = auditlib.verify_db(audit.path, audit.key)
+        return {"ok": r.ok, "checked": r.checked, "legacy": r.legacy, "problem": r.problems[0] if r.problems else None,
+                "notes": r.notes}
 
     @app.get("/healthz")
     def healthz() -> dict:
-        return {"ok": True}
+        # "ok" means the daemon is deciding (adapters and scripts poll this). Audit health is separate,
+        # so a broken disk shows up as audit "degraded" without making every agent fail closed.
+        return {"ok": True, "audit": audit.health()}
 
     if STATIC.exists():
         app.mount("/static", StaticFiles(directory=STATIC), name="static")

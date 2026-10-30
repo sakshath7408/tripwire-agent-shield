@@ -65,6 +65,9 @@ class Proxy:
         self.command = command
         self.url = (url or base_url()).rstrip("/")
         self.session = session or os.environ.get("TRIPWIRE_SESSION") or f"mcp-{name}"
+        # Audit trail identity. TRIPWIRE_PARENT_AGENT links this server's calls under the agent that runs it.
+        self.who = {"agent": os.environ.get("TRIPWIRE_AGENT") or f"mcp:{name}",
+                    "parent": os.environ.get("TRIPWIRE_PARENT_AGENT") or None}
         self.wait = wait
         self.fail_open = fail_open if fail_open is not None else os.environ.get("TRIPWIRE_FAIL_OPEN", "") in ("1", "true", "yes")
         self.pins = pins
@@ -73,7 +76,7 @@ class Proxy:
         # otherwise a profile restriction would silently not apply. Until it lands, calls are refused.
         self.task_body: dict | None = None
         if task or profile:
-            self.task_body = {"session_id": self.session, "prompt": task or "", "profile": profile}
+            self.task_body = {"session_id": self.session, **self.who, "prompt": task or "", "profile": profile}
         self.task_sent = False
         self.check: Check | None = None
         self.lists: dict[str, bool] = {}  # ids of tools/list requests in flight -> is a later page
@@ -146,7 +149,7 @@ class Proxy:
             except Exception:  # noqa: BLE001 - even with FAIL_OPEN, a missing profile must not widen access
                 return "Tripwire could not register this session's task and permission profile, so the call was blocked."
         args = params.get("arguments")
-        action = {"session_id": self.session, "tool": self.full_name(tool), "source": "mcp",
+        action = {"session_id": self.session, **self.who, "tool": self.full_name(tool), "source": "mcp",
                   "args": args if isinstance(args, dict) else {"arguments": args}}
         try:
             v = await self.post(f"/v1/evaluate?wait={self.wait:g}", action, timeout=self.wait + 10)
@@ -241,7 +244,7 @@ class Proxy:
                 tools = [t for t in tools if t.get("name") in check.ok]
             desc = "\n".join(f"{t.get('name')}: {flatten(t.get('description'))}" for t in tools)
             if desc:
-                await self.post("/v1/observe", {"session_id": self.session, "tool": f"mcp__{self.name}__tools/list",
+                await self.post("/v1/observe", {"session_id": self.session, **self.who, "tool": f"mcp__{self.name}__tools/list",
                                                 "output": desc[:200_000], "source": "mcp"})
         except (httpx.TransportError, OSError):
             if not self.fail_open:
@@ -268,14 +271,14 @@ class Proxy:
             _log(line)
         if lines:
             try:
-                await self.post("/v1/observe", {"session_id": self.session, "tool": "tripwire.tool_pin",
+                await self.post("/v1/observe", {"session_id": self.session, **self.who, "tool": "tripwire.tool_pin",
                                                 "output": "\n".join(lines), "source": "mcp"})
             except Exception as e:  # noqa: BLE001 - reporting only; calls are already refused locally
                 _log(f"could not report pin findings to the daemon: {e}")
 
     async def on_tool_result(self, tool: str, msg: dict) -> dict:
         try:
-            await self.post("/v1/observe", {"session_id": self.session, "tool": tool,
+            await self.post("/v1/observe", {"session_id": self.session, **self.who, "tool": tool,
                                             "output": flatten(msg.get("result", msg.get("error"))), "source": "mcp"})
         except Exception as e:  # noqa: BLE001
             if not (self.fail_open and isinstance(e, (httpx.TransportError, OSError))):

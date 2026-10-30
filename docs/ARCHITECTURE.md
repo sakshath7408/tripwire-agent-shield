@@ -148,10 +148,24 @@ Any exception anywhere in `evaluate()` produces a block verdict with `engine.err
 - `POST /v1/evaluate?wait=N` holds an ASK up to N seconds (max 300) for a human answer; timeout resolves to block.
 - `POST /v1/verdicts/{id}/resolve` is what the dashboard buttons call.
 - `GET /v1/events` streams task, observe, verdict, held, resolved and reset events over SSE.
-- `GET /v1/audit` reads the SQLite log. Every verdict is written, including how an ASK was resolved and by whom (human or timeout).
+- `GET /v1/audit` reads the SQLite log. Every verdict is written, and how an ASK was resolved (human or timeout) is a separate record. Filters: `agent=`, `trace=`, `session_id=`; `format=tree` returns agent trees. `GET /v1/audit/verify` walks the chain. See "Audit chain" below.
 - Arguments are redacted with `secrets.redact` before they are stored or broadcast, so a leaked key in a blocked call does not end up in the audit log.
 
 The dashboard (`static/`, plain HTML and JS, no build step) shows a live feed per session, an approval queue with Allow and Block, an evidence panel that quotes the untrusted snippet a verdict was based on, and the audit log.
+
+## Audit chain and cross-agent trail
+
+`src/tripwire/audit.py`. The log is append-only and tamper-evident.
+
+- **One row per event.** Kinds: `chain_start`, `task` (prompt, redacted), `observe` (tool name, size, whether hidden instructions were found; never the output itself), `verdict`, `resolution`, `reset`. A human Allow/Block or a timeout is a new `resolution` row pointing at the verdict. Nothing is ever updated in place.
+- **Hash chain.** Each row stores `prev_hash` and `hash = SHA-256(prev_hash + canonical JSON of the row)`. Change any field of any row and its hash breaks. Delete or reorder rows and `seq` and `prev_hash` stop lining up.
+- **Signed.** Each row also stores `HMAC-SHA256(key, hash)`. The key is created once at `~/.tripwire/audit.key` (mode 0600, next to `audit.db`; `TRIPWIRE_HOME` moves both). Someone who can write `audit.db` but cannot read the key cannot rebuild a valid chain after an edit.
+- **Signed head.** The last `seq` and `hash` are kept in `audit_head`, HMAC'd, written in the same transaction as the rows. Deleting the newest rows is caught.
+- **Agents.** Every event carries `agent`, `parent` and `trace` (the root agent). Claude Code: `claude-code:<session>` for the main agent; a hook that fires inside a sub-agent carries `agent_id`/`agent_type`, so it becomes `claude-code:<session>/<type>:<id>` with the main agent as parent. MCP proxy: `mcp:<name>` (parent from `TRIPWIRE_PARENT_AGENT`). SDK callers send `agent`/`parent` in the request; without them the session is the agent. A sub-agent's verdicts land in its parent's trace, and the tree view links each child to the Task/Agent call that spawned it.
+- **Off the hot path.** `/v1/evaluate` only queues the event (about 30 microseconds). One writer thread chains and commits in batches (WAL). The old code committed on the request path (about 0.85 ms).
+- **When the write fails.** The verdict is still returned and enforced as decided; the engine already fails closed on its own. Blocking every tool call because the disk is full would turn a logging fault into an outage. Instead the failure is loud: an ERROR log line on every attempt, `/healthz` shows `audit.status = "degraded"`, and events stay queued in order and are retried, so the chain has no gaps once the disk recovers.
+- **Tools.** `tripwire audit verify` (exit 1 and a plain sentence naming the first broken record), `tripwire audit export --format jsonl` (every row with its hashes plus the signed head; anyone can recheck the hashes with `tripwire audit verify --file`, the HMACs need the key), `tripwire audit tail [-f] [--agent A] [--trace T]`.
+- **Limits.** Whoever holds the key can rewrite the log. Restoring an entire older copy of `audit.db` is not detectable from the file alone: keep exports somewhere else for that. Rows written by older versions are kept and shown but not covered; the `chain_start` row says how many.
 
 ## What the attacker cannot do
 

@@ -24,7 +24,8 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - `src/tripwire/classify.py` tool name -> capability (works for any MCP tool)
 - `src/tripwire/analyzers/` shell AST, sensitive paths, secret patterns
 - `src/tripwire/policy.py` + `default_policy.yaml` user YAML overrides
-- `src/tripwire/server.py` FastAPI daemon on 127.0.0.1:7777, SSE events, SQLite audit at ~/.tripwire/audit.db
+- `src/tripwire/server.py` FastAPI daemon on 127.0.0.1:7777, SSE events
+- `src/tripwire/audit.py` tamper-evident audit chain (SHA-256 + HMAC, ~/.tripwire/audit.db + audit.key) and agent trees; `tripwire audit verify|export|tail`
 - `src/tripwire/adapters/` Claude Code hooks and the MCP stdio proxy
 - `src/tripwire/static/` dashboard (plain HTML/JS, no build step)
 - `bench/` attack and benign corpora + AgentDojo replay; `demo/` poisoned repo and vulnerable agent
@@ -54,3 +55,4 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - Restart the daemon with `scripts/restart_daemon.sh`, never `pkill` then start. The health check answered from the old process while it was shutting down, the new one failed to bind the port, and the demo then failed closed on every step.
 - A plain rule beat the 3B judge model: after hidden instructions are seen, an ASK on a high-impact action the user never asked for becomes BLOCK (`chain.injected_unrequested`). AgentDojo hard blocks 85.9% -> 92.1%, benign unchanged. The judge added no stops and wrongly blocked 7 real tasks, so it stays opt-in (`serve --judge`).
 - qwen2.5 3B and 1.5B never fell for any injection (0 of 8 attack acts, four wordings), so Act 1 "attack succeeds" stays on the scripted NaivePlanner. Say so if a judge asks. `--planner ollama` is an optional live bit, not the main demo.
+- The audit log is append-only: never UPDATE or `insert or replace` an audit row. A resolution is its own chained record; readers fold it into the verdict. Audit writes go through the background writer so `/v1/evaluate` never waits on disk; a failed write keeps the verdict and shows up as `/healthz` audit "degraded".
