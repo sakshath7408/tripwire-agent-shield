@@ -243,6 +243,7 @@ class Proxy:
         if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
             return msg
         tools = [t for t in result["tools"] if isinstance(t, dict)]
+        listed = tools  # every description the server sent, hidden ones too: their addresses and links count as untrusted
         try:
             if self.pins:
                 check = self.pins.check(self.name, tools)
@@ -251,7 +252,8 @@ class Proxy:
                 self.check = check
                 await self.report_pins(check)
                 tools = [t for t in tools if t.get("name") in check.ok]
-            desc = "\n".join(f"{t.get('name')}: {flatten(t.get('description'))}" for t in tools)
+            desc = "\n".join(f"{t.get('name')}: {flatten(t.get('description'))} {flatten(t.get('inputSchema'))}"
+                             for t in listed)
             if desc:
                 await self.post("/v1/observe", {"session_id": self.session, **self.who, "tool": f"mcp__{self.name}__tools/list",
                                                 "output": desc[:200_000], "source": "mcp"})
@@ -275,7 +277,7 @@ class Proxy:
         for t in c.new:
             lines.append(f"MCP server '{self.name}' added a new tool '{t}'. Calls are blocked until `tripwire pins approve {self.name}`.")
         for t in c.poisoned:
-            lines.append(f"MCP tool '{t}' on '{self.name}' was hidden: its description carries hidden instructions for the AI.")
+            lines.append(f"MCP tool '{t}' on '{self.name}' was hidden because {c.poisoned[t]}. It stays hidden, even after approval.")
         for line in lines:
             _log(line)
         if lines:
