@@ -148,6 +148,8 @@
   function cleanSummary(v) {
     let s = v.summary || "";
     s = s.replace(/^(Blocked|Needs your OK|Allowed):\s*/, "");
+    // "Blocked on its own: hidden instructions..." repeats the badge and the "Decided on its own" line next to it.
+    s = s.replace(/^(?:Blocked|Allowed) on its own:\s*(\S)/, (_, c) => c.toUpperCase());
     s = s.replace(/\s*Judge:\s.*$/, "");
     const m = s.match(/^Looks like a normal (\w+) action\.(.*)$/);
     if (m) s = `Normal ${CAPWORD[m[1]] || m[1]}, nothing risky found.${m[2]}`;
@@ -607,7 +609,7 @@
           <p class="d-plain">${agentOf(v) ? `<b>${esc(agentOf(v).short)}</b> wanted to ` : "The agent wanted to "}${esc(plainAction(v))}.</p>
           <div class="d-act">${esc(renderAct(v))}</div></div>
         ${why.length ? `<div class="d-section"><h3>Why</h3><ul class="d-why">${why.map((f) => `<li>${esc(f.message)}</li>`).join("")}</ul></div>`
-          : v.decision === "allow" ? `<div class="d-section"><h3>Why</h3><p class="d-plain">Nothing risky found. It fits what you asked.</p></div>` : ""}
+          : v.decision === "allow" ? `<div class="d-section"><h3>Why</h3><p class="d-plain">${wentToHuman(v) ? "It needed an OK first, and got one." : "Nothing risky found. It fits what you asked."}</p></div>` : ""}
         ${evidence.length ? `<div class="d-section"><h3>Where it came from</h3>${evidence.filter((f) => { const k = f.evidence.slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; }).map((f) =>
           `<div class="evidence"><div class="ev-src">${icon("doc")}From ${esc(evidenceSource(f))}, not from you</div><div class="ev-text">…${highlight(f.evidence, v, f)}…</div></div>`).join("")}</div>` : ""}
         ${v.action.parent ? `<p class="d-plain d-spawned-note">Started by <b>${esc(agentName(v.action.parent))}</b>.</p>` : ""}`;
