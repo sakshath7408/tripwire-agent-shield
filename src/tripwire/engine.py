@@ -716,6 +716,7 @@ class Engine:
         if "iban" in found:  # long digit runs inside an IBAN are not phone numbers
             found["phone"] = {p for p in found.get("phone", ()) if not any(p in i for i in found["iban"])}
         out: list[Finding] = []
+        unnamed: list[tuple[str, object]] = []
         replying = s.asked_to_reply()
         for kind in ("email", "phone"):
             named = s.taint.trusted.get(kind)
@@ -741,6 +742,10 @@ class Engine:
                 elif named:
                     out.append(Finding(rule=f"intent.other_{kind}", severity=MEDIUM, category="scope",
                                        message=f"You named {sorted(named)[0]}, but this also goes to {v}, which you never mentioned."))
+                elif injected and v in s.taint.unverified:
+                    out.append(Finding(rule=f"intent.unverified_{kind}", severity=MEDIUM, category="injection",
+                                       message=f"Goes to {v}. You named it, but only after hidden instructions were found, "
+                                               "so Tripwire can't vouch for it on its own."))
                 elif injected and not src:
                     out.append(Finding(rule=f"intent.unknown_{kind}", severity=MEDIUM, category="injection",
                                        message=f"Goes to {v}, which neither you nor anything the agent read mentioned, "
@@ -748,10 +753,18 @@ class Engine:
                 else:
                     # A new person you never named. Fine to ask; not fine to do silently (a polite email with no
                     # "ignore previous instructions" can still ask the agent to mail data to a stranger).
-                    where = f", taken from {src.where}" if src else ""
-                    out.append(Finding(rule=f"intent.unnamed_{kind}", severity=MEDIUM, category="scope",
-                                       evidence=src.snippet if src else None,
-                                       message=f"Sends to {v}, someone you never named{where}."))
+                    unnamed.append((v, src))
+        if unnamed:
+            # One finding naming every such address, the ones taken from content first: the reason must name the
+            # actual stranger (review 4: [alice@corp.com, x@evil.xyz] was reported as "sends to alice@corp.com").
+            unnamed.sort(key=lambda x: (x[1] is None, x[0]))
+            v, src = unnamed[0]
+            who = ", ".join(x[0] for x in unnamed[:3]) + (f" and {len(unnamed) - 3} more" if len(unnamed) > 3 else "")
+            where = f", taken from {src.where}" if src else ""
+            out.append(Finding(rule="intent.unnamed_email" if "@" in v else "intent.unnamed_phone", severity=MEDIUM,
+                               category="scope", evidence=src.snippet if src else None,
+                               message=f"Sends to {who}, " + ("someone" if len(unnamed) == 1 else "people")
+                                       + f" you never named{where}."))
         # Chat handles and channels (@mallory-ext, #ops): the same rule, with names instead of addresses.
         named_handles = {x.lstrip("@#") for x in re.findall(r"(?<![\w@.])[@#][\w.-]{2,80}", s.taint.trusted_text)}
         for raw in _keyed(args, RECIPIENT_KEY):

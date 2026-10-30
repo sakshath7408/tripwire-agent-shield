@@ -102,12 +102,19 @@ VERB_RULES: list[tuple[re.Pattern[str], Capability]] = [
 ]
 
 
+# Mailbox housekeeping changes your own mail, it never sends any: archive_email, label_thread, mark_read, star_message.
+MAILBOX_EDIT = re.compile(r"^(?:archive|unarchive|label|unlabel|add_labels?|remove_labels?|apply_labels?|mark|flag|unflag|star|"
+                          r"unstar|snooze|unsnooze|mute|unmute|pin|unpin|tag|untag|categori[sz]e|move_to_folder)(?:_|$)")
+
+
 def classify(tool: str, overrides: dict[str, str] | None = None) -> Capability:
     if overrides and tool in overrides:
         return Capability(overrides[tool])
     name = normalise(tool)
     if name in EXACT:
         return EXACT[name]
+    if MAILBOX_EDIT.match(name) and not _has_side_effect(name.split("_", 1)[1] if "_" in name else ""):
+        return Capability.WRITE
     for pattern, cap in VERB_RULES:
         if pattern.search(name):
             return cap

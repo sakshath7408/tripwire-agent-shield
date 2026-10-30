@@ -144,7 +144,7 @@ def session_to_dict(s: Session) -> dict:
                   "untrusted": {k: _src(v, sv) for k, v in t.untrusted.items() if _clean(k, sv)},
                   "untrusted_lines": [[n, _src(src, sv)] for n, src in t.untrusted_lines[-1000:] if _clean(n, sv)],
                   "injection_seen": [_src(x, sv) for x in t.injection_seen[-50:]], "seen": t.seen,
-                  "senders": t.senders, "listed": t.listed},
+                  "senders": t.senders, "listed": t.listed, "unverified": sorted(t.unverified)[:500]},
     }
 
 
@@ -155,7 +155,8 @@ def session_from_dict(d: dict) -> Session:
         untrusted={k: _unsrc(v) for k, v in (t.get("untrusted") or {}).items()},
         untrusted_lines=[(n, _unsrc(src)) for n, src in t.get("untrusted_lines") or []],
         injection_seen=[_unsrc(x) for x in t.get("injection_seen") or []], seen=int(t.get("seen") or 0),
-        senders=dict(t.get("senders") or {}), listed=dict(t.get("listed") or {}))
+        senders=dict(t.get("senders") or {}), listed=dict(t.get("listed") or {}),
+        unverified=set(t.get("unverified") or []))
     s = Session(id=d["id"], cwd=d.get("cwd"), task=d.get("task") or "", profile=d.get("profile"), taint=taint,
                 secrets_read=list(d.get("secrets_read") or []),
                 pending_secrets={k: (v[0], v[1]) for k, v in (d.get("pending_secrets") or {}).items()},

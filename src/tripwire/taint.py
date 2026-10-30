@@ -203,6 +203,8 @@ class TaintStore:
     senders: dict[str, bool] = field(default_factory=dict)
     # values listed on their own line in some output (see LISTED_LINE): value -> came from injected content
     listed: dict[str, bool] = field(default_factory=dict)
+    # values you named only after hidden instructions were seen: not trusted, but not "never mentioned" either
+    unverified: set[str] = field(default_factory=set)
 
     def add_trusted(self, text: str, exclude_injected: bool = False) -> None:
         """exclude_injected: values that came from content with hidden instructions stay untrusted (a prompt sent
@@ -214,6 +216,7 @@ class TaintStore:
                 # still in memory wasn't enough: after a reset the memory is empty and the attacker's address
                 # would be trusted again. A real follow-up to a new person just asks once.
                 bad = set(vals)
+                self.unverified |= bad
                 for v in bad:
                     norm = norm.replace(v, "[unverified]")
                 vals = vals - bad

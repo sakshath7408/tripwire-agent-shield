@@ -69,6 +69,10 @@ OFFICIAL_INSTALLERS = {"astral.sh", "sh.rustup.rs", "bun.sh", "deno.land", "inst
                        "ollama.com", "starship.rs", "get.docker.com", "fnm.vercel.app", "mise.run", "pixi.sh",
                        "get.volta.sh", "install.determinate.systems", "tailscale.com", "sdk.cloud.google.com",
                        "cli.github.com", "foundry.paradigm.xyz", "get.helm.sh", "rye.astral.sh"}
+OFFICIAL_INSTALLER_URLS = ("raw.githubusercontent.com/nvm-sh/nvm/", "raw.githubusercontent.com/Homebrew/install/",
+                           "raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh",
+                           "raw.githubusercontent.com/pyenv/pyenv-installer/")
+OFFICIAL_INSTALLER_HOSTS_WITH_PATHS = {"raw.githubusercontent.com"}
 OFFICIAL_REGISTRIES = {"pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com",
                        "crates.io", "rubygems.org", "proxy.golang.org", "test.pypi.org"}
 
@@ -1632,6 +1636,7 @@ class _Analyzer:
         self.copies: list[tuple[str, str]] = []  # (source, destination) of cp/mv/ln/install inside the command
         self.patches: list[str] = []  # patch files applied (git apply, patch -i / < file)
         self.written_paths: list[str] = []  # every file this command writes, whatever writes it
+        self.official_url_hosts: set[str] = set()  # shared hosts (raw.githubusercontent.com) seen only with official installer paths
         self.packages: list[tuple[str, str, str]] = []  # (package, tool, raw command) installed or run from a registry
 
     # ---- bookkeeping ----
@@ -1671,7 +1676,8 @@ class _Analyzer:
         hs = [h for h in hosts if h]
         if hs and all(self.mentioned(h) for h in hs):
             return MEDIUM + 10
-        if hs and all(h.lower() in OFFICIAL_INSTALLERS for h in hs) and not self.s.taint.injection_seen \
+        if hs and all(h.lower() in OFFICIAL_INSTALLERS or h.lower() in self.official_url_hosts for h in hs) \
+                and not self.s.taint.injection_seen \
                 and not any(self.s.taint.tainted_values(h) for h in hs):
             return MEDIUM + 10  # an official installer: ask, never silently, never hard-block
         return CRITICAL
@@ -3302,6 +3308,7 @@ class _Analyzer:
             bool(re.search(r"(?:^|\s)(?:-X\s{0,3}|--request[ =])['\"]?(?:POST|PUT|PATCH)\b|--method[ =](?:POST|PUT)", raw, re.I))
         if url:
             self.net_targets.append((url, posts))
+            self.official_installer_url(url, raw)
         if host:
             inf.traits.add("host=" + host)
         local = bool(host and LOCAL_HOST.match(host))
@@ -3338,6 +3345,17 @@ class _Analyzer:
                     self.add("shell.exfil_env_secret", HIGH, "exfiltration",
                              f"Sends the secret value ${m.group(1)} to {where}.", raw)
                     break
+
+    def official_installer_url(self, url: str, raw: str) -> None:
+        """nvm and Homebrew ship their installers from raw.githubusercontent.com: like uv's and rustup's, they ask
+        (never hard-block) when nothing untrusted suggested them. Every URL on that host in the command must be one."""
+        h = (_host(url) or "").lower()
+        if h not in OFFICIAL_INSTALLER_HOSTS_WITH_PATHS:
+            return
+        urls = re.findall(r"https?://[^\s'\"|;&)]{1,500}", raw)
+        same = [u for u in urls if (_host(u) or "").lower() == h]
+        if same and all(any(re.sub(r"^https?://", "", u).startswith(p) for p in OFFICIAL_INSTALLER_URLS) for u in same):
+            self.official_url_hosts.add(h)
 
     def auth_headers(self, n: str, a: list[str], opts: list[tuple[str, str]], host: str | None, local: bool,
                      raw: str) -> None:
