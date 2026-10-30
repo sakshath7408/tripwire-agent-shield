@@ -33,7 +33,7 @@ if curl -fs -m 2 "$URL/healthz" >/dev/null 2>&1; then
          "$URL/v1/verdicts/preflight-token-check/resolve" -o /dev/null -w '%{http_code}')" = "401" ]; then
     bad "the daemon rejects this token (it was started with a different TRIPWIRE_HOME)" "scripts/stage.sh $PORT"
   else ok "token accepted by the daemon"; fi
-  LEVEL="$(curl -fs -m 2 "$URL/v1/settings" 2>/dev/null | sed -n 's/.*"autonomy": *"\([a-z]*\)".*/\1/p')"
+  LEVEL="$(curl -fs -m 2 -H "X-Tripwire-Token: $TOK" "$URL/v1/settings" 2>/dev/null | sed -n 's/.*"autonomy": *"\([a-z]*\)".*/\1/p')"
   if [ "$LEVEL" = "balanced" ]; then ok "autonomy: balanced (the level demo/SCRIPT.md is written for)"
   else warn "autonomy is '${LEVEL:-unknown}', the script expects balanced (scripts/stage.sh sets it)"; fi
 elif lsof -ti tcp:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then

@@ -2,9 +2,15 @@
 
 The guarded agent runs as the same user as the daemon, so an open localhost API is a control plane it could use
 to reset sessions, rewrite the trusted task or approve its own ASKs. Every mutating endpoint therefore needs a
-per-install token from ~/.tripwire/token (0600). Adapters (Claude Code hook, MCP proxy, demo) read the file; the
-dashboard gets it as a SameSite=Strict, HttpOnly cookie when a browser opens the page. The engine also blocks any
-agent action aimed at the daemon or at ~/.tripwire, so the agent cannot read the token or call the API.
+per-install token from ~/.tripwire/token (0600). Adapters (Claude Code hook, MCP proxy, demo) read the file.
+
+The dashboard never gets the token. `tripwire serve` prints, and `tripwire open` mints, a one-time pairing code
+(single use, 10 minutes). The page swaps it once (POST /v1/pair) for an HttpOnly, SameSite=Strict cookie that holds a
+key derived from the token. No request header can earn that cookie: a 30 Oct review got it with one faked
+`sec-fetch-dest: document` header. The engine also blocks agent actions aimed at local ports it can't resolve, at the
+daemon's port, or at ~/.tripwire (globs and variables expanded), so the agent cannot read the token or call the API.
+
+The audit log records who changed things: "dashboard" (cookie) or "api-token" (header), never a guessed "human".
 
 Honest limit: code running as your user can always read your files. For real isolation, run the daemon as a
 separate OS user so the token and audit key are not readable by the agent at all.
@@ -18,7 +24,8 @@ import secrets
 from pathlib import Path
 
 HEADER = "X-Tripwire-Token"
-COOKIE = "tripwire_token"
+COOKIE = "tripwire_dash"
+PAIR_TTL = 600  # seconds a pairing code stays valid
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 
 
@@ -61,6 +68,15 @@ def read_token() -> str | None:
 def headers() -> dict[str, str]:
     tok = read_token()
     return {HEADER: tok} if tok else {}
+
+
+def dash_key(token: str) -> str:
+    """The dashboard cookie's value: derived from the token, so it survives restarts, but it is not the token."""
+    return hmac.new(token.encode(), b"tripwire-dashboard-v1", "sha256").hexdigest()
+
+
+def new_pair_code() -> str:
+    return secrets.token_urlsafe(18)
 
 
 def same(a: str | None, b: str | None) -> bool:

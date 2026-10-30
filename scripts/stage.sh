@@ -25,13 +25,15 @@ echo "${B}   Autonomy: $LEVEL${N} ${D}(AUTONOMY=strict scripts/stage.sh to chang
 curl -fs -X PUT -H "X-Tripwire-Token: $TOKEN" -H "Content-Type: application/json" -d "{\"autonomy\": \"$LEVEL\"}" \
   "$URL/v1/settings" >/dev/null || { echo "${R}Could not set autonomy to $LEVEL${N}"; exit 1; }
 # Learned rules survive a reset. They are yours, so list them instead of deleting them.
-RULES="$(curl -fs "$URL/v1/rules" 2>/dev/null)"
+RULES="$(curl -fs -H "X-Tripwire-Token: $TOKEN" "$URL/v1/rules" 2>/dev/null)"
 case "$RULES" in ""|"[]") echo "   ${G}no learned rules${N}";;
   *) echo "   ${R}learned rules exist; they can change what the demo asks. Check the dashboard's Learned rules:${N}"
      echo "$RULES" | head -c 400; echo;; esac
 
 echo "${B}3. Opening the dashboard in presenter mode${N}"
-DASH="$URL/?stage=1&theme=light"
+# The dashboard pairs with a one-time code (no header or cookie trick can get it). Mint one for this browser.
+CODE="$(curl -fs -X POST -H "X-Tripwire-Token: $TOKEN" "$URL/v1/pair/new" | sed -n 's/.*"code": *"\([^"]*\)".*/\1/p')"
+DASH="$URL/?stage=1&theme=light#pair=$CODE"
 if [ -z "$NO_OPEN" ]; then open "$DASH" 2>/dev/null || xdg-open "$DASH" 2>/dev/null || echo "   open $DASH by hand"; fi
 echo "   $DASH"
 

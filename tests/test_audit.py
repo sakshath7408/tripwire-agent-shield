@@ -257,9 +257,9 @@ def test_resolutions_are_appended_not_rewritten(client):
     verdict_row = rows[2]
     assert verdict_row["decision"] == "ask"  # the original decision is never rewritten
     assert rows[3]["ref"] == v["id"] and rows[3]["decision"] == "block"
-    assert json.loads(rows[3]["json"])["by"] == "human"
+    assert json.loads(rows[3]["json"])["by"] == "api-token"  # the real actor: a token holder, not a dashboard click
     listed = client.get("/v1/audit").json()
-    assert listed[0]["id"] == v["id"] and listed[0]["decision"] == "block" and listed[0]["resolved_by"] == "human"
+    assert listed[0]["id"] == v["id"] and listed[0]["decision"] == "block" and listed[0]["resolved_by"] == "api-token"
     assert client.get("/v1/audit/verify").json()["ok"]
 
 

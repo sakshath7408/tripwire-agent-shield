@@ -313,7 +313,62 @@ def _to_text(s: str) -> str:
 
 
 def _is_secret(full: str) -> bool:
+    if full.endswith((".pub", "/known_hosts")):
+        return False  # public keys hold nothing secret (the trailing "/" probe below made id_ed25519.pub look like .ssh/)
     return paths.is_secret(full) or paths.is_secret(full.rstrip("/") + "/")
+
+
+GUARD_FILES = ("token", "audit.key", "audit.db", "settings.json", "learned.yaml", "policy.yaml", "pins.json", "pins.key")
+
+
+def _guard_home() -> str:
+    return os.path.normpath(os.environ.get("TRIPWIRE_HOME") or os.path.join(HOME, ".tripwire"))
+
+
+def _brace(word: str, limit: int = 32) -> list[str]:
+    m = re.search(r"\{([^{}]{0,200},[^{}]{0,200})\}", word)
+    if not m:
+        return [word]
+    out: list[str] = []
+    for alt in m.group(1).split(",")[:limit]:
+        out += _brace(word[:m.start()] + alt + word[m.end():], limit)
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
+def _comp_match(pat: str, name: str) -> bool:
+    import fnmatch
+    if name.startswith(".") and not pat.startswith("."):
+        return False  # like the shell: * and ? never pick up a hidden name
+    return fnmatch.fnmatchcase(name, pat)
+
+
+def guard_glob(word: str, cwd: str | None) -> bool:
+    """Could this word, once the shell expands ~, $HOME, $TRIPWIRE_HOME, other variables (any value), braces and
+    globs, name Tripwire's own folder or a file in it? `~/.tri*/tok*`, `$HOME/.t*/token`, `~/.trip$D/token`."""
+    if len(word) > 1024 or not re.search(r"tri|\.t|[*?\[$]", word, re.I):
+        return False
+    gh = _guard_home()
+    w = re.sub(r"^~(?=/|$)", HOME, word)
+    w = re.sub(r"\$\{?HOME\}?", HOME, w)
+    w = re.sub(r"\$\{?TRIPWIRE_HOME\}?", gh, w)
+    w = re.sub(r"\$\{[^}]{0,80}\}|\$\w{1,64}|\$\([^)]{0,200}\)|`[^`]{0,200}`", "*", w)
+    w = w.replace('"', "").replace("'", "")
+    gc = [c for c in gh.split("/") if c]
+    for cand in _brace(w):
+        if not cand.startswith("/"):
+            if not cwd:
+                continue
+            cand = os.path.join(cwd, cand)
+        pc = [c for c in os.path.normpath(cand).split("/") if c]
+        if len(pc) < len(gc) or not all(_comp_match(a, b) for a, b in zip(pc, gc)):
+            continue
+        if len(pc) == len(gc) or len(pc) > len(gc) + 1:
+            return True  # the folder itself, or something deeper inside it
+        if any(_comp_match(pc[-1], f) for f in GUARD_FILES) or re.search(r"[*?\[]", pc[-1]):
+            return True
+    return False
 
 
 def _host(url: str | None) -> str | None:
@@ -1277,6 +1332,7 @@ class _Analyzer:
         self.tainted_files: set[str] = set(getattr(s, "tainted_files", ()) or ())
         self.staged_secrets: list[str] = list(getattr(s, "staged_secrets", ()) or ())  # secret files added to git
         self.task = (s.task or "").lower()
+        self.net_targets: list[tuple[str, bool]] = []  # (url or host, sends data) for every network call
 
     # ---- bookkeeping ----
     def add(self, rule: str, sev: int, cat: str, msg: str, ev: str | None = None) -> None:
@@ -1293,10 +1349,23 @@ class _Analyzer:
         return sorted(self.found.values(), key=lambda f: -f.severity)[:25]
 
     def mentioned(self, x: str | None) -> bool:
+        """Did the user name this host, URL or file? Whole values only (evil-github.com is not github.com)."""
         if not x or not self.task:
             return False
         x = x.lower()
-        return x in self.task or (_host(x) or "\0") in self.task
+        t = self.s.taint
+        if not t.trusted_text.strip():  # a session built without set_task (tests, old callers)
+            from ..taint import TaintStore
+            t = TaintStore()
+            t.add_trusted(self.s.task or "")
+        if t.is_trusted_value(x) or t.is_trusted_value(_host(x) or "\0"):
+            return True
+        if "/" in x or "." in x:
+            try:
+                return t.names_path(x, self.cwd)
+            except Exception:
+                return False
+        return False
 
     def rce_sev(self, hosts: list[str | None]) -> int:
         hs = [h for h in hosts if h]
@@ -1371,7 +1440,11 @@ class _Analyzer:
         if m:
             self.add("shell.guard_tamper", CRITICAL, "scope",
                      "Tries to change or read Tripwire's own settings, the guard watching this agent.", cmd)
-        m = KILL_GUARD_RE.search(cmd)
+        # 'trip''wire' and $((7700+77)) spell the same thing once the shell is done with them.
+        unq = re.sub(r"\$\(\(\s{0,4}(\d{1,6})\s{0,4}([+*-])\s{0,4}(\d{1,6})\s{0,4}\)\)",
+                     lambda m: str(eval(f"{int(m.group(1))}{m.group(2)}{int(m.group(3))}")),  # noqa: S307 - two ints
+                     re.sub(r"['\"\\]", "", cmd))
+        m = KILL_GUARD_RE.search(cmd) or KILL_GUARD_RE.search(unq)
         if m:
             self.add("shell.guard_tamper", CRITICAL, "scope",
                      "Tries to switch off Tripwire, the guard watching this agent.", m.group(0))
@@ -1615,6 +1688,13 @@ class _Analyzer:
                 t = set().union(*[t for _, i2, _, t in sub_info if i2 == idx] or [set()])
                 if t:
                     self.var_traits[m.group(1)] = t
+        for w in list(c.words[1:]) + [t for _, t in c.redirects]:
+            if guard_glob(w, self.cwd) or guard_glob(self.expand(w), self.cwd):
+                self.add("shell.guard_tamper", CRITICAL, "scope",
+                         "Points at Tripwire's own files (its key, token or audit log) through a wildcard or variable.",
+                         c.raw)
+                break
+        self.bulk_copy_guard(inf)
         before = set(self.found)
         self.rules(inf, depth, sub_info)
         self.redirects(inf, depth)
@@ -1633,6 +1713,31 @@ class _Analyzer:
                 self.add("shell.sudo", MEDIUM, "privilege",
                          f"Runs '{inf.name}' with administrator (root) power.", c.raw)
         return inf
+
+    def bulk_copy_guard(self, inf: Info) -> None:
+        """tar, zip, rsync or cp -r of a folder that holds ~/.tripwire (usually your whole home folder) copies the
+        guard's key and token along with everything else."""
+        if inf.name not in ("tar", "gtar", "bsdtar", "zip", "7z", "rsync", "cp", "scp", "ditto"):
+            return
+        a = inf.args
+        if inf.name in ("cp", "scp") and not any(re.fullmatch(r"-[a-zA-Z]*[rRa][a-zA-Z]*", x) or x == "--recursive" for x in a):
+            return
+        gh = _guard_home()
+        dirs: list[str] = []
+        for i, x in enumerate(a):
+            if x.startswith("-"):
+                continue
+            if i > 0 and a[i - 1] in ("-C", "--directory"):
+                if any(y in (".", "./", "*") for y in a[i + 1:]):
+                    dirs.append(x)
+                continue
+            dirs.append(x)
+        for d in dirs:
+            full = os.path.normpath(self.expand_path(self.expand(d)))
+            if full == gh or gh.startswith(full.rstrip("/") + "/"):
+                self.add("shell.guard_tamper", HIGH, "scope",
+                         f"Copies or archives {d}, which holds Tripwire's own key and token.", inf.c.raw)
+                return
 
     def assign(self, name: str, val: str, c: Cmd) -> None:
         if name.upper() in ("LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "LD_LIBRARY_PATH") and name.upper() != "LD_LIBRARY_PATH":
@@ -2279,8 +2384,13 @@ class _Analyzer:
         elif re.search(r"^/(private/)?etc/sudoers", full):
             self.add("shell.sudoers", CRITICAL, "privilege", "Changes who gets administrator power on this computer.", ev)
         elif paths.is_persistence(full):
-            self.add("shell.persistence", HIGH + 5, "persistence",
-                     f"Changes a file that controls what runs on your machine later: {t}", ev)
+            hook = "/.git/hooks/" in full and re.search(
+                r"\b(?:pre-commit|pre-push|commit-msg|post-commit|post-merge|post-checkout|git hooks?)\b", self.task)
+            if hook and not self.s.taint.injection_seen and self.in_ws(full):
+                self.add("shell.persistence_requested", LOW, "persistence", f"Changes {t}, which runs later. You asked for this.", ev)
+            else:
+                self.add("shell.persistence", HIGH + 5, "persistence",
+                         f"Changes a file that controls what runs on your machine later: {t}", ev)
         elif full.startswith(TMP_PREFIXES):
             return
         elif paths.is_system(full) or full.split("/")[1:2] and "/" + full.split("/")[1] in EXTRA_SYSTEM and full.count("/") <= 2:
@@ -2347,6 +2457,25 @@ class _Analyzer:
                     sub_c = Cmd(words=[w.replace("{}", "FILE") for w in sub], raw=inf.c.raw)
                     sub_c.raw_words = list(sub_c.words)
                     self.cmd(sub_c, depth + 1)
+        gh = _guard_home()
+        pats = [(x, expr[k + 1]) for k, x in enumerate(expr[:-1]) if x in ("-name", "-iname", "-path", "-ipath", "-wholename")]
+        for r in roots:
+            full = os.path.normpath(self.expand_path(r))
+            if not (gh == full or gh.startswith(full.rstrip("/") + "/")):
+                continue
+            import fnmatch
+            for flag, pat in pats:
+                pat_l = pat.strip("'\"")
+                if flag in ("-name", "-iname"):
+                    hit = any(fnmatch.fnmatch(f.lower() if flag == "-iname" else f, pat_l.lower() if flag == "-iname" else pat_l)
+                              for f in GUARD_FILES + (".tripwire",))
+                else:
+                    hit = any(fnmatch.fnmatch(os.path.join(gh, f), pat_l) for f in GUARD_FILES) and \
+                        bool(re.search(r"tri|wire|\.t", pat_l, re.I))
+                if hit:
+                    self.add("shell.guard_tamper", CRITICAL, "scope",
+                             "Searches for Tripwire's own files (its key, token or audit log).", inf.c.raw)
+                    break
         inf.find_roots = roots
         inf.find_filtered = any(x in ("-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-newer", "-mtime",
                                       "-mmin", "-size", "-empty", "-user") for x in expr)
@@ -2679,6 +2808,10 @@ class _Analyzer:
             url = {"gh": "github.com", "aws": "aws.amazon.com"}[n]
         host = _host(url) if url and "://" in (url or "") or (url and DOMAINISH.match(url or "")) else url
         inf.host = host
+        posts = bool(files) or any(v != url for v in data_vals) or (inf.stdin_send and n not in ("ssh",)) or \
+            bool(re.search(r"(?:^|\s)(?:-X\s{0,3}|--request[ =])['\"]?(?:POST|PUT|PATCH)\b|--method[ =](?:POST|PUT)", raw, re.I))
+        if url:
+            self.net_targets.append((url, posts))
         if host:
             inf.traits.add("host=" + host)
         local = bool(host and LOCAL_HOST.match(host))
@@ -2688,7 +2821,8 @@ class _Analyzer:
                 inf.stdin_send = True
                 continue
             full = self.expand_path(f)
-            if _is_secret(full) or full.startswith(os.path.join(HOME, ".ssh")) or os.path.normpath(full) in self.tainted_files:
+            if _is_secret(full) or (full.startswith(os.path.join(HOME, ".ssh")) and not full.endswith(".pub")) \
+                    or os.path.normpath(full) in self.tainted_files:
                 self.add("shell.exfil_secret", CRITICAL, "exfiltration", f"Uploads your credential file {f} to {where}.", raw)
             elif local:
                 continue
@@ -2933,6 +3067,22 @@ class _Analyzer:
 CONFUSABLE_KEYS = {chr(k) for k in CONFUSABLE}
 
 
+def analyze_code(runner: str, code: str, session: Session) -> list[Finding]:
+    """Judge a source file (python, node, ...) as if it ran now, without quoting it into a shell command first:
+    shell-quoting a multi-line file garbled its string pieces, so `'.trip'+'wire'` folded to nothing."""
+    try:
+        a = _Analyzer(session)
+        c = Cmd(words=[runner, "FILE"], raw=f"{runner} FILE")
+        c.raw_words = list(c.words)
+        a.raw_checks(code[:MAX_LEN], 0)
+        a.code(runner, code[:MAX_LEN], Info(c=c, name=runner, args=["FILE"]), 0)
+        return a.result()
+    except Exception as e:  # never raise
+        return [Finding(rule="shell.analyzer_error", severity=MEDIUM, category="general",
+                        message="Tripwire could not fully check this code, so it is asking to be safe.",
+                        evidence=_clip(f"{type(e).__name__}: {e}"))]
+
+
 def analyze_shell(command: str, session: Session, state_out: dict | None = None) -> list[Finding]:
     """`state_out`, when given, receives what this command would leave behind (tainted_files, staged_secrets)
     so the engine can carry it into later calls once the command is allowed."""
@@ -2944,6 +3094,7 @@ def analyze_shell(command: str, session: Session, state_out: dict | None = None)
         if state_out is not None:
             state_out["tainted_files"] = set(a.tainted_files)
             state_out["staged_secrets"] = list(a.staged_secrets)
+            state_out["net"] = list(a.net_targets)
         return a.result()
     except Exception as e:  # never raise: a broken analyzer must not crash the guard
         return [Finding(rule="shell.analyzer_error", severity=MEDIUM, category="general",

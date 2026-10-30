@@ -331,7 +331,7 @@ class Audit:
                 for ref, dec, body in db.execute(
                         f"select ref, decision, json from verdicts where kind = 'resolution' and ref in ({','.join('?' * len(chunk))})"
                         " order by seq", chunk):
-                    res[ref] = (dec, json.loads(body).get("by", "human"))
+                    res[ref] = (dec, _shown_by(json.loads(body).get("by", "human")))
         for v in out:
             if v.get("id") in res:
                 v["decision"], v["resolved_by"] = res[v["id"]]
@@ -421,7 +421,7 @@ def build_tree(trace: str, events: list[dict]) -> dict:
             n["actions"].append(a)
             by_id[a["id"]] = a
         elif ev["kind"] == "resolution" and ev["ref"] in by_id:
-            by_id[ev["ref"]].update(decision=ev["decision"], resolved_by=body.get("by"))
+            by_id[ev["ref"]].update(decision=ev["decision"], resolved_by=_shown_by(body.get("by")))
         elif ev["kind"] == "task":
             n["tasks"].append({"ts": ev["ts"], "prompt": body.get("prompt")})
         elif ev["kind"] == "observe" and body.get("injection"):
@@ -571,3 +571,8 @@ def verify_lines(lines: Iterable[str], key: bytes | None) -> VerifyResult:
         else:
             rows.append(obj)
     return verify_rows(rows, key, head, r)
+
+
+def _shown_by(by: str | None) -> str | None:
+    """A click in the paired dashboard is a person ("human", as the live verdict says); the log keeps "dashboard"."""
+    return "human" if by == "dashboard" else by

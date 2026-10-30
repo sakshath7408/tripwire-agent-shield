@@ -10,10 +10,17 @@ GET  /v1/verdicts   recent verdicts      GET /v1/stats   counts
 GET  /v1/audit      audited verdicts (?agent= ?trace= ?session_id=; ?format=tree for agent trees)
 GET  /v1/audit/events  raw chained records    GET /v1/audit/verify  walk the hash chain
 GET  /v1/events     server-sent events (task | observe | verdict | resolved)
+POST /v1/pair {"code"}  swap a one-time pairing code for the dashboard cookie   POST /v1/pair/new  mint a code (token)
 GET  /              dashboard
 
-Every POST/PUT/DELETE needs the per-install token (header X-Tripwire-Token, or the dashboard's cookie), and every
-request must name 127.0.0.1/localhost as its Host (stops DNS rebinding). See auth.py.
+Every /v1 endpoint, reads included, needs the per-install token (header X-Tripwire-Token) or the dashboard cookie,
+except /v1/pair, which takes a one-time code. /healthz, / and /static are open. Every request must name
+127.0.0.1/localhost as its Host (stops DNS rebinding). See auth.py.
+
+Who did it: the audit log records "dashboard" for the cookie and "api-token" for the header. Anything that would
+widen what the agent may do (autonomy, learned rules, clearing a session that saw hidden instructions) is
+dashboard-only once hidden instructions have been seen, and a task sent with the token after hidden instructions
+can't vouch for values that came from them.
 """
 
 from __future__ import annotations
@@ -51,6 +58,10 @@ class Resolve(BaseModel):
     remember: Literal["session", "always"] | None = None
 
 
+class Pair(BaseModel):
+    code: str
+
+
 class Settings(BaseModel):
     autonomy: Literal["strict", "balanced", "autonomous"]
 
@@ -77,6 +88,16 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     deadlines: dict[str, float] = {}
     queues: set[asyncio.Queue] = set()
     started = time.time()
+    dash = auth.dash_key(token)
+    pair_codes: dict[str, float] = {}
+
+    def new_pair() -> str:
+        now = time.time()
+        for k in [k for k, exp in pair_codes.items() if exp < now]:
+            pair_codes.pop(k, None)
+        code = auth.new_pair_code()
+        pair_codes[code] = now + auth.PAIR_TTL
+        return code
 
     def broadcast(kind: str, data: dict) -> None:
         if kind == "verdict" and isinstance(data.get("action"), dict) and not data.get("trace"):
@@ -91,6 +112,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     app.state.audit = audit
     app.state.token = token
     app.state.home = home
+    app.state.new_pair = new_pair
+    app.state.dash_key = dash
 
     @app.middleware("http")
     async def guard_the_guard(request: Request, call_next):
@@ -100,16 +123,46 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         origin = request.headers.get("origin")
         if not auth.is_local_origin(origin):
             return JSONResponse({"detail": "Requests from other websites are refused."}, 403)
-        if request.method in MUTATING:
+        path = request.url.path
+        request.state.actor = None
+        if path.startswith("/v1/") and path != "/v1/pair":
             sent = request.headers.get(auth.HEADER)
             cookie = request.cookies.get(auth.COOKIE)
-            # The cookie only counts for a same-origin browser request (SameSite=Strict already keeps other sites out).
-            browser_ok = auth.same(cookie, token) and (origin is not None or
-                                                         request.headers.get("sec-fetch-site") == "same-origin")
-            if not (auth.same(sent, token) or browser_ok):
-                return JSONResponse({"detail": "Missing or wrong Tripwire token. Clients read it from ~/.tripwire/token."},
-                                    401)
+            # A mutating cookie request must also look same-origin (SameSite=Strict already keeps other sites out).
+            browser_ok = auth.same(cookie, dash) and (request.method not in MUTATING or origin is not None or
+                                                      request.headers.get("sec-fetch-site") == "same-origin")
+            if auth.same(sent, token):
+                request.state.actor = "api-token"
+            elif browser_ok:
+                request.state.actor = "dashboard"
+            else:
+                return JSONResponse({"detail": "Not connected. Run `tripwire open` to pair this browser; "
+                                               "clients send the token from ~/.tripwire/token."}, 401)
         return await call_next(request)
+
+    def actor(request: Request) -> str:
+        return getattr(request.state, "actor", None) or "api-token"
+
+    def any_injected() -> bool:
+        return any(s.taint.injection_seen for s in engine.sessions.all())
+
+    @app.post("/v1/pair")
+    def pair(body: Pair) -> JSONResponse:
+        exp = pair_codes.pop(body.code, None) if isinstance(body.code, str) else None
+        if exp is None or exp < time.time():
+            return JSONResponse({"detail": "That pairing code is used up or expired. Run `tripwire open` for a new one."},
+                                403)
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie(auth.COOKIE, dash, httponly=True, samesite="strict", path="/")
+        record("pair", body={"by": "dashboard", "note": "a browser was paired with a one-time code"})
+        return resp
+
+    @app.post("/v1/pair/new")
+    def pair_new(request: Request) -> dict:
+        if actor(request) != "api-token":
+            raise HTTPException(403, "Pairing codes are minted from the terminal (`tripwire open`).")
+        code = new_pair()
+        return {"code": code, "expires_in": auth.PAIR_TTL}
 
     def who(x: Action | Observation | TaskSpec) -> tuple[str, str | None, str]:
         """(agent, parent, trace). With no agent given, the session is the agent, as before."""
@@ -126,11 +179,16 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
             log.error("AUDIT APPEND FAILED: %s", audit.error)
 
     @app.post("/v1/task")
-    def task(spec: TaskSpec) -> dict:
-        engine.set_task(spec)
+    def task(spec: TaskSpec, request: Request) -> dict:
+        by = actor(request)
+        s = engine.sessions._s.get(spec.session_id)
+        after_injection = bool(s and s.taint.injection_seen)
+        # Sent with the token after hidden instructions: recorded, but it can't vouch for the attacker's values.
+        engine.set_task(spec, verified=by == "dashboard" or not after_injection)
         agent, parent, trace = who(spec)
         record("task", session=spec.session_id, agent=agent, parent=parent, trace=trace,
-               body={"prompt": redact(spec.prompt[:2000]), "profile": spec.profile, "cwd": spec.cwd})
+               body={"prompt": redact(spec.prompt[:2000]), "profile": spec.profile, "cwd": spec.cwd, "by": by,
+                     "after_injection": after_injection})
         return {"ok": True}
 
     @app.post("/v1/observe")
@@ -183,29 +241,33 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
                 deadlines.pop(v.id, None)
         return v
 
-    def record_rule(op: str, rule: autolib.LearnedRule, by: str = "human") -> None:
+    def record_rule(op: str, rule: autolib.LearnedRule, by: str) -> None:
         record("rule", ref=rule.id, session=rule.session, tool=rule.tool, decision=rule.decision,
                body={"op": op, "by": by, **rule.public()})
 
     @app.post("/v1/verdicts/{vid}/resolve")
-    def resolve(vid: str, body: Resolve) -> dict:
+    def resolve(vid: str, body: Resolve, request: Request) -> dict:
+        by = actor(request)
         for v in recent:
             if v.id == vid:
                 break
         else:
             raise HTTPException(404, "unknown verdict")
         engine.resolve(vid, body.decision)
-        v.decision, v.resolved_by = body.decision, "human"
-        record_resolution(vid, v, body.decision, "human")
+        # "human" only for a click in the paired dashboard; a token holder could be a script or the agent itself.
+        v.decision, v.resolved_by = body.decision, "human" if by == "dashboard" else by
+        record_resolution(vid, v, body.decision, by)
         fut = pending.get(vid)
         if fut and not fut.done():
             fut.set_result(body.decision)
-        broadcast("resolved", {"id": vid, "decision": body.decision.value, "by": "human"})
+        broadcast("resolved", {"id": vid, "decision": body.decision.value, "by": v.resolved_by})
         out: dict = {"ok": True, "rule": None, "remember_refused": None}
-        if body.remember:
+        if body.remember and by != "dashboard":
+            out["remember_refused"] = "Only a click in the dashboard can teach Tripwire a rule."
+        elif body.remember:
             try:
                 rule = engine.learn(v, body.decision, body.remember)
-                record_rule("add", rule)
+                record_rule("add", rule, by)
                 broadcast("rule", {"op": "add", **rule.public()})
                 out["rule"] = rule.public()
             except autolib.LearnRefused as e:
@@ -217,14 +279,19 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         return {"autonomy": engine.autonomy}
 
     @app.put("/v1/settings")
-    def put_settings(body: Settings) -> dict:
+    def put_settings(body: Settings, request: Request) -> dict:
+        by = actor(request)
         before = engine.autonomy
+        if by != "dashboard" and body.autonomy != before and any_injected():
+            # The attack this stops: an agent that got hold of the token switches Tripwire to autonomous.
+            raise HTTPException(403, "Hidden instructions were seen in a live session, so the autonomy level can "
+                                     "only be changed from the dashboard.")
         engine.set_autonomy(body.autonomy)
         data = autolib.load_settings(home)
         data["autonomy"] = engine.autonomy
         autolib.save_settings(home, data)
         if before != engine.autonomy:
-            record("settings", body={"autonomy": engine.autonomy, "was": before, "by": "human"})
+            record("settings", body={"autonomy": engine.autonomy, "was": before, "by": by})
         return {"autonomy": engine.autonomy}
 
     @app.get("/v1/rules")
@@ -232,11 +299,11 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         return [r.public() for r in engine.learned.list()]
 
     @app.delete("/v1/rules/{rid}")
-    def delete_rule(rid: str) -> dict:
+    def delete_rule(rid: str, request: Request) -> dict:
         r = engine.learned.delete(rid)
         if r is None:
             raise HTTPException(404, "unknown rule")
-        record_rule("delete", r)
+        record_rule("delete", r, actor(request))
         broadcast("rule", {"op": "delete", **r.public()})
         return {"ok": True}
 
@@ -266,15 +333,18 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
                  "secrets_read": s.secrets_read, "actions": len(s.history)} for s in engine.sessions.all()]
 
     @app.post("/v1/reset")
-    def reset() -> dict:
+    def reset(request: Request) -> dict:
+        by = actor(request)
         for fut in pending.values():  # never leave a held agent hanging: settle as block
             if not fut.done():
                 fut.set_result(Decision.BLOCK)
-        engine.sessions.reset()
+        # A token reset keeps every session that saw hidden instructions, so wiping a session's memory of an
+        # attack (then rewriting its task) needs a human at the dashboard.
+        kept = engine.sessions.reset(keep_injected=by != "dashboard")
         recent.clear()
-        record("reset", body={"note": "live view cleared; the audit log keeps everything"})
+        record("reset", body={"note": "live view cleared; the audit log keeps everything", "by": by, "kept": kept})
         broadcast("reset", {})
-        return {"ok": True}
+        return {"ok": True, "kept": kept}
 
     @app.get("/v1/events")
     async def events(request: Request):
@@ -335,12 +405,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
 
         @app.get("/")
         def index(request: Request):
-            resp = FileResponse(STATIC / "index.html")
-            # The dashboard's key: an HttpOnly, SameSite=Strict cookie, handed only to a browser opening the page.
-            # Agents can't fetch this page (the engine blocks calls aimed at the daemon), and other sites can't use it.
-            if request.headers.get("sec-fetch-dest") == "document":
-                resp.set_cookie(auth.COOKIE, token, httponly=True, samesite="strict", path="/")
-            return resp
+            # No key here: any client can send browser headers. The page pairs with a one-time code (POST /v1/pair).
+            return FileResponse(STATIC / "index.html")
     else:
         @app.get("/")
         def index_missing():

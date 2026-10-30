@@ -10,6 +10,7 @@ and it does not depend on another model checking itself.
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -174,10 +175,18 @@ class TaintStore:
     # values listed on their own line in some output (see LISTED_LINE): value -> came from injected content
     listed: dict[str, bool] = field(default_factory=dict)
 
-    def add_trusted(self, text: str) -> None:
-        self.trusted_text += "\n" + _norm(canon(text))
+    def add_trusted(self, text: str, exclude_injected: bool = False) -> None:
+        """exclude_injected: values that came from content with hidden instructions stay untrusted (a prompt sent
+        over the API after an injection can't vouch for the attacker's own address)."""
+        norm = _norm(canon(text))
         for kind, vals in indicators(text).items():
+            if exclude_injected:
+                bad = {v for v in vals if (self.untrusted.get(v) or _domain_match(v, self.untrusted) or _NO_SRC).injected}
+                for v in bad:
+                    norm = norm.replace(v, "[unverified]")
+                vals = vals - bad
             self.trusted.setdefault(kind, set()).update(vals)
+        self.trusted_text += "\n" + norm
 
     def add_untrusted(self, tool: str, text: str, label: str = "") -> None:
         text = text[:MAX_OBSERVE]
@@ -206,8 +215,43 @@ class TaintStore:
             self.injection_seen.append(TaintSource(tool, _snippet(text, m.group(0)), injected=True, label=label))
 
     def is_trusted_value(self, value: str) -> bool:
-        v = canon(value).lower()
-        return any(v in vals for vals in self.trusted.values()) or v in self.trusted_text
+        """Did the user name exactly this value? Whole values only: naming alice@corp.com does not vouch for
+        alice@corp.co, lice@corp.com or ce@corp.com (a substring test passed all three). A host also counts when
+        it is a subdomain of a domain or web address the user named."""
+        v = canon(value).lower().strip().rstrip(".,;:")
+        if not v:
+            return False
+        if any(v in vals for vals in self.trusted.values()):
+            return True
+        if "@" not in v and "/" not in v and "." in v:
+            for d in self.trusted_hosts():
+                if v == d or v.endswith("." + d):
+                    return True
+        return _whole(v, self.trusted_text)
+
+    def trusted_hosts(self) -> set[str]:
+        out = set(self.trusted.get("domain", ()))
+        for u in self.trusted.get("url", ()):
+            m = re.match(r"^[a-z][\w+.-]{0,20}://(?:[^@/\s]{0,256}@)?([^/:?#\s]{1,256})", u)
+            if m:
+                out.add(m.group(1))
+        return out
+
+    def names_path(self, path: str, cwd: str | None = None) -> bool:
+        """Did the user name this file? Compared as normalised absolute paths (Claude Code sends absolute paths,
+        the user types relative ones), or by exact file name when the user gave a bare name like ".env"."""
+        target = _abs(path, cwd)
+        base = os.path.basename(target)
+        for tok in PATH_TOKEN.findall(self.trusted_text):
+            tok = tok.rstrip(".,:;)!?'\"`")
+            if not tok or tok in (".", ".."):
+                continue
+            if "/" in tok:
+                if _abs(tok, cwd) == target:
+                    return True
+            elif (tok.startswith(".") or re.search(r"\.[a-z0-9]{1,10}$", tok)) and tok == base:
+                return True
+        return False
 
     def tainted_values(self, text: str) -> list[tuple[str, TaintSource]]:
         """Indicators inside `text` that came from untrusted data and not from the user."""
@@ -271,6 +315,24 @@ class TaintStore:
                 best = max(best, sum(1 for w in words if w in line))
         return best
 
+    def copied_from_data(self, text: str, run: int = 6) -> TaintSource | None:
+        """A line from untrusted content that shares a run of `run` words with `text` (orders copied into a
+        sub-agent's prompt, reworded around the edges). Prefers a source that carried hidden instructions."""
+        words = re.findall(r"[a-z0-9]{1,40}", _norm(canon(text[:20_000])))
+        grams = {tuple(words[i:i + run]) for i in range(len(words) - run + 1)}
+        if not grams:
+            return None
+        best = None
+        for line, src in reversed(self.untrusted_lines[-2000:]):
+            lw = re.findall(r"[a-z0-9]{1,40}", line)
+            if any(tuple(lw[i:i + run]) in grams for i in range(len(lw) - run + 1)):
+                if _whole(line, self.trusted_text):
+                    continue
+                if src.injected:
+                    return src
+                best = best or src
+        return best
+
     def command_from_data(self, command: str) -> TaintSource | None:
         """Did this shell command appear verbatim inside something the agent read?"""
         n = _norm(command)
@@ -280,6 +342,24 @@ class TaintStore:
             if n in line:
                 return src
         return None
+
+
+_NO_SRC = TaintSource("", "")
+PATH_TOKEN = re.compile(r"(?<![\w@:/])[~.\w][\w./~+-]{0,255}")
+
+
+def _abs(path: str, cwd: str | None) -> str:
+    p = os.path.expanduser(os.path.expandvars(path.strip()))
+    if not os.path.isabs(p) and cwd:
+        p = os.path.join(cwd, p)
+    return os.path.normpath(p).lower()
+
+
+def _whole(v: str, text: str) -> bool:
+    """`v` appears in `text` as a whole value, not as part of a longer address, word or path."""
+    if not v or v not in text:
+        return False
+    return re.search(rf"(?<![\w.@+-]){re.escape(v)}(?![\w@+-]|\.[\w])", text) is not None
 
 
 def _domain_match(value: str, untrusted: dict[str, TaintSource]) -> TaintSource | None:

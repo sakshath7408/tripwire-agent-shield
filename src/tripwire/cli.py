@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 
@@ -24,6 +25,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--judge", action="store_true", help="use the local isolated judge model for grey-zone actions")
     s.add_argument("--autonomy", choices=["strict", "balanced", "autonomous"],
                    help="how much Tripwire decides on its own (default: your saved setting, else balanced)")
+    o = sub.add_parser("open", help="open the dashboard in your browser (pairs it with a one-time code)")
+    o.add_argument("--port", type=int, default=int(os.environ.get("TRIPWIRE_PORT") or 7777))
+    o.add_argument("--print", action="store_true", help="print the one-time link instead of opening a browser")
     h = sub.add_parser("hook", help="Claude Code hook entry (Claude Code runs this, not you)")
     h.add_argument("event", choices=["UserPromptSubmit", "PreToolUse", "PostToolUse"])
     for verb in ("install", "uninstall"):
@@ -80,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "pins":
         return _pins(args.action, args.server)
 
+    if args.cmd == "open":
+        return _open(args.port, args.print)
+
     if args.cmd == "serve":
         import uvicorn
 
@@ -92,9 +99,39 @@ def main(argv: list[str] | None = None) -> int:
             judge = make_judge()
         engine = Engine(judge=judge, autonomy=args.autonomy)
         engine.set_guard_port(args.port)  # agent calls aimed at this port are attacks on the guard
-        uvicorn.run(create_app(engine), host="127.0.0.1", port=args.port, log_level="warning")
+        app = create_app(engine)
+        # The dashboard pairs with a one-time code (single use, 10 minutes); `tripwire open` mints a fresh one.
+        print(f"Tripwire is running. Dashboard (one-time link): http://127.0.0.1:{args.port}/#pair={app.state.new_pair()}")
+        print("Later, or in another browser: tripwire open", flush=True)
+        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
         return 0
     return 1
+
+
+def _open(port: int, print_only: bool) -> int:
+    """Ask the running daemon for a one-time pairing code (with the token from ~/.tripwire) and open the dashboard."""
+    import json
+    import urllib.request
+    import webbrowser
+
+    from . import auth
+    base = f"http://127.0.0.1:{port}"
+    tok = auth.read_token()
+    if not tok:
+        print(f"No token at {auth.token_path()}. Start the daemon first: tripwire serve")
+        return 1
+    try:
+        req = urllib.request.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={auth.HEADER: tok})
+        code = json.loads(urllib.request.urlopen(req, timeout=5).read())["code"]
+    except Exception as e:  # noqa: BLE001
+        print(f"Could not reach Tripwire on {base} ({e}). Is `tripwire serve` running on that port?")
+        return 1
+    link = f"{base}/#pair={code}"
+    if print_only or not webbrowser.open(link):
+        print(f"Open this link once (it works one time, for 10 minutes): {link}")
+    else:
+        print(f"Opened the dashboard ({base}). The link in it works once.")
+    return 0
 
 
 def _audit(args) -> int:

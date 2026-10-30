@@ -53,12 +53,19 @@ class Session:
     # files that now hold a copy of a secret (cp .env notes.txt, or a Write of key material); a later publish leaks them
     tainted_files: set[str] = field(default_factory=set)
     staged_secrets: list[str] = field(default_factory=list)  # secret files added to git, waiting for a push
+    # secret values seen in outputs (the right-hand side of KEY=value lines from a credential file), so an encoded
+    # copy (base64 in a commit message) is still recognised
+    secret_values: set[str] = field(default_factory=set)
+    # code files the agent wrote that would do something risky when run: path -> (severity, category, message)
+    risky_written: dict[str, tuple[int, str, str]] = field(default_factory=dict)
 
-    def set_task(self, prompt: str, cwd: str | None = None, profile: str | None = None) -> None:
+    def set_task(self, prompt: str, cwd: str | None = None, profile: str | None = None, verified: bool = True) -> None:
+        """verified=False: the prompt came in over the API after hidden instructions were seen. It still counts as
+        your words, except that it can't vouch for any value those hidden instructions supplied."""
         if profile:
             self.profile = profile
         self.task = (self.task + "\n" + prompt).strip()
-        self.taint.add_trusted(prompt)
+        self.taint.add_trusted(prompt, exclude_injected=not verified)
         if cwd:
             self.cwd = cwd
 
@@ -97,5 +104,10 @@ class SessionStore:
     def all(self) -> list[Session]:
         return list(self._s.values())
 
-    def reset(self) -> None:
-        self._s.clear()
+    def reset(self, keep_injected: bool = False) -> int:
+        """Forget sessions. keep_injected: keep the ones that saw hidden instructions. Returns how many were kept."""
+        if not keep_injected:
+            self._s.clear()
+            return 0
+        self._s = {k: s for k, s in self._s.items() if s.taint.injection_seen}
+        return len(self._s)
