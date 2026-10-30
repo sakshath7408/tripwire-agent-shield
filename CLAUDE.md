@@ -51,3 +51,4 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - A getter prefix proves a read only when no other verb follows (`get_and_send_report`, `list_and_delete_files`). Judge SQL args by what they say, not by the tool name.
 - Files the agent writes can run later (`make test`, `npm test`, CI), so Write/Edit content of scripts, Makefiles, package.json scripts and source files is checked like a command at write time.
 - Never `git stash` here while other agents are working: it yanks their uncommitted files out from under them.
+- Restart the daemon with `scripts/restart_daemon.sh`, never `pkill` then start. The health check answered from the old process while it was shutting down, the new one failed to bind the port, and the demo then failed closed on every step.
