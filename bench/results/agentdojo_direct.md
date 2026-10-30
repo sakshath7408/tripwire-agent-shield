@@ -5,9 +5,9 @@
 | workspace | 0 | 0.0% | 0.0% | 0.0% | 240 | 99.2% | 58.3% |
 | travel | 0 | 0.0% | 0.0% | 0.0% | 120 | 82.5% | 37.5% |
 | banking | 0 | 0.0% | 0.0% | 0.0% | 144 | 100.0% | 54.9% |
-| slack | 0 | 0.0% | 0.0% | 0.0% | 105 | 41.0% | 11.4% |
-| **overall** | 0 | 0.0% | 0.0% | 0.0% | 609 | 86.0% | 45.3% |
+| slack | 0 | 0.0% | 0.0% | 0.0% | 105 | 75.2% | 11.4% |
+| **overall** | 0 | 0.0% | 0.0% | 0.0% | 609 | 92.0% | 45.3% |
 
-Median engine latency 0.137 ms, p95 0.464 ms over 2058 evaluations.
+Median engine latency 0.153 ms, p95 0.517 ms over 2058 evaluations.
 
 Injection tasks skipped because AgentDojo ships no ground truth for them: {'workspace': ['injection_task_6', 'injection_task_7', 'injection_task_8', 'injection_task_9', 'injection_task_10', 'injection_task_11', 'injection_task_12', 'injection_task_13'], 'travel': ['injection_task_6']}
