@@ -17,6 +17,23 @@
     })();
   </script>
   <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    // Optional look: ?look=a|b|c loads static/looks/<x>.css after the base styles and remembers it.
+    // ?look=default (or none) clears it. Nothing changes unless a look is picked.
+    (function () {
+      var q = new URLSearchParams(location.search), h = document.documentElement, l = q.get("look");
+      try {
+        if (l === "default" || l === "none" || l === "0") { localStorage.removeItem("tw-look"); l = null; }
+        else if (l) localStorage.setItem("tw-look", l);
+        else l = localStorage.getItem("tw-look");
+      } catch (_) { /* private mode */ }
+      if (!/^[abc]$/.test(l || "")) return;
+      h.dataset.look = l;
+      var s = document.createElement("link");
+      s.rel = "stylesheet"; s.href = "/static/looks/" + l + ".css"; s.id = "look";
+      document.head.appendChild(s);
+    })();
+  </script>
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
