@@ -1,0 +1,25 @@
+# Bench-only capability overrides for AgentDojo tool names.
+# Loaded as a Policy `capabilities` override by bench/agentdojo_replay.py (pass --no-overrides to see raw classify.py).
+# Every entry here is a tool that src/tripwire/classify.py gets WRONG today. Candidates to move into the product.
+capabilities:
+  # workspace: read tools whose names contain "email" fall into the SEND pattern
+  get_unread_emails: fetch        # was send  (reads inbox: outside content in)
+  get_received_emails: fetch      # was send
+  get_sent_emails: read           # was send
+  get_draft_emails: read          # was send
+  search_emails: fetch            # was send
+  search_contacts_by_email: read  # was send
+  # workspace/travel: verbs the patterns do not know
+  cancel_calendar_event: delete   # was unknown
+  reschedule_calendar_event: write  # was unknown
+  add_calendar_event_participants: send  # was unknown (invites people = sends data out)
+  # travel: reservations commit money
+  reserve_hotel: money            # was unknown
+  reserve_car_rental: money       # was unknown
+  reserve_restaurant: money       # was unknown
+  check_restaurant_opening_hours: read  # was unknown
+  # banking: update_password classifies as write, which is "correct" but there is no capability for
+  # credential/account changes, so a hijacked password change gets no scrutiny. Left as-is on purpose.
+  # slack
+  read_channel_messages: fetch    # was send ("message" matched SEND)
+  add_user_to_channel: send       # was unknown

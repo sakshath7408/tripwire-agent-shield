@@ -26,6 +26,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "agentdojo>=0.1.35",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1",
 ]
