@@ -25,11 +25,14 @@ class Session:
     id: str
     cwd: str | None = None
     task: str = ""
+    profile: str | None = None
     taint: TaintStore = field(default_factory=TaintStore)
     history: deque[Verdict] = field(default_factory=lambda: deque(maxlen=200))
     secrets_read: list[str] = field(default_factory=list)  # sensitive paths read this session
 
-    def set_task(self, prompt: str, cwd: str | None = None) -> None:
+    def set_task(self, prompt: str, cwd: str | None = None, profile: str | None = None) -> None:
+        if profile:
+            self.profile = profile
         self.task = (self.task + "\n" + prompt).strip()
         self.taint.add_trusted(prompt)
         if cwd:

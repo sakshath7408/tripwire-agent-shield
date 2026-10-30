@@ -39,7 +39,7 @@ PATTERNS: list[tuple[re.Pattern[str], Capability]] = [
     (re.compile(r"(send|email|mail|message|post_|post\b|publish|share|invite|reply|forward|upload|webhook|http_post|create_issue|comment|tweet|slack)"), Capability.SEND),
     (re.compile(r"(write|edit|create|update|append|insert|set_|save|rename|move|patch|commit|push)"), Capability.WRITE),
     (re.compile(r"(fetch|browse|web|url|http|download|search_web|get_webpage|inbox|read_email|get_unread|read_channel|get_messages)"), Capability.FETCH),
-    (re.compile(r"(read|get|list|search|find|query|show|view|cat|describe)"), Capability.READ),
+    (re.compile(r"(?:^|_)(read|get|list|search|find|query|show|view|cat|describe)"), Capability.READ),
 ]
 
 

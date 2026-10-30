@@ -55,7 +55,7 @@ class Engine:
 
     # ---- inputs -------------------------------------------------------------
     def set_task(self, spec: TaskSpec) -> None:
-        self.sessions.get(spec.session_id, spec.cwd).set_task(spec.prompt, spec.cwd)
+        self.sessions.get(spec.session_id, spec.cwd).set_task(spec.prompt, spec.cwd, spec.profile)
         self._emit("task", spec.model_dump())
 
     def observe(self, obs: Observation) -> None:
@@ -65,10 +65,26 @@ class Engine:
                                "injection": bool(s.taint.injection_seen)})
 
     def evaluate(self, action: Action) -> Verdict:
+        try:
+            return self._evaluate(action)
+        except Exception as e:  # fail closed: an engine bug must never let an action through
+            v = Verdict(action=_redacted(action), capability=Capability.UNKNOWN, decision=Decision.BLOCK, risk=100,
+                        summary="Blocked: Tripwire could not check this action, so it was stopped to be safe.",
+                        findings=[Finding(rule="engine.error", severity=CRITICAL, category="general",
+                                          message=f"Internal check failed ({type(e).__name__}); failing closed.")])
+            self._emit("verdict", v.model_dump(mode="json"))
+            return v
+
+    def _evaluate(self, action: Action) -> Verdict:
         t0 = time.perf_counter()
         s = self.sessions.get(action.session_id, action.cwd)
         cap = classify(action.tool, self.policy.capabilities)
         findings = self._analyze(action, cap, s)
+
+        findings += self._profile(action, cap, s)
+        if cap == Capability.MONEY and not any(f.severity >= ASK_AT for f in findings):
+            findings.append(Finding(rule="impact.money", severity=ASK_AT, category="scope",
+                                    message="Moving money always needs a human to confirm."))
 
         risk = max((f.severity for f in findings), default=0)
         risk = min(100, risk + 5 * max(0, sum(f.severity >= HIGH for f in findings) - 1))
@@ -99,6 +115,26 @@ class Engine:
         s.history.append(v)
         self._emit("verdict", v.model_dump(mode="json"))
         return v
+
+    # ---- permission profile ------------------------------------------------
+    def _profile(self, a: Action, cap: Capability, s: Session) -> list[Finding]:
+        if not s.profile:
+            return []
+        prof = self.policy.profiles.get(s.profile)
+        if prof is None:
+            return [Finding(rule="profile.unknown", severity=CRITICAL, category="scope",
+                            message=f"Permission profile '{s.profile}' does not exist, so nothing is allowed.")]
+        verdict = prof.check(a.tool, cap)
+        if verdict == "deny":
+            return [Finding(rule="profile.denied", severity=CRITICAL, category="permission",
+                            message=f"The '{s.profile}' role is not allowed to {_verb(cap)} ({a.tool}).")]
+        if verdict == "outside":
+            return [Finding(rule="profile.outside", severity=HIGH + 5, category="permission",
+                            message=f"'{a.tool}' is not one of the tools the '{s.profile}' role was given.")]
+        if verdict == "ask":
+            return [Finding(rule="profile.ask", severity=ASK_AT, category="permission",
+                            message=f"The '{s.profile}' role needs your OK to {_verb(cap)}.")]
+        return []
 
     # ---- analysis -----------------------------------------------------------
     def _analyze(self, a: Action, cap: Capability, s: Session) -> list[Finding]:
@@ -164,9 +200,9 @@ class Engine:
                              message=f"Hidden instructions were found in {src.tool} earlier in this session.",
                              evidence=src.snippet))
 
-        if cap == Capability.UNKNOWN:
-            f.append(Finding(rule="classify.unknown", severity=LOW, category="general",
-                             message=f"Unknown tool '{a.tool}', watching it closely."))
+        if cap == Capability.UNKNOWN:  # fail closed: if we can't tell what a tool does, a human decides
+            f.append(Finding(rule="classify.unknown", severity=ASK_AT, category="general",
+                             message=f"Tripwire doesn't know what '{a.tool}' does, so it needs your OK."))
         return f
 
     # ---- events -------------------------------------------------------------
@@ -179,7 +215,9 @@ class Engine:
 
 
 def _verb(cap: Capability) -> str:
-    return {Capability.SEND: "send messages", Capability.MONEY: "move money", Capability.DELETE: "delete anything"}.get(cap, cap.value)
+    return {Capability.SEND: "send messages", Capability.MONEY: "move money", Capability.DELETE: "delete anything",
+            Capability.EXEC: "run commands", Capability.WRITE: "change files", Capability.READ: "read files",
+            Capability.FETCH: "fetch outside content", Capability.AGENT: "start other agents"}.get(cap, "use this tool")
 
 
 def _redacted(a: Action) -> Action:

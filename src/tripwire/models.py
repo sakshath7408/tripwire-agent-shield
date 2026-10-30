@@ -81,3 +81,4 @@ class TaskSpec(BaseModel):
     session_id: str = "default"
     prompt: str
     cwd: str | None = None
+    profile: str | None = None  # permission profile name from policy YAML

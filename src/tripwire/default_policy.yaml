@@ -9,3 +9,21 @@ rules:
     reason: Agents may not edit or disable their own guard.
 
 capabilities: {}
+
+# Permission profiles. Pick one per session (TaskSpec.profile). Unlisted tools are blocked.
+profiles:
+  coding-assistant:
+    description: Edits code in the project folder and runs dev commands.
+    allow: ["cap:read", "cap:write", "cap:exec", "cap:fetch"]
+    ask: ["cap:delete", "cap:send"]
+    deny: ["cap:money"]
+  inbox-assistant:
+    description: Reads mail and files, drafts and sends replies. No money, no shell.
+    allow: ["cap:read", "cap:fetch", "cap:send"]
+    ask: ["cap:write"]
+    deny: ["cap:money", "cap:exec", "cap:delete"]
+  finance-assistant:
+    description: Reads statements and pays bills, every payment needs approval.
+    allow: ["cap:read", "cap:fetch"]
+    ask: ["cap:money", "cap:send"]
+    deny: ["cap:exec", "cap:delete"]

@@ -28,9 +28,34 @@ class Rule(BaseModel):
     reason: str | None = None
 
 
+class Profile(BaseModel):
+    """What one agent role may do. Entries are tool-name globs or `cap:<capability>`.
+
+    deny beats ask beats allow. Anything not listed is outside the profile and is blocked
+    (fail closed): an agent asking for a tool it was never given is the clearest sign it was hijacked.
+    """
+
+    description: str = ""
+    allow: list[str] = Field(default_factory=list)
+    ask: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+
+    def check(self, tool: str, cap: Capability) -> str:
+        def hit(entries: list[str]) -> bool:
+            return any((e.startswith("cap:") and e[4:] == cap.value) or fnmatch.fnmatch(tool, e) for e in entries)
+        if hit(self.deny):
+            return "deny"
+        if hit(self.ask):
+            return "ask"
+        if hit(self.allow):
+            return "allow"
+        return "outside"
+
+
 class Policy(BaseModel):
     rules: list[Rule] = Field(default_factory=list)
     capabilities: dict[str, str] = Field(default_factory=dict)  # tool name -> capability override
+    profiles: dict[str, Profile] = Field(default_factory=dict)
 
     @classmethod
     def load(cls, extra: list[Path] | None = None) -> "Policy":
@@ -39,7 +64,8 @@ class Policy(BaseModel):
             if path.exists():
                 data = yaml.safe_load(path.read_text()) or {}
                 p.rules += [Rule(**r) for r in data.get("rules", [])]
-                p.capabilities.update(data.get("capabilities", {}))
+                p.capabilities.update(data.get("capabilities") or {})
+                p.profiles.update({k: Profile(**v) for k, v in (data.get("profiles") or {}).items()})
         return p
 
     def match(self, action: Action, cap: Capability) -> Rule | None:
