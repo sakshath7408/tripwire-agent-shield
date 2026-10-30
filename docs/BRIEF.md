@@ -63,7 +63,7 @@ simulated environment. It must:
 - [x] UI should be intuitive. Flashy or ultra-minimal is not required; clarity is. Proof: one plain-English line per verdict, evidence panel
 - [x] Safety, privacy and responsible engineering are scored. Proof: see criterion 6
 - [x] Must be feasible and something people would really use. "Build something you would use yourself." Proof: see criterion 7
-- [x] About 5 minutes per team, no hard cap. Highlight the most important parts. Proof: `demo/SCRIPT.md` (rehearsed at about 4:40, 60-second version too)
+- [x] About 5 minutes per team, no hard cap. Highlight the most important parts. Proof: `demo/SCRIPT.md` (timed at about 4:45 in balanced mode, 60-second version too)
 - [x] The layer must not rely on the agent double-checking itself. Proof: decisions are made outside the agent by deterministic checks; the optional judge never sees tool output (`tests/test_judge.py::test_never_sees_tool_outputs`)
 
 ## Release checklist (run before submission)
@@ -72,6 +72,6 @@ simulated environment. It must:
 - [x] `uv run python bench/run_all.py` rerun, numbers copied into README and the pitch deck. Run 30 Oct 21:31; README, pitch slide 5, `bench/README.md` match `bench/results/summary.md`
 - [x] all 5 demo scenarios pass both acts (`demo/run_demo.py --scenario all --offline --delay 0 --approve auto`). Also all green in `scripts/preflight.sh 7796` on a scratch daemon
 - [x] dashboard checked by eye at 1280x720 and phone, light and dark. Scratch daemon, after two guarded runs
-- [ ] demo rehearsed against demo/SCRIPT.md in under 5 minutes, fallbacks tested. Not ticked: needs a human run on the stage laptop and projector. The offline and test fallbacks work; the backup video is being re-recorded
+- [ ] demo rehearsed against demo/SCRIPT.md in under 5 minutes, fallbacks tested. Not ticked: needs a human run on the stage laptop and projector. The offline and test fallbacks work; backup videos re-recorded 31 Oct for balanced mode
 - [x] README credits every outside idea and library. AgentDojo, CaMeL, dual-LLM, bashlex, Ollama/Qwen, MCP, Claude Code hooks, every library, Playwright and imageio-ffmpeg for recording, Vercel
 - [x] repo pushed and public. github.com/sakshath7408/tripwire-agent-shield is PUBLIC (`gh repo view`)
