@@ -1181,7 +1181,11 @@
   });
   el.tour.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.preventDefault(); closeTour(); }
-    else if (e.key === "ArrowRight") { e.preventDefault(); goTour(tour.step + 1); }
+    // On the last step, moving forward finishes the guide (it used to stay on step 5 forever).
+    else if (e.key === "ArrowRight" || (e.key === "Enter" && !e.target.closest("button, input, a"))) {
+      e.preventDefault();
+      if (tour.step === STEPS.length - 1) closeTour(); else goTour(tour.step + 1);
+    }
     else if (e.key === "ArrowLeft") { e.preventDefault(); goTour(tour.step - 1); }
     else if (e.key === "Tab") {
       const f = [...el.tour.querySelectorAll("button:not([hidden]), input, [tabindex]:not([tabindex='-1'])")].filter((n) => n.offsetParent !== null);
