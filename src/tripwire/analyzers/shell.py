@@ -149,7 +149,7 @@ SECRET_VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|P
 GUARD_RE = re.compile(r"(?:^|[\s/~\"'=:}])\.tripwire\b|\.claude/settings[\w.-]*\.json")
 KILL_GUARD_RE = re.compile(r"\b(pkill|killall|kill)\b[^;&|\n]*\b(tripwire|7777)\b|\b(lsof|fuser)\b[^;&\n]*\b7777\b[^;&\n]*\bkill\b|"
                            r"\buninstall\b[^;&|\n]*\btripwire\b|\blaunchctl\s+(unload|bootout|remove|disable)\b[^;&|\n]*tripwire", re.I)
-FORK_BOMB = re.compile(r"([\w:]+)\s*\(\s*\)\s*\{[^}]*\1\s*\|\s*\1\s*&|\bwhile\s*(?:\(\s*1\s*\)|true|:)\s*[;{]?\s*(?:do)?\s*\{?[^}]*\bfork\b")
+FORK_BOMB = re.compile(r"(?<![\w:])([\w:]{1,64})\s*\(\s*\)\s*\{[^}]*\1\s*\|\s*\1\s*&|\bwhile\s*(?:\(\s*1\s*\)|true|:)\s*[;{]?\s*(?:do)?\s*\{?[^}]*\bfork\b")
 DEV_TCP = re.compile(r"/dev/(tcp|udp)/[^\s;|&)]+")
 REV_SHELL_HINT = re.compile(r"\b(?:ba|z|k|da)?sh\b[^|;&]*\s-i\b|0>&1|>&\s*/dev/tcp|<&\s*\d|\bexec\s+\d*<>")
 HIST_RE = re.compile(r"\bhistory\s+-c\b|\bunset\s+HISTFILE\b|\bHISTFILE=/dev/null|\bHISTSIZE=0\b|\bHISTFILESIZE=0\b|"
@@ -835,8 +835,9 @@ class _Analyzer:
         self.var_traits: dict[str, set[str]] = {}
         self.found: dict[tuple[str, str | None], Finding] = {}
         self.hex_literals: set[str] = set()
-        self.tainted_files: set[str] = set()  # files that now hold copies of secrets
-        self.staged_secrets: list[str] = []  # secret files force-added to git in this command
+        # files that now hold copies of secrets; starts from what earlier calls in this session left behind
+        self.tainted_files: set[str] = set(getattr(s, "tainted_files", ()) or ())
+        self.staged_secrets: list[str] = list(getattr(s, "staged_secrets", ()) or ())  # secret files added to git
         self.task = (s.task or "").lower()
 
     # ---- bookkeeping ----
@@ -880,6 +881,10 @@ class _Analyzer:
             self.add("shell.too_deep", HIGH, "obfuscation",
                      "Hides commands inside commands so many layers deep that they cannot be checked.", cmd)
             return set()
+        if len(cmd) > MAX_LEN:
+            # Only the first part gets checked, so padding a command could hide its real ending.
+            self.add("shell.too_long", MEDIUM, "obfuscation",
+                     f"This command is too long to check fully ({len(cmd):,} characters), so it needs your OK.", cmd[:80])
         cmd = cmd[:MAX_LEN]
         self.raw_checks(cmd, depth)
         pre, decoded = _preprocess(cmd)
@@ -1929,6 +1934,9 @@ class _Analyzer:
             self.git_add(pos, flags, raw)
         elif sub == "commit" and self.staged_secrets:
             inf.traits.add("secret_read")
+        if sub == "commit" and any(x in ("-a", "--all") or (x.startswith("-") and not x.startswith("--") and "a" in x)
+                                   for x in flags):
+            self.git_add([], ["-u"], raw)
         if sub == "push" and self.staged_secrets:
             self.add("shell.exfil_secret", CRITICAL, "exfiltration",
                      f"Pushes your secret file {self.staged_secrets[0]} to a shared git server.", raw)
@@ -2339,6 +2347,11 @@ class _Analyzer:
     def git_add(self, pos: list[str], flags: list[str], raw: str) -> None:
         forced = any(x in ("-f", "--force") or (x.startswith("-") and not x.startswith("--") and "f" in x) for x in flags)
         hits = [p for p in pos if _is_secret(self.expand_path(p)) or os.path.normpath(self.expand_path(p)) in self.tainted_files]
+        # `git add .` / `git add -A` / `git add docs/` sweeps in any secret copy sitting under that folder
+        dirs = [os.path.normpath(self.expand_path(p)) for p in pos if p not in hits] + \
+            ([os.path.normpath(self.cwd)] if self.cwd and (not pos or {"-A", "--all", "-u"} & set(flags)) else [])
+        for d in dirs:
+            hits += [t for t in sorted(self.tainted_files) if t.startswith(d.rstrip("/") + "/") and self.in_ws(t) and t not in hits]
         if not hits:
             return
         self.staged_secrets += hits
@@ -2417,12 +2430,17 @@ class _Analyzer:
 CONFUSABLE_KEYS = {chr(k) for k in CONFUSABLE}
 
 
-def analyze_shell(command: str, session: Session) -> list[Finding]:
+def analyze_shell(command: str, session: Session, state_out: dict | None = None) -> list[Finding]:
+    """`state_out`, when given, receives what this command would leave behind (tainted_files, staged_secrets)
+    so the engine can carry it into later calls once the command is allowed."""
     try:
         if not isinstance(command, str) or not command.strip():
             return []
         a = _Analyzer(session)
         a.text(command, 0)
+        if state_out is not None:
+            state_out["tainted_files"] = set(a.tainted_files)
+            state_out["staged_secrets"] = list(a.staged_secrets)
         return a.result()
     except Exception as e:  # never raise: a broken analyzer must not crash the guard
         return [Finding(rule="shell.analyzer_error", severity=MEDIUM, category="general",

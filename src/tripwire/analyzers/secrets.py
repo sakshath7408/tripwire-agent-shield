@@ -14,7 +14,8 @@ SECRET_CONTENT = [
     ("google_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("stripe_key", re.compile(r"\b[sr]k_live_[0-9a-zA-Z]{20,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
-    ("env_assignment", re.compile(r"\b[A-Z][A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*\S{8,}")),
+    # Bounded on purpose: with `*` here, 800 KB of "X_SECRET" repeated took 287 s (one huge output froze the guard).
+    ("env_assignment", re.compile(r"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]{0,48}(SECRET|TOKEN|PASSWORD|API_KEY|PRIVATE_KEY)[A-Z0-9_]{0,48}[ \t]{0,4}=[ \t]{0,4}[^\s=]\S{7,4096}")),
 ]
 
 

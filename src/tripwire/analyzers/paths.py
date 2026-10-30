@@ -32,10 +32,26 @@ def expand(path: str, cwd: str | None = None) -> str:
     return os.path.normpath(p)
 
 
+GLOB_CHARS = re.compile(r"[*?\[\]{}]")
+# Names a glob like ".env*" or "**/id_*" could pick up.
+SECRET_SAMPLES = (".env", ".env.local", ".env.production", "id_rsa", "id_ed25519", "credentials", "credentials.json",
+                  ".npmrc", ".pypirc", ".netrc", ".git-credentials", "secrets.yaml", "secrets.json", "server.pem", "server.key")
+
+
 def is_secret(path: str) -> bool:
     if path.endswith((".env.example", ".env.sample", ".env.template", ".pub", "/known_hosts")):
         return False  # public keys and templates hold nothing secret
-    return bool(SECRET_PATHS.search(path))
+    if SECRET_PATHS.search(path):
+        return True
+    if GLOB_CHARS.search(path):
+        import fnmatch
+        base = path.rsplit("/", 1)[-1]
+        if re.fullmatch(r"\*\.[\w.-]{1,32}", base):  # "*.json" is any json file; "*.pem" is any key file
+            return bool(SECRET_PATHS.search("x" + base[1:]))
+        if base and any(fnmatch.fnmatch(sample, base) for sample in SECRET_SAMPLES) and base not in ("*", "**", "*.*"):
+            return True
+        return bool(SECRET_PATHS.search(GLOB_CHARS.sub("", path)))
+    return False
 
 
 def is_persistence(path: str) -> bool:

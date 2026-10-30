@@ -7,6 +7,12 @@ rules:
     capability: write
     decision: block
     reason: Agents may not edit or disable their own guard.
+  - id: never-delete-tripwire
+    tool: "*"
+    match: "(\\.tripwire|claude/settings(\\.local)?\\.json)"
+    capability: delete
+    decision: block
+    reason: Agents may not delete their own guard's settings.
 
 capabilities: {}
 

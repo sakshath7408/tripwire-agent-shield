@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from .models import Capability
 
@@ -37,7 +38,7 @@ PATTERNS: list[tuple[re.Pattern[str], Capability]] = [
     (re.compile(r"(delete|remove|drop|purge|destroy|wipe|truncate|rm_)"), Capability.DELETE),
     (re.compile(r"(exec|run_|shell|terminal|command|eval)"), Capability.EXEC),
     (re.compile(r"(send|email|mail|message|post_|post\b|publish|share|invite|reply|forward|upload|webhook|http_post|create_issue|comment|tweet|slack)"), Capability.SEND),
-    (re.compile(r"(write|edit|create|update|append|insert|set_|save|rename|move|patch|commit|push)"), Capability.WRITE),
+    (re.compile(r"(write|edit|create|update|append|insert|set_|save|rename|move|patch|commit|push|replace|modify|overwrite|chmod)"), Capability.WRITE),
     (re.compile(r"(fetch|browse|web|url|http|download|search_web|get_webpage|inbox|read_email|get_unread|read_channel|get_messages)"), Capability.FETCH),
     (re.compile(r"(?:^|_)(read|get|list|search|find|query|show|view|cat|describe)"), Capability.READ),
 ]
@@ -46,8 +47,31 @@ PATTERNS: list[tuple[re.Pattern[str], Capability]] = [
 def normalise(tool: str) -> str:
     # MCP tools from Claude Code arrive as mcp__server__tool. Keep the tool part.
     name = tool.split("__")[-1] if tool.startswith("mcp__") else tool
-    name = re.sub(r"([a-z])([A-Z])", r"\1_\2", name)
-    return name.lower().replace("-", "_")
+    # Fold look-alike letters (full-width, ligatures) so a disguised name reads like the real one.
+    name = unicodedata.normalize("NFKC", name)
+    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    return re.sub(r"[\s.\-:/]+", "_", name.lower())
+
+
+# A getter prefix only proves a read when no other verb follows: "get_and_send_report" and
+# "list_and_delete_files" do side effects despite starting like readers.
+SIDE_EFFECT_WORDS = {  # verbs only; nouns like "email", "post", "order", "run" also name things a getter returns
+    "send", "forward", "reply", "upload", "invite", "notify", "publish", "tweet",
+    "delete", "remove", "purge", "destroy", "wipe", "erase", "kill", "truncate",
+    "exec", "execute", "eval", "spawn", "install", "deploy",
+    "write", "edit", "create", "append", "insert", "rename", "move", "commit", "push", "replace", "modify", "overwrite",
+}
+
+
+# Nouns that turn into verbs after "and"/"then": get_report_and_email, fetch_and_post.
+JOINED_VERBS = {"email", "mail", "post", "message", "text", "sms", "order", "book", "pay", "transfer", "run", "share",
+                "slack", "tweet", "upload", "save", "store", "set", "update", "clear", "drop"}
+
+
+def _has_side_effect(name: str) -> bool:
+    words = name.split("_")
+    return any(w in SIDE_EFFECT_WORDS or (words[i - 1] in ("and", "then") and w in JOINED_VERBS)
+               for i, w in enumerate(words) if i > 0)
 
 
 READ_PREFIX = re.compile(r"^(get|list|search|read|check|find|fetch|count|lookup)_")
@@ -70,9 +94,12 @@ def classify(tool: str, overrides: dict[str, str] | None = None) -> Capability:
         if pattern.search(name):
             return cap
     # Getters never change anything. What they return is outside data when it comes from mail, chat or the web.
-    if READ_PREFIX.match(name):
+    mixed = _has_side_effect(name)
+    if READ_PREFIX.match(name) and not mixed:
         return Capability.FETCH if OUTSIDE_DATA.search(name) else Capability.READ
     for pattern, cap in PATTERNS:
+        if mixed and cap == Capability.READ:
+            break  # it reads *and* does something we could not name: let a human decide
         if pattern.search(name):
             return cap
     return Capability.UNKNOWN

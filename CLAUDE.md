@@ -45,3 +45,9 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - Values from a document the user pointed at are not attacker values. Judge a tainted value by whether its source also carried hidden instructions (`TaintSource.injected`), not just by "came from a tool".
 - A copy of a secret is a secret. Track copied files (`tainted_files`) even inside the project, or `cp .env public/ && http.server` slips through.
 - Live check 30 Oct: real Claude Code (hooks installed) refused both the poisoned-repo injection and a direct `.env | curl` request on its own. Tripwire saw every call (tasks recorded, 2 injections detected, 4 normal actions allowed, 0 false blocks). So Act 1 "attack succeeds" must use the scripted or local-model agent, and the pitch says it plainly: Tripwire protects whatever model you run, it doesn't depend on the model saying no.
+- Red team 30 Oct (`tests/test_redteam.py`): bound evaluate-time regexes too, not just observe. `FORK_BOMB` (`[\w:]+\(`) took 8 s on one 50 KB command and the `env_assignment` secret regex took 287 s on 800 KB; both now `{1,64}`-style bounded.
+- Redact each string in the args, never the JSON text: a secret regex swallowed the closing quote, `json.loads` crashed, and the fail-closed handler crashed with it.
+- `./.tripwire.yaml` comes with the repo, so it is tighten-only (block rules and new profiles). Loosening lives in `~/.tripwire/policy.yaml`.
+- A getter prefix proves a read only when no other verb follows (`get_and_send_report`, `list_and_delete_files`). Judge SQL args by what they say, not by the tool name.
+- Files the agent writes can run later (`make test`, `npm test`, CI), so Write/Edit content of scripts, Makefiles, package.json scripts and source files is checked like a command at write time.
+- Never `git stash` here while other agents are working: it yanks their uncommitted files out from under them.

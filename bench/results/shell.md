@@ -38,4 +38,4 @@
 | run | 7 | 0.0% | 0.0% |
 | test | 10 | 0.0% | 0.0% |
 
-Median engine latency 0.172 ms.
+Median engine latency 0.181 ms.

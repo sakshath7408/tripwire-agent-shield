@@ -32,6 +32,9 @@ class Session:
     secrets_read: list[str] = field(default_factory=list)  # sensitive paths actually read this session
     # secret reads awaiting a human answer: verdict id -> (tool, path). Only count once approved or observed.
     pending_secrets: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # files that now hold a copy of a secret (cp .env notes.txt, or a Write of key material); a later publish leaks them
+    tainted_files: set[str] = field(default_factory=set)
+    staged_secrets: list[str] = field(default_factory=list)  # secret files added to git, waiting for a push
 
     def set_task(self, prompt: str, cwd: str | None = None, profile: str | None = None) -> None:
         if profile:

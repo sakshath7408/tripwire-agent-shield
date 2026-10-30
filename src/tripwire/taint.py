@@ -9,8 +9,11 @@ and it does not depend on another model checking itself.
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import unicodedata
 from dataclasses import dataclass, field
+from urllib.parse import unquote
 
 URL = re.compile(r"https?://[^\s'\"<>)\]]{1,2048}", re.I)
 EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}")
@@ -39,13 +42,52 @@ INJECTION_MARKERS = re.compile(
     r"as an ai (agent|assistant)|do not (tell|inform|mention to) the user|without (asking|telling) the user|"
     r"assistant,? please|before (doing|completing) (anything|the task)|important!+|<\s*/?\s*information\s*>|"
     r"this is an important message from|before you can (solve|complete|finish) the task|"
-    r"please do the following first|after you do that,? you can (solve|complete))",
-    re.I,
+    r"please do the following first|after you do that,? you can (solve|complete)|"
+    # Paraphrased: text that speaks to the AI reading it rather than to a human.
+    r"(note|message|instructions?|reminder|request) (to|for) (any |the |all )?(ai|llm|automated|assistant|agent|model|bot)s?\b|"
+    r"(?:^|[\n>\-*#/\"'{,])\s{0,8}(ai|llm|assistant|agent|bot)\s{0,3}:\s{0,8}(please |you must |always |first |also |when )|"
+    r"if you are an? (ai|llm|language model|assistant|agent)|(ai|automated) (agents?|assistants?) (must|should|reading this))",
+    re.I | re.M,
 )
+
+INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u00ad]")
+# A host written as one number (http://3232235777/) or in hex/octal parts is still an IP address.
+NUMERIC_HOST = re.compile(r"(?<=://)((?:0x[0-9a-f]{1,8}|\d{1,10})(?:\.(?:0x[0-9a-f]{1,8}|\d{1,10})){0,3})(?=[:/?#]|$)", re.I | re.M)
+
+
+def _ip_from_parts(host: str) -> str:
+    try:
+        parts = [int(p, 16) if p.lower().startswith("0x") else int(p, 8) if len(p) > 1 and p.startswith("0") else int(p)
+                 for p in host.split(".")]
+        if len(parts) == 1:
+            return str(ipaddress.IPv4Address(parts[0]))
+        if len(parts) == 4 and all(0 <= x <= 255 for x in parts):
+            return ".".join(map(str, parts))
+    except (ValueError, ipaddress.AddressValueError):
+        pass
+    return host
+
+
+def canon(text: str) -> str:
+    """One spelling for the same value: fold full-width/compatibility letters, drop invisible characters,
+    undo URL encoding (%40 -> @) and write numeric IP hosts as dotted quads. Attackers use every one of these
+    to make a value look different from the one in the poisoned content."""
+    if not text.isascii():
+        text = INVISIBLE.sub("", unicodedata.normalize("NFKC", text))
+    if "%" in text:
+        for _ in range(2):  # double encoding
+            new = unquote(text)
+            if new == text:
+                break
+            text = new
+    if "://" in text:
+        text = NUMERIC_HOST.sub(lambda m: _ip_from_parts(m.group(1)), text)
+    return text
 
 
 def indicators(text: str) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
+    text = canon(text)
     for kind, pat in INDICATOR_PATTERNS.items():
         found = {m.group(0).rstrip(".,;:").lower() for m in pat.finditer(text)}
         if kind == "phone":
@@ -82,13 +124,13 @@ class TaintStore:
     injection_seen: list[TaintSource] = field(default_factory=list)
 
     def add_trusted(self, text: str) -> None:
-        self.trusted_text += "\n" + _norm(text)
+        self.trusted_text += "\n" + _norm(canon(text))
         for kind, vals in indicators(text).items():
             self.trusted.setdefault(kind, set()).update(vals)
 
     def add_untrusted(self, tool: str, text: str, label: str = "") -> None:
         text = text[:MAX_OBSERVE]
-        m = INJECTION_MARKERS.search(text)
+        m = INJECTION_MARKERS.search(text) or INJECTION_MARKERS.search(canon(text))
         for vals in indicators(text).values():
             for v in vals:
                 if v not in self.untrusted or (m and not self.untrusted[v].injected):
@@ -102,7 +144,7 @@ class TaintStore:
             self.injection_seen.append(TaintSource(tool, _snippet(text, m.group(0)), injected=True, label=label))
 
     def is_trusted_value(self, value: str) -> bool:
-        v = value.lower()
+        v = canon(value).lower()
         return any(v in vals for vals in self.trusted.values()) or v in self.trusted_text
 
     def tainted_values(self, text: str) -> list[tuple[str, TaintSource]]:
@@ -114,6 +156,19 @@ class TaintStore:
                 if src and not self.is_trusted_value(v):
                     hits.append((v, src))
         return hits
+
+    def template_source(self, text: str) -> tuple[str, TaintSource] | None:
+        """A URL in `text` that is an untrusted URL with something added on the end (`?d=` + data).
+        That is the agent filling in a template it read, the usual way to smuggle data out."""
+        for v in indicators(text).get("url", ()):
+            if self.is_trusted_value(v):
+                continue
+            for k, src in self.untrusted.items():
+                # "...?d=" + data, or a query string tacked onto a bare link. A longer path alone is normal browsing.
+                if k.startswith("http") and len(k) > 12 and len(v) > len(k) and v.startswith(k) and \
+                        (k[-1] in "=?&" or v[len(k)] in "?&"):
+                    return v, src
+        return None
 
     def command_from_data(self, command: str) -> TaintSource | None:
         """Did this shell command appear verbatim inside something the agent read?"""
