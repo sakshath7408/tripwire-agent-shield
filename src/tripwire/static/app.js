@@ -56,9 +56,21 @@
   const isPending = (v) => v.decision === "ask" && !v.resolved_by;
   const lvl = (n) => (n >= 80 ? "high" : n >= 50 ? "mid" : n > 0 ? "low" : "none");
 
+  const UNPAIRED = "Not connected. Run `tripwire open` in your terminal to connect this browser.";
+  /** One-time pairing: `tripwire serve` / `tripwire open` link here with #pair=<code>. The code is spent
+      before any other /v1 call and never stays in the URL. */
+  async function pairFromHash() {
+    const m = location.hash.match(/(?:^#|&)pair=([^&]+)/);
+    if (!m) return;
+    history.replaceState(null, "", location.pathname + location.search);
+    try {
+      const r = await fetch("/v1/pair", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: decodeURIComponent(m[1]) }) });
+      if (!r.ok) toast(r.status === 404 ? "This Tripwire does not need pairing." : "That pairing link was already used or has expired. Run `tripwire open` for a fresh one.", 6000);
+    } catch (_) { /* the daemon is down; the usual offline banner covers it */ }
+  }
   async function api(path, opts = {}) {
-    const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts }); // same-origin: the token cookie rides along
-    if (r.status === 401) throw new Error("Reload the page to reconnect to Tripwire");
+    const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts }); // same-origin: the pairing cookie rides along
+    if (r.status === 401) { const e = new Error(UNPAIRED); e.status = 401; throw e; }
     if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(() => "")}`.trim());
     return r.json();
   }
@@ -186,14 +198,19 @@
     const allowed = vs.filter((v) => v.decision === "allow");
     const inj0 = sess && (sess.injections || [])[0];
     const src = (inj0 && (inj0.source || inj0.tool)) || (sess && S.injectSrc.get(sess.id));
-    const tried = [...new Set(blocked.concat(pending).slice().reverse().map((v) => CAPDO[v.capability]).filter(Boolean))].slice(0, 3);
+    // What the attack asked for: blocked actions, plus pending ones that carry an injection finding. A save the
+    // user asked for that merely waits for an OK is not "what the hidden instructions told the agent to do".
+    const fromAttack = (v) => (v.findings || []).some((f) => /inject|taint|chain\./.test(f.rule || "") || /inject/i.test(f.category || ""));
+    const asked = blocked.concat(pending.filter(fromAttack));
+    const tried = [...new Set(asked.slice().reverse().map((v) => CAPDO[v.capability]).filter(Boolean))].slice(0, 3);
     const list = tried.length <= 1 ? tried.join("") : tried.slice(0, -1).join(", ") + " and " + tried[tried.length - 1];
     const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
     if (!blocked.length && !pending.length) {
       return { good: true, html: `<b>All clear.</b> ${n(allowed.length, "action", "actions")} so far, every one part of what you asked.` };
     }
     let html = "";
-    if (src) html += `<b>Hidden instructions in <mark>${esc(src)}</mark></b> told the agent to ${esc(list || "do things you never asked for")}. `;
+    if (src && asked.length) html += `<b>Hidden instructions in <mark>${esc(src)}</mark></b> told the agent to ${esc(list || "do things you never asked for")}. `;
+    else if (src) html += `<b>Hidden instructions were found in <mark>${esc(src)}</mark>.</b> `;
     else if (sess && sess.profile) html += `The agent tried to ${esc(list)}, which <b>${esc(sess.profile)}</b> may not do. `;
     else html += `The agent tried to ${esc(list)}, which you never asked for. `;
     if (blocked.length) html += `<b>Tripwire blocked ${pending.length ? n(blocked.length, "action", "actions") : blocked.length === 1 ? "it" : "all " + blocked.length}.</b> `;
@@ -576,8 +593,8 @@
       ${pending ? `<div class="d-decide">${decideButtons(v.id)}${cd ? `<span class="countdown${isUrgent(v.id) ? " is-urgent" : ""}" data-cd="${v.id}">${cd}</span>` : ""}</div>` : ""}</div>
       <div class="d-act">${esc(renderAct(v))}</div>
       <div class="d-facts">
-        <div><span>Tool</span><b>${esc(t.name)}${t.server ? ` <small>(${esc(t.server)})</small>` : ""}</b></div>
-        <div><span>Kind</span><b>${esc(CAPWORD[v.capability] || v.capability)}</b></div>
+        <div><span>Tool</span><b title="${esc(v.action.tool)}">${esc(t.name)}${t.server ? ` <small>(${esc(t.server)})</small>` : ""}</b></div>
+        <div><span>Kind</span><b title="${esc(CAPWORD[v.capability] || v.capability)}">${esc(CAPWORD[v.capability] || v.capability)}</b></div>
         <div><span>Risk</span><b>${v.risk}<small> / 100</small></b></div>
         <div><span>Decided in</span><b>${fmtMs(v.elapsed_ms)}<small> ms</small></b></div>
       </div>
@@ -810,7 +827,7 @@
     try {
       const res = await api(`/v1/verdicts/${id}/resolve`, { method: "POST", body: JSON.stringify(remember ? { decision, remember } : { decision }) });
       if (remember) {
-        if (res && res.remember_refused) toast(`Allowed this once. Not remembered: ${res.remember_refused}`, 5200);
+        if (res && res.remember_refused) toast(`Allowed this once. Not remembered: ${String(res.remember_refused).replace(/^\s*not remembered:\s*/i, "")}`, 5200);
         else toast(remember === "always" ? "Learned. Tripwire will allow this on its own from now on." : "Allowed for the rest of this session.");
         loadRules(400);
       }
@@ -1080,10 +1097,10 @@
   };
   const STEPS = [
     { kicker: "Welcome", tone: "teal", title: "A guard between your AI agent and its tools.",
-      body: `<p>Agents read files, pages and emails. Any of those can hide orders. Tripwire checks every tool call before it runs and stops the ones you never asked for.</p><p class="tour-small">Runs on your machine only. Nothing leaves it.</p>`,
+      body: `<p>Agents read files, pages and emails. Any of those can hide orders. Tripwire checks every tool call before it runs and stops the ones you never asked for.</p><p class="tour-small">${esc((window.TW && window.TW.hostedNote) || "Runs on your machine only. Nothing leaves it.")}</p>`,
       visual: `<svg viewBox="0 0 320 200" class="tv"><defs><linearGradient id="tg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#62c9c3"/><stop offset="1" stop-color="#6c7cf0"/></linearGradient></defs>
-        <rect x="18" y="72" width="78" height="56" rx="12" class="tv-box"/><text x="57" y="96" class="tv-t">AI agent</text><text x="57" y="113" class="tv-s">reads, runs, sends</text>
-        <path d="M100 100h40" class="tv-line"/><path d="M180 100h40" class="tv-line"/>
+        <rect x="8" y="72" width="104" height="56" rx="12" class="tv-box"/><text x="60" y="96" class="tv-t">AI agent</text><text x="60" y="113" class="tv-s" textLength="86" lengthAdjust="spacingAndGlyphs">reads, runs, sends</text>
+        <path d="M116 100h22" class="tv-line"/><path d="M182 100h40" class="tv-line"/>
         <path d="M160 58l26 10v22c0 17-11 31-26 36-15-5-26-19-26-36V68z" fill="url(#tg1)" opacity=".95"/><path d="M149 100h22" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
         <rect x="224" y="50" width="78" height="30" rx="9" class="tv-box"/><text x="263" y="69" class="tv-t">files</text>
         <rect x="224" y="86" width="78" height="30" rx="9" class="tv-box"/><text x="263" y="105" class="tv-t">shell</text>
@@ -1176,13 +1193,19 @@
   });
   el.help.addEventListener("click", openTour);
   // First open: show the guide, unless this is the projector (?stage=1) or it was dismissed before.
-  if (!tourSeen() && !root.classList.contains("stage") && !new URLSearchParams(location.search).has("notour")) setTimeout(openTour, 400);
+  // Not on the projector, not when a deep link asks for a specific view (#demo), and not after "Don't show again".
+  if (!tourSeen() && !root.classList.contains("stage") && !new URLSearchParams(location.search).has("notour") && location.hash !== "#demo") setTimeout(openTour, 400);
 
   // ---- live feed ------------------------------------------------------------
   function setConn(state) {
     el.conn.dataset.state = state;
-    el.conn.querySelector(".conn-text").textContent = { live: "Live", connecting: "Connecting", down: "Offline" }[state];
-    el.offline.hidden = state !== "down";
+    el.conn.querySelector(".conn-text").textContent = { live: "Live", connecting: "Connecting", down: "Offline", unpaired: "Not connected" }[state];
+    el.offline.hidden = state !== "down" && state !== "unpaired";
+    el.offline.dataset.kind = state === "unpaired" ? "unpaired" : "down";
+    el.offline.querySelector("span").textContent = state === "unpaired"
+      ? "This browser is not paired with your Tripwire. Run `tripwire open` in a terminal; it opens a fresh, paired tab."
+      : "Agents fail closed while it is down: every tool call is denied. Retrying.";
+    el.offline.childNodes.forEach((n) => { if (n.nodeType === 3 && n.textContent.trim()) n.textContent = state === "unpaired" ? "Not connected." : "Tripwire is not reachable."; });
   }
 
   let es, retryT, hadError = false;
@@ -1259,5 +1282,8 @@
     on("ping", () => setConn("live"));
   }
 
-  loadAll().catch(() => setConn("down")).finally(connect);
+  pairFromHash().then(() => loadAll()).then(connect).catch((e) => {
+    if (e && e.status === 401) setConn("unpaired"); // no SSE retry loop: pairing needs a new tab from `tripwire open`
+    else { setConn("down"); connect(); }
+  });
 })();

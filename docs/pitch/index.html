@@ -53,12 +53,13 @@
   .foot { position: absolute; left: 80px; right: 80px; bottom: 28px; display: flex; justify-content: space-between; font-size: 16px; color: var(--muted); }
   .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; color: var(--ink); }
   .brand svg { width: 18px; height: 18px; color: var(--ink); }
-  .grid { display: grid; gap: 24px; flex: 1; align-content: start; }
+  .grid { display: grid; gap: 20px; flex: 1; align-content: start; }
   .cols-3 { grid-template-columns: repeat(3, 1fr); }
   .cols-2 { grid-template-columns: 1fr 1fr; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 24px 26px; box-shadow: var(--shadow), var(--glass-edge); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px 24px; box-shadow: var(--shadow), var(--glass-edge); }
   .card h3 { font-size: 20px; margin: 0 0 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
   .card p { font-size: 24px; color: var(--ink); }
+  .cols-3 .card p { font-size: 22px; line-height: 1.35; }
   .card.block { background: var(--block-soft); border-color: var(--block-line); }
   .card.block h3 { color: var(--block); }
   .card.ask { background: var(--ask-soft); border-color: var(--ask-line); }
@@ -186,7 +187,7 @@
       <div class="box">AI agent<small>Claude Code, any MCP client, SDK</small></div>
       <div class="box">What it reads<small>files, web, email, tool descriptions</small></div>
     </div>
-    <div class="arrow boundary"><span>&#8594;</span></div>
+    <div class="arrow boundary" data-audit-ok="the label sits over the gap on purpose"><span>&#8594;</span></div>
     <div class="zone green">
       <h3>Tripwire, local daemon</h3>
       <div class="box">Adapters<small>Claude Code hooks, MCP proxy with signed pins, HTTP</small></div>
@@ -238,7 +239,7 @@
   <div class="grid cols-3">
     <div class="card allow"><h3>Local only</h3><p>Binds to 127.0.0.1, so other machines can't reach it. No cloud, no telemetry.</p></div>
     <div class="card allow"><h3>Fail closed</h3><p>Daemon down, hook crash, engine bug: the call is denied by default.</p></div>
-    <div class="card allow"><h3>Token-locked controls</h3><p>Reset, task and approvals need a local token. Agent calls to the daemon or its files are blocked.</p></div>
+    <div class="card allow"><h3>Token-protected controls</h3><p>Reset, task and approvals need a local token (being hardened). Agent calls to the daemon or its files are blocked.</p></div>
     <div class="card allow"><h3>Redaction</h3><p>Secrets are masked before any verdict is stored or shown.</p></div>
     <div class="card allow"><h3>Synthetic data</h3><p>Fake keys, fake bank, attacker hosts on .invalid.</p></div>
     <div class="card ask"><h3>Known limits</h3><p>Same OS user: defence in depth, not a sandbox. Demo agent is scripted. Intent is keywords.</p></div>

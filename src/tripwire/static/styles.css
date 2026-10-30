@@ -322,6 +322,9 @@ b, strong { font-weight: 600; }
   box-shadow: var(--shadow);
 }
 .offline svg { width: 1.133rem; height: 1.133rem; }
+.offline[data-kind="unpaired"] { background: var(--ask-soft); color: var(--ask); border-color: var(--ask-line); }
+.conn[data-state="unpaired"] { color: #ffd9a3; font-weight: 600; }
+.conn[data-state="unpaired"] .conn-dot { background: #e8b35a; box-shadow: 0 0 0 .2rem rgba(232, 179, 90, .25); }
 .offline span { color: var(--ink-2); font-weight: 450; }
 
 /* audit writer degraded: decisions still run, the trail has a gap */
@@ -778,6 +781,7 @@ kbd {
 .finding[data-lvl="high"] { border-color: var(--block-line); }
 .finding[data-lvl="mid"] { border-color: var(--ask-line); }
 .f-msg { font-size: var(--t-m); font-weight: 500; line-height: 1.42; display: flex; gap: .6rem; align-items: flex-start; overflow-wrap: anywhere; }
+.f-msg > span:last-child { min-width: 0; }
 .sev {
   flex: none; margin-top: .2rem;
   font-size: var(--t-xs); font-weight: 600; border-radius: 4px; padding: 0 .4rem; line-height: 1.4rem;
@@ -799,7 +803,7 @@ kbd {
   border-radius: var(--r-s);
   padding: .533rem .733rem .6rem;
 }
-.ev-src { display: flex; align-items: center; gap: .4rem; font-size: var(--t-xs); font-weight: 600; color: var(--ink-2); margin-bottom: .267rem; }
+.ev-src { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; font-size: var(--t-xs); font-weight: 600; color: var(--ink-2); margin-bottom: .267rem; min-width: 0; overflow-wrap: anywhere; }
 .ev-src svg { width: .933rem; height: .933rem; color: var(--muted); }
 .ev-text { font-family: var(--mono); font-size: var(--t-s); line-height: 1.55; color: var(--ink-2); overflow-wrap: anywhere; }
 .ev-text mark { background: var(--block-soft); color: var(--block); border-radius: 3px; padding: .05rem .267rem; font-weight: 600; }
@@ -836,7 +840,8 @@ pre.json {
 /* Simple view's plain sentences */
 .d-plain { margin: 0; font-size: var(--t-m); line-height: 1.5; color: var(--ink-2); }
 .d-plain b { color: var(--ink); font-weight: 600; }
-.d-why { margin: 0; padding-left: 1.2rem; display: grid; gap: .4rem; font-size: var(--t-m); line-height: 1.45; color: var(--ink-2); }
+.d-why { margin: 0; padding-left: 1.2rem; display: grid; gap: .4rem; font-size: var(--t-m); line-height: 1.45; color: var(--ink-2); overflow-wrap: anywhere; }
+.d-plain { overflow-wrap: anywhere; }
 .d-why li::marker { color: var(--you); }
 .d-spawned-note { margin-top: 1.2rem; font-size: var(--t-s); color: var(--muted); }
 html[data-mode="simple"] .d-act { margin-top: .6rem; }
@@ -1076,7 +1081,8 @@ html.stage .f-tags,
 html.stage #tab-audit,
 html.stage .d-more { display: none; }
 html.stage .work { grid-template-columns: minmax(0, 1fr) minmax(26rem, 40%); }
-html.stage .chain-quiet, html.stage .h-export, html.stage #help, html.stage #settings-wrap { display: none; }
+html.stage .chain-quiet, html.stage .h-export, html.stage #help { display: none; }
+html.stage #settings-btn { width: 1.867rem; height: 1.867rem; padding: .267rem; } /* the presenter keeps the gear, small */
 
 /* ---- projector height (1280x720) ------------------------------------------ */
 @media (max-height: 760px) and (min-width: 821px) {

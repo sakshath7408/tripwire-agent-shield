@@ -12,7 +12,6 @@
       "maxDuration": 10
     }
   },
-  "rewrites": [{ "source": "/pitch", "destination": "/pitch/index.html" }],
   "headers": [
     { "source": "/(.*)", "headers": [
       { "key": "X-Content-Type-Options", "value": "nosniff" },

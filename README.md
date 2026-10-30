@@ -1,6 +1,6 @@
 # Tripwire
 
-**Live demo: https://tripwire-agent-shield.vercel.app**
+**Hosted app: https://tripwire-agent-shield.vercel.app** (the dashboard as a product; the live attack demo is its **Demo** tab, direct link https://tripwire-agent-shield.vercel.app/#demo)
 
 Pick an attack. Run it without Tripwire, then with it. The real engine runs on the server against a synthetic world.
 
@@ -13,7 +13,8 @@ Built from scratch in 24 hours for the PARALLAX hackathon (BMSCE IEEE Computer S
 ```bash
 git clone <this repo> && cd agent-shield
 uv sync                                   # Python 3.12+, installs everything
-uv run tripwire serve                     # daemon + dashboard at http://127.0.0.1:7777
+uv run tripwire serve                     # daemon; prints a one-time dashboard link
+uv run tripwire open                      # (later) open the dashboard, paired with a fresh one-time code
 ```
 
 In a second terminal, watch an attack succeed with no guard, then fail with Tripwire:
@@ -31,7 +32,7 @@ uv run tripwire install claude            # adds hooks to ./.claude/settings.jso
 uv run tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 653 tests
+uv run pytest -q                          # 718 tests
 uv run python bench/run_all.py            # benchmarks, about 20 s, writes bench/results/summary.md
 ```
 
@@ -40,7 +41,7 @@ The dashboard shows every verdict live. It holds "ask" actions in an approval qu
 ## What else is in the box
 
 - **Tamper-evident audit trail across agents.** Every task, tool output, verdict and human click is one row in `~/.tripwire/audit.db`. Rows are hash-chained (SHA-256) and signed (HMAC). Edit, delete or reorder a row and `tripwire audit verify` names the first broken one. Agents are blocked from reading the key (`~/.tripwire/audit.key`), but same-user code outside the hooks could, so this proves tampering by anyone without the key. Every row says which agent acted and who spawned it: Claude Code sub-agents, MCP servers and SDK agents all land in one tree. Commands: `tripwire audit verify`, `tripwire audit export --format jsonl` (anyone can recheck the hashes with `verify --file`), `tripwire audit tail -f`.
-- **Hosted live demo.** https://tripwire-agent-shield.vercel.app runs the same engine and the same demo world on Vercel, one act per click.
+- **Hosted app with a Demo tab.** https://tripwire-agent-shield.vercel.app opens the real dashboard (first-open guide, then "Connect your agent"; a website cannot reach the daemon on your machine). Its **Demo** tab (https://tripwire-agent-shield.vercel.app/#demo) runs the same engine and the same demo world on Vercel, one act per click. The pitch deck is not part of the site; it lives in `docs/pitch/`.
 - **Stage kit.** `scripts/preflight.sh` is a green/red checklist before going on stage. `scripts/stage.sh` starts a clean daemon and opens the dashboard in presenter mode. Backup videos were recorded from the real code. See [docs/PRESENTING.md](docs/PRESENTING.md).
 - **Optional judge, off by default.** See step 7 below. Honest result: a plain rule beat it.
 - **Optional real local model.** With Ollama installed, `--planner ollama --model qwen2.5:3b` drives the demo world with a real model and native tool calling (`demo/world/ollama_planner.py`). Honest result: qwen2.5 3B and 1.5B never fell for any injection (0 of 8 attack acts). So the main demo uses a scripted stand-in for a hijacked model, and we say so. Tripwire also never blocked the real model's real work. Details: [bench/results/ollama_demo.md](bench/results/ollama_demo.md).
@@ -88,7 +89,7 @@ Your prompt is the only trusted text in a session. Every tool output (a file, a 
 
 Tripwire records every URL, email address, IBAN, UPI id, IP, phone number, domain and command line that shows up in untrusted output, and where it came from. When the agent later tries to send, pay, fetch or run something that uses one of those values, and you never typed it, that is the injection signal. The reason names the source: "Uses `attacker@evil.invalid`, which came from README.md, not from you."
 
-There is a second, separate signal: a phrase detector (`INJECTION_MARKERS`) that spots text talking to the AI, like "ignore your previous instructions". It is one signal, not the core, and it matters a lot on benchmarks. On AgentDojo, provenance and the other checks alone stop 79.5% of attacks (45.3% hard block). The phrase detector lifts that to 96.2% (92.1% hard block), because AgentDojo's main attack uses one fixed template the list knows. Attack texts the list does not know get only the provenance number. Full table under [Benchmark numbers](#benchmark-numbers).
+There is a second, separate signal: a phrase detector (`INJECTION_MARKERS`) that spots text talking to the AI, like "ignore your previous instructions". It is one signal, not the core, and it matters a lot on benchmarks. On AgentDojo, provenance and the other checks alone stop 86.0% of attacks (45.3% hard block). The phrase detector lifts that to 96.2% (92.1% hard block), because AgentDojo's main attack uses one fixed template the list knows. Attack texts the list does not know get only the provenance number. Full table under [Benchmark numbers](#benchmark-numbers).
 
 The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM pattern: untrusted data must never decide where data flows, and no model that reads attacker text gets to make the decision.
 
@@ -121,10 +122,10 @@ The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM 
 |---|---|
 | 01 Threat relevance | `demo/THREAT_MODEL.md` names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, `bench/results/` |
-| 03 Technical implementation | `src/tripwire/` (about 5,800 lines), 653 tests, `docs/ARCHITECTURE.md` |
+| 03 Technical implementation | `src/tripwire/` (about 8,000 lines of Python), 718 tests, `docs/ARCHITECTURE.md` |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
-| 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app |
-| 06 Safety, privacy, responsible engineering | local only, args redacted before storage (`secrets.redact`), fail closed, the agent can't reset or reconfigure Tripwire without the local token (`auth.py`; agent calls to the daemon port or `~/.tripwire` are blocked), and a plain "Known limits" section below |
+| 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app (Demo tab: `/#demo`) |
+| 06 Safety, privacy, responsible engineering | local only, args redacted before storage (`secrets.redact`), fail closed, every daemon endpoint (reads too) needs the local token or a dashboard paired with a one-time code from `tripwire open` (`auth.py`); agent calls to the daemon's port, to any local port it hides (`$P`, `$((7700+77))`), or to `~/.tripwire` through globs, variables or `find` are blocked; the audit log records the real actor (`dashboard` or `api-token`); and a plain "Known limits" section below |
 | 07 Feasibility and real-world impact | `tripwire install claude` works on a real Claude Code today; `mcp-proxy` works with any MCP server |
 | 08 Presentation and live demo | `demo/SCRIPT.md`, `docs/PRESENTING.md` (preflight, stage, backup video), `docs/pitch/index.html` |
 
@@ -140,8 +141,8 @@ Three words, used the same way everywhere:
 | Benchmark | Stopped | Hard block | Size | Benign allowed |
 |---|---|---|---|---|
 | AgentDojo (4 suites, important_instructions) | 96.2% | 92.1% | 609 pairs | 95.9% tasks (92.9% calls) |
-| Shell attacks, no poisoned context | 100.0% | 92.9% | 84 cmds | 82 of 82 (0 flagged) |
-| Shell attacks, after reading poisoned file | 100.0% | 100.0% | 84 cmds | 82 of 82 (0 flagged) |
+| Shell attacks, no poisoned context (our own corpus) | 100.0% | 94.0% | 84 cmds | 82 of 82 (0 flagged) |
+| Shell attacks, after reading poisoned file (our own corpus) | 100.0% | 100.0% | 84 cmds | 82 of 82 (0 flagged) |
 
 Median decision time is under 1 ms (p95 under 5 ms on AgentDojo).
 
@@ -151,19 +152,19 @@ The headline AgentDojo number leans on the phrase detector. Its list includes Ag
 
 | AgentDojo attack text | Phrase list ON: stopped | ON: hard block | Phrase list OFF: stopped | OFF: hard block |
 |---|---|---|---|---|
-| important_instructions | 96.2% | 92.1% | 79.5% | 45.3% |
-| tool_knowledge | 99.5% | 95.4% | 79.5% | 45.3% |
-| injecagent | 94.4% | 88.5% | 79.5% | 45.3% |
-| ignore_previous | 79.5% | 45.3% | 79.5% | 45.3% |
-| direct | 79.5% | 45.3% | 79.5% | 45.3% |
-| system_message | 79.5% | 45.3% | 79.5% | 45.3% |
+| important_instructions | 96.2% | 92.1% | 86.0% | 45.3% |
+| tool_knowledge | 99.5% | 95.4% | 86.0% | 45.3% |
+| injecagent | 96.2% | 88.5% | 86.0% | 45.3% |
+| ignore_previous | 86.0% | 45.3% | 86.0% | 45.3% |
+| direct | 86.0% | 45.3% | 86.0% | 45.3% |
+| system_message | 86.0% | 45.3% | 86.0% | 45.3% |
 | benign tasks allowed (all texts) | 95.9% | | 95.9% | |
 
 How to read it:
 - **Detector on, known template** (important_instructions, tool_knowledge, injecagent): the phrase list fires, so most attacks are hard-blocked.
-- **Detector off, or a template the list does not know** (ignore_previous, direct, system_message): only provenance, intent, secret and policy checks are left. That is the honest floor: 79.5% stopped, 45.3% hard block.
+- **Detector off, or a template the list does not know** (ignore_previous, direct, system_message): only provenance, intent, secret and policy checks are left. That is the honest floor: 86.0% stopped, 45.3% hard block (79.5% before calendar invites got recipient checks on 31 Oct).
 - Benign tasks do not change, because the phrase list only fires on injected text.
-- Weakest suites without the detector: slack (41.0% stopped, 11.4% hard block), workspace (82.5% stopped, 58.3% hard block). Every missed pair is listed in `bench/results/agentdojo_*_nomarkers.json` (`missed`).
+- Weakest suites without the detector: slack (41.0% stopped, 11.4% hard block), travel (82.5% stopped, 37.5% hard block). Every missed pair is listed in `bench/results/agentdojo_*_nomarkers.json` (`missed`).
 
 Before the recipient and provenance hardening of 30 Oct, the floor was 62.6% stopped and 36.1% hard block ([bench/results/matrix_baseline.md](bench/results/matrix_baseline.md)).
 
@@ -174,19 +175,19 @@ Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in
 ## Known limits
 
 > **Read this before you trust it.**
-> - **Same OS user = defence in depth, not a sandbox.** Tripwire runs as you, and so does your agent. The daemon's write endpoints need a per-install token in `~/.tripwire/token` (mode 0600), and the engine blocks agent calls aimed at the daemon's port or at `~/.tripwire`. But any program running as you, outside the hooks, can still read that token, edit your settings or stop the daemon. For real isolation, run the daemon as a separate OS user so the agent cannot read its token or audit key.
+> - **Same OS user = defence in depth, not a sandbox.** Tripwire runs as you, and so does your agent. Every daemon endpoint needs a per-install token in `~/.tripwire/token` (mode 0600) or a dashboard cookie earned once with a one-time pairing code; no request header earns it (a 31 Oct review got the token with one faked `sec-fetch-dest` header; that is fixed). The engine blocks agent calls aimed at the daemon's port, at local ports it can't work out, or at `~/.tripwire` (wildcards and variables expanded). If a token holder still gets in, a token reset keeps sessions that saw hidden instructions, a task sent after an injection can't vouch for the injected values, and autonomy changes and learned rules then need the dashboard. But any program running as you, outside the hooks, can still read that token, edit your settings or stop the daemon. For real isolation, run the daemon as a separate OS user so the agent cannot read its token or audit key.
 > - **The hijacked agent in the demo is scripted.** Real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged.
 > - **Intent is keyword matching.** If your prompt says "send", "reply" or "pay", that kind of action counts as expected. A send to an address taken from data can still pass if the email carried no hidden-instruction phrasing and the recipient check does not catch it.
-> - **The phrase list is a list.** Without it, AgentDojo drops from 96.2% to 79.5% stopped. A new wording gets the lower number.
+> - **The phrase list is a list.** Without it, AgentDojo drops from 96.2% to 86.0% stopped. A new wording gets the lower number.
 
 Other limits:
 
 - If the injection only changes what the agent says, with no unusual tool call, Tripwire sees nothing.
 - If you typed the same address the attacker uses, provenance cannot tell them apart.
-- Data copied into an allowed file or sent to an allowed recipient is caught only when it matches a secret pattern.
+- Data copied into an allowed file or sent to an allowed recipient is caught only when it matches a secret pattern, a secret value read this session (also base64 or hex encoded), or a personal-data pattern (SSN, bank numbers, card numbers) going to someone you never named.
 - Tool calls that do not pass through a hook or the proxy are invisible.
 - A host the attacker already runs code on can stop Tripwire.
-- Shell tricks and secret patterns are finite. With no poisoned context, 6 of 84 shell attacks get an ask, not a block. Every verdict is in `bench/results/shell.json`.
+- Shell tricks and secret patterns are finite. With no poisoned context, 5 of 84 shell attacks get an ask, not a block. Every verdict is in `bench/results/shell.json`.
 - The Claude Code adapter never widens Claude Code's own permissions. An "allow" from Tripwire still goes through Claude Code's normal prompt unless `TRIPWIRE_AUTO_APPROVE=1`.
 
 ## Credits

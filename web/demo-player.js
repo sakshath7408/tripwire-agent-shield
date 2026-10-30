@@ -135,7 +135,7 @@
     return li;
   }
 
-  async function run(guarded) {
+  let run = async function (guarded) {
     if (running) return;
     setRunning(true, guarded);
     status(guarded ? "Starting the agent, with Tripwire checking every call..." : "Starting the agent, with no guard...");
@@ -202,12 +202,52 @@
       ? `Done. Tripwire made ${n} decisions: ${v.allow} allowed, ${v.ask} asked, ${v.block} blocked. Server time ${Math.round(r.server_ms)} ms.`
       : `Done. ${n} tool calls ran with nobody checking. ${r.attacker_items ? "The attacker got what they wanted." : "Nothing reached the attacker."}`);
     setRunning(false);
-  }
+  };
 
   $("run-off").addEventListener("click", () => run(false));
   $("run-on").addEventListener("click", () => run(true));
 
+  // ---- the Demo tab ------------------------------------------------------------------------------------
+  // The product view (Live, Audit log) stays empty: a website cannot reach the daemon on your machine.
+  // The Demo tab shares the feed and detail panel with Live, so leaving it clears the run.
+  let demoOn = false, ran = false;
+  function enterDemo() {
+    if (demoOn) return;
+    $("tab-live").click(); // app.js shows the live panel (feed + detail); demoOn is still false, so this is not a "leave"
+    demoOn = true;
+    document.body.dataset.demo = "1";
+    $("demo").hidden = false;
+    $("tab-demo").setAttribute("aria-selected", "true");
+    $("tab-live").setAttribute("aria-selected", "false");
+    if (location.hash !== "#demo") history.replaceState(null, "", location.pathname + location.search + "#demo");
+    const tour = document.getElementById("tour");
+    if (tour && !tour.hidden) document.getElementById("tour-skip").click(); // the presenter deep-linked here
+  }
+  function leaveDemo() {
+    if (!demoOn) return;
+    demoOn = false;
+    delete document.body.dataset.demo;
+    $("demo").hidden = true;
+    $("tab-demo").setAttribute("aria-selected", "false");
+    if (location.hash === "#demo") history.replaceState(null, "", location.pathname + location.search);
+    if (ran) { TW.reset(); ran = false; idleOutcome(); for (const k in last) delete last[k]; paintCompare(); status(""); }
+    document.body.classList.remove("unguarded");
+    $("raw-log").hidden = true; $("raw-note").hidden = true;
+  }
+  $("tab-demo").addEventListener("click", enterDemo);
+  for (const id of ["tab-live", "tab-audit"]) $(id).addEventListener("click", () => { if (demoOn && !running) leaveDemo(); }, true);
+  const opener = $("open-demo");
+  if (opener) opener.addEventListener("click", enterDemo);
+  const origRun = run;
+  run = async function (guarded) { ran = true; return origRun(guarded); };
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest(".copy-btn[data-copy]");
+    if (!b) return;
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.classList.add("is-done"); setTimeout(() => b.classList.remove("is-done"), 1400); } catch (_) { /* no clipboard */ }
+  });
+
   paintScenarios();
   idleOutcome();
+  if (location.hash === "#demo" || params.get("tab") === "demo" || params.has("scenario") || params.has("autorun")) enterDemo();
   if (params.get("autorun") === "0" || params.get("autorun") === "1") run(params.get("autorun") === "1");
 })();

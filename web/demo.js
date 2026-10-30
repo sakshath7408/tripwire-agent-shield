@@ -30,6 +30,7 @@
     if (p === "/v1/stats") return json(stats());
     if (p === "/v1/sessions") return json(store.sessions);
     if (p === "/v1/reset") { TW.reset(); return json({ ok: true }); }
+    if (p === "/v1/pair") return json({ ok: true }); // no daemon here, nothing to pair with
     if (/^\/v1\/verdicts\/[^/]+\/resolve$/.test(p)) {
       return json({ detail: "On the hosted demo a simulated human answers: yes to task steps, no to everything else." }, 409);
     }
@@ -57,6 +58,8 @@
   }
 
   window.TW = {
+    /** The welcome guide's "where does this run" line, worded for a hosted preview. */
+    hostedNote: "Tripwire runs on your machine. This page is a hosted preview; the Demo tab runs a synthetic world on our server.",
     /** Clear everything, the same way POST /v1/reset does on the daemon. */
     reset() {
       store.verdicts = [];
