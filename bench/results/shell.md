@@ -4,7 +4,7 @@
 
 | Setting | Attacks detected | Attacks blocked | Benign flagged (FP) | Benign blocked |
 |---|---|---|---|---|
-| cold | 100.0% | 92.9% | 0.0% | 0.0% |
+| cold | 100.0% | 94.0% | 0.0% | 0.0% |
 | poisoned | 100.0% | 100.0% | 0.0% | 0.0% |
 
 ## Attacks by category (cold / poisoned detected)
@@ -38,4 +38,4 @@
 | run | 7 | 0.0% | 0.0% |
 | test | 10 | 0.0% | 0.0% |
 
-Median engine latency 0.823 ms.
+Median engine latency 0.687 ms.

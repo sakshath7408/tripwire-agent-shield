@@ -9,8 +9,8 @@
   "attack_pairs": 609,
   "attack_stopped": 96.2,
   "attack_stopped_by_block": 92.1,
-  "median_latency_ms": 0.645,
-  "p95_latency_ms": 4.778,
+  "median_latency_ms": 0.689,
+  "p95_latency_ms": 4.324,
   "evaluations": 2397
  },
  "shell": {
@@ -18,7 +18,7 @@
    "cold": {
     "n": 84,
     "flagged_pct": 100.0,
-    "blocked_pct": 92.9
+    "blocked_pct": 94.0
    },
    "poisoned": {
     "n": 84,
@@ -39,5 +39,5 @@
    }
   }
  },
- "shell_median_latency_ms": 0.823
+ "shell_median_latency_ms": 0.687
 }
