@@ -441,6 +441,15 @@ _LS_HOME = r"\bls\b[^|;&\n]{0,600}"
 _GREP_PAT = re.compile(r"\b(?:e|f)?grep\s{1,4}((?:-[A-Za-z]{1,8}\s{1,4})*)(?:-e\s{1,4})?(?:'([^']{1,200})'|\"([^\"]{1,200})\"|([^\s|;&'\"]{1,200}))")
 
 
+# Programs that take a credential path as an argument without reading it out (or are judged elsewhere).
+CRED_ARG_OK = {"ls", "stat", "du", "chmod", "chown", "chgrp", "mkdir", "touch", "test", "[", "[[", "ssh", "ssh-add",
+               "ssh-keygen", "ssh-keyscan", "ssh-copy-id", "git", "cd", "pushd", "rm", "unlink", "shred", "mv", "cp",
+               "install", "ln", "rsync", "scp", "sftp", "find", "file", "echo", "printf", "export", "unset", "source",
+               ".", "gpg", "gpg2", "aws", "gcloud", "az", "kubectl", "helm", "docker", "podman", "terraform",
+               "openssl", "realpath", "readlink", "basename", "dirname", "eval", "exec", "sudo", "env", "code",
+               "open", "vim", "vi", "nvim", "nano", "emacs", "sed", "perl", "tar", "zip", "unzip", "curl", "wget",
+               "nc", "ncat", "netcat", "socat", "telnet", "mail", "mailx", "sendmail", "mutt", "gh", "http", "https",
+               "xh", "dd", "keychain", "security", "op", "vault", "direnv", "dotenv", "pass", "age", "sops"} | SHELLS | INTERPS
 GUARD_PORTS: set[int] = {7777, int(os.environ.get("TRIPWIRE_PORT") or 7777)}  # Engine.set_guard_port adds the live one
 
 
@@ -610,6 +619,42 @@ def _key_goes_home(var: str, host: str, an) -> str:
     if re.search(rf"(?<![\w-]){re.escape(reg)}(?![\w-])", task, re.I) and len(reg) >= 3:
         return "home"  # "test our Acme integration" and the host is api.acme.io
     return "other" if owners else "unknown"
+
+
+
+def _package_name(spec: str) -> str:
+    """The registry name in a package spec: eslint@8, requests==2.31, black[d]>=23, @scope/pkg@1, github.com/x/y@v1."""
+    s = spec.strip().strip("'\"")
+    if not s or s.startswith(("-", ".", "/", "~", "$")) or "://" in s:
+        return ""
+    if s.startswith("@"):
+        m = re.match(r"(@[\w.-]{1,100}/[\w.-]{1,200})", s)
+        return m.group(1).lower() if m else ""
+    m = re.match(r"([\w.\-/]{1,214})", s)
+    name = m.group(1) if m else ""
+    name = re.split(r"(?:==|>=|<=|~=|!=|@)", name)[0]
+    return name.lower().rstrip("./-")
+
+
+_MANIFESTS = ("package.json", "requirements.txt", "requirements-dev.txt", "dev-requirements.txt", "pyproject.toml",
+              "Pipfile", "Cargo.toml", "go.mod", "Gemfile", "composer.json", "setup.cfg", "environment.yml")
+
+
+def _in_manifest(name: str, cwd: str | None, s: Session) -> bool:
+    """The project's own dependency files already list this package."""
+    if not cwd:
+        return False
+    pat = re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])", re.I)
+    for fn in _MANIFESTS:
+        full = os.path.join(cwd, fn)
+        try:
+            if os.path.isfile(full) and os.path.getsize(full) <= 512 * 1024:
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    if pat.search(fh.read()):
+                        return True
+        except OSError:
+            continue
+    return False
 
 
 def _host(url: str | None) -> str | None:
@@ -1587,6 +1632,7 @@ class _Analyzer:
         self.copies: list[tuple[str, str]] = []  # (source, destination) of cp/mv/ln/install inside the command
         self.patches: list[str] = []  # patch files applied (git apply, patch -i / < file)
         self.written_paths: list[str] = []  # every file this command writes, whatever writes it
+        self.packages: list[tuple[str, str, str]] = []  # (package, tool, raw command) installed or run from a registry
 
     # ---- bookkeeping ----
     def add(self, rule: str, sev: int, cat: str, msg: str, ev: str | None = None) -> None:
@@ -2473,6 +2519,15 @@ class _Analyzer:
         # secret reads
         if (n in READERS and n != "cp") or (n == "openssl" and a):
             self.secret_reads(inf)
+        elif n and n not in CRED_ARG_OK and n not in READERS:
+            creds = [x for x in a if not x.startswith("-") and _is_secret(self.expand_path(self.expand(x)))]
+            if creds:
+                inf.traits.add("secret_read")
+                after_install = bool(self.packages)
+                self.add("shell.package_gets_keys" if after_install else "shell.secret_arg",
+                         CRITICAL if after_install else MEDIUM + 5, "secrets",
+                         f"Installs a package and then hands {n} your credentials ({creds[0]})." if after_install else
+                         f"Hands {n} your credentials ({creds[0]}).", raw)
         if n in ("env", "printenv", "set", "export", "declare", "compgen") or n == "cat" and any("/environ" in x for x in a):
             if not a or (n == "export" and a == ["-p"]) or (n == "declare" and a[:1] in (["-p"], ["-x"])) \
                     or (n == "compgen" and a[:1] == ["-v"]) or n == "cat":
@@ -3441,6 +3496,8 @@ class _Analyzer:
             i += 1
         for sp in specs:
             url = sp.split("@", 1)[1].strip() if re.search(r"@\s*(?:git\+)?https?://", sp) and not URLISH.search(sp) else sp
+            if not URLISH.search(url) and not re.match(r"^[\w.-]+/[\w.-]+#", url):
+                self.package(sp, n, raw, run_args=rest[rest.index(sp) + 1:] if sp in rest else [])
             if URLISH.search(url) or re.match(r"^[\w.-]+/[\w.-]+#", url):
                 h = _host(url)
                 sev = self.rce_sev([h]) if "://" in url else HIGH
@@ -3449,6 +3506,30 @@ class _Analyzer:
                 self.add("shell.run_remote_package", sev, "network",
                          f"Downloads a package from {h or _clip(url, 60)} and runs it right away, "
                          "skipping the normal package registry.", raw)
+
+    def package(self, spec: str, tool: str, raw: str, run_args: list[str] | None = None) -> None:
+        """A package from a registry, installed or run. Who named it decides: you, the project's own manifest, or
+        content the agent read (review 4: a hidden web div got `npm i -g X && X --upload ~/.ssh` allowed)."""
+        name = _package_name(spec)
+        if not name:
+            return
+        self.packages.append((name, tool, raw))
+        creds = [x for x in (run_args or []) if not x.startswith("-") and _is_secret(self.expand_path(self.expand(x)))]
+        if creds:
+            self.add("shell.package_gets_keys", CRITICAL, "secrets",
+                     f"Downloads the package {name} and hands it your credentials ({creds[0]}).", raw)
+        if self.mentioned(name) or re.search(rf"(?<![\w@/.-]){re.escape(name)}(?![\w/-])", self.task, re.I) \
+                or _in_manifest(name, self.s.cwd, self.s):
+            return
+        src = self.s.taint.value_source(name) if len(name) >= 3 else None
+        if src is None:
+            return
+        if src.injected:
+            self.add("shell.package_from_content", HIGH + 5, "injection",
+                     f"Installs or runs the package {name}, named in hidden instructions in {src.where}, not by you.", raw)
+        else:
+            self.add("shell.package_from_content", MEDIUM, "injection",
+                     f"Installs or runs the package {name}, named in {src.where}, not by you.", raw)
 
     def git_add(self, pos: list[str], flags: list[str], raw: str) -> None:
         forced = any(x in ("-f", "--force") or (x.startswith("-") and not x.startswith("--") and "f" in x) for x in flags)
@@ -3525,6 +3606,13 @@ class _Analyzer:
                     else:
                         self.add("shell.install_custom_registry", MEDIUM, "network",
                                  f"Installs packages from an unofficial package server ({h}).", raw)
+            elif x in ("-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-t", "--target", "--prefix",
+                       "--root", "-C", "--path"):
+                i += 2
+                continue
+            elif not x.startswith("-") and not URLISH.search(x) and not re.search(r"@\s*(?:git\+)?https?://", x) \
+                    and not x.startswith((".", "/", "~", "$")) and not x.endswith((".txt", ".whl", ".tgz", ".tar.gz", ".zip")):
+                self.package(x, n, raw)
             elif URLISH.search(x) or re.search(r"@\s*(?:git\+)?https?://", x):
                 url = x.split("@", 1)[1].strip() if re.search(r"@\s*(?:git\+)?https?://", x) and not URLISH.search(x) else x
                 if not self.mentioned(url) and not self.mentioned(re.sub(r"^(git\+)?\w+://", "", url).split("#")[0].rstrip("/").removesuffix(".git").split("/", 1)[-1]):

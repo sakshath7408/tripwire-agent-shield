@@ -151,6 +151,27 @@ def indicators(text: str) -> dict[str, set[str]]:
     return out
 
 
+# Text a reader never sees (a CSS-hidden element) that tells someone to run, install or send something: nobody hides
+# instructions from the human reader except to aim them at an AI (review 4: a display:none div with `npm i -g ...`).
+HIDDEN_ELEMENT = re.compile(r"<(\w{1,10})\b[^>]{0,300}?(?:style\s{0,3}=\s{0,3}[\"']?[^\"'>]{0,200}?(?:display\s{0,3}:\s{0,3}none|"
+                            r"visibility\s{0,3}:\s{0,3}hidden|font-size\s{0,3}:\s{0,3}0(?![.\d])|opacity\s{0,3}:\s{0,3}0(?![.\d])|"
+                            r"color\s{0,3}:\s{0,3}(?:white|#fff(?:fff)?)\b)|\shidden(?=[\s>]))[^>]{0,300}>([^<]{1,2000})", re.I)
+HIDDEN_ORDER = re.compile(r"`[^`\n]{3,300}`|\b(?:run|execute|install|upload|send|post|email|forward|delete|curl|wget|npm|npx|pip|"
+                          r"pipx|uvx|cargo|go install|bash|sh -c|python3?)\b", re.I)
+
+
+def _hidden_orders(text: str):
+    if "<" not in text:
+        return None
+    for n, m in enumerate(HIDDEN_ELEMENT.finditer(text)):
+        if n > 200:
+            break
+        o = HIDDEN_ORDER.search(m.group(2))
+        if o:
+            return o
+    return None
+
+
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
@@ -203,7 +224,7 @@ class TaintStore:
         text = text[:MAX_OBSERVE]
         self.seen += 1
         seq = self.seen
-        m = INJECTION_MARKERS.search(text) or INJECTION_MARKERS.search(canon(text))
+        m = INJECTION_MARKERS.search(text) or INJECTION_MARKERS.search(canon(text)) or _hidden_orders(text)
         for vals in indicators(text).values():
             for v in vals:
                 if v not in self.untrusted or (m and not self.untrusted[v].injected):
@@ -339,6 +360,19 @@ class TaintStore:
             if any(tuple(lw[i:i + run]) in grams for i in range(len(lw) - run + 1)):
                 if _whole(line, self.trusted_text):
                     continue
+                if src.injected:
+                    return src
+                best = best or src
+        return best
+
+    def value_source(self, value: str) -> TaintSource | None:
+        """Where content the agent read named `value` as a whole word (a package name, a program), preferring a
+        source with hidden instructions."""
+        v = value.lower()
+        pat = re.compile(rf"(?<![\w@/.-]){re.escape(v)}(?![\w/-])")
+        best = None
+        for line, src in reversed(self.untrusted_lines[-5000:]):
+            if v in line and pat.search(line):
                 if src.injected:
                     return src
                 best = best or src
