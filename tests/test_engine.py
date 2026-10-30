@@ -43,8 +43,11 @@ def test_secret_read_then_send_is_exfil():
     ev(e, "Read", file_path="~/.aws/credentials")
     e.observe(Observation(session_id="s", tool="Read", output="[default]\naws_access_key_id=x"))  # the read ran
     v = ev(e, "send_email", to="bob@acme.com", body="status")
-    assert v.decision == Decision.BLOCK
+    # QA 31 Oct: to someone you named, with none of the secret in it, a send after a secret read asks, never silently.
+    assert v.decision == Decision.ASK
     assert any(f.rule == "chain.secret_then_egress" for f in v.findings)
+    assert ev(e, "send_email", to="bob@acme.com", body="key: AKIAABCDEFGHIJKLMNOP").decision == Decision.BLOCK
+    assert ev(e, "send_email", to="carol@other.io", body="status").decision == Decision.BLOCK  # not named
 
 
 def test_secret_material_egress():
@@ -152,8 +155,8 @@ def test_user_pointed_payment_needs_approval_not_block():
 def test_getters_are_reads():
     from tripwire.classify import classify
     from tripwire.models import Capability
-    assert classify("get_unread_emails") == Capability.FETCH
-    assert classify("search_contacts_by_email") == Capability.FETCH
+    assert classify("get_unread_emails") == Capability.READ  # your own mail: a read, not the web
+    assert classify("search_contacts_by_email") == Capability.READ
     assert classify("get_balance") == Capability.READ
     assert classify("reserve_hotel") == Capability.MONEY
     assert classify("cancel_calendar_event") == Capability.DELETE

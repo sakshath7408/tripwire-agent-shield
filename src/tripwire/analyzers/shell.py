@@ -63,6 +63,12 @@ BUILD_DIRS = {"node_modules", "dist", "build", "out", ".next", ".nuxt", "target"
 EXTRA_SYSTEM = {"/Users", "/home", "/Applications", "/Volumes", "/root", "/dev", "/proc", "/sys", "/mnt", "/srv",
                 "/lib", "/lib64", "/tmp", "/private/tmp", "/private", "/private/var", "/cores", "/Network"}
 TMP_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/", "/var/tmp/", "/private/var/tmp/")
+# Official installer scripts (curl ... | sh) that a real user runs in their first hour. Piped to a shell they ASK
+# instead of block, unless the host came from content the agent read or hidden instructions were seen.
+OFFICIAL_INSTALLERS = {"astral.sh", "sh.rustup.rs", "bun.sh", "deno.land", "install.python-poetry.org", "get.pnpm.io",
+                       "ollama.com", "starship.rs", "get.docker.com", "fnm.vercel.app", "mise.run", "pixi.sh",
+                       "get.volta.sh", "install.determinate.systems", "tailscale.com", "sdk.cloud.google.com",
+                       "cli.github.com", "foundry.paradigm.xyz", "get.helm.sh", "rye.astral.sh"}
 OFFICIAL_REGISTRIES = {"pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com",
                        "crates.io", "rubygems.org", "proxy.golang.org", "test.pypi.org"}
 
@@ -181,7 +187,8 @@ REV_EXEC = re.compile(r"\bpty\b|subprocess|dup2|/bin/(?:ba)?sh|\bexec\b|spawn|po
                       r"proc_open|cmd\.exe|powershell", re.I)
 FETCH_CODE = re.compile(r"urlopen|requests\.(?:get|post)|urllib|http\.client|\bfetch\s*\(|https?\.get\s*\(|"
                         r"open-uri|Net::HTTP|LWP::|Invoke-WebRequest|\biwr\b|DownloadString|WebClient|curl_exec")
-EXEC_CODE = re.compile(r"\b(?:exec|eval|IEX|Invoke-Expression|execfile|compile)\b|new\s+Function\s*\(|\bFunction\s*\(")
+# A builtin call, not a method: `re.compile(...)` or `cursor.execute(...)` runs nothing it fetched.
+EXEC_CODE = re.compile(r"(?<![.\w$])(?:exec|eval|execfile|compile)\b(?!\s{0,4}[=:])|\bIEX\b|Invoke-Expression|new\s+Function\s*\(|(?<![.\w$])Function\s*\(")
 DECODE_CODE = re.compile(r"b64decode|base64|atob\s*\(|fromCharCode|unhexlify|fromhex|codecs\.decode|rot13|"
                          r"\bpack\s*\(\s*['\"][Hh]|"
                          r"zlib\.decompress|marshal\.loads|FromBase64String|Buffer\.from\([^)]*['\"](?:base64|hex)", re.I)
@@ -220,6 +227,40 @@ class Info:
 
 
 # ---------------------------------------------------------------------------- helpers
+def _escapes(text: str) -> str:
+    """printf / echo -e escapes that matter for reading a written file: newlines, tabs, quotes, backslashes."""
+    return re.sub(r"\\([ntr\\'\"])", lambda m: {"n": "\n", "t": "\t", "r": "\r"}.get(m.group(1), m.group(1)), text[:MAX_LEN])
+
+
+# Code that loads Tripwire's own package: its modules read the hook token and can talk to the daemon, so an agent
+# that imports them is attacking the guard. Spelled out, or pieced together for __import__/importlib/runpy.
+TRIPWIRE_IMPORT = re.compile(r"\bfrom\s{1,8}tripwire\b|\bimport\s{1,8}(?:[\w.]{1,64}\s{0,4},\s{0,4}){0,16}tripwire\b|"
+                             r"(?:__import__|import_module|run_module|find_spec|require)\s{0,4}\(\s{0,4}[rbuf]?['\"]tripwire\b|"
+                             r"(?:^|\s)-m\s{0,4}tripwire\b", re.I | re.M)
+DYN_IMPORT = re.compile(r"__import__|import_module|importlib|runpy|run_module|run_path|find_spec|sys\.path|"
+                        r"PYTHONPATH|site-packages|\.pth\b|exec\s{0,4}\(\s{0,4}open|SourceFileLoader|require\s{0,4}\(", re.I)
+TRIPWIRE_CLI_OK = {"--help", "-h", "--version", "help"}
+
+
+def _tripwire_code(code: str) -> str | None:
+    """Evidence if `code` loads Tripwire's own modules, also when the module name is split, encoded or rot13'd."""
+    code = code[:MAX_LEN]
+    m = TRIPWIRE_IMPORT.search(code)
+    if m:
+        return m.group(0).strip()
+    if not DYN_IMPORT.search(code):
+        return None
+    flat = re.sub(r"[\s'\"`+,()\[\]]|\.join|\bjoin\b", "", code).lower()
+    variants = [flat, flat[::-1]]
+    if re.search(r"rot.?13|codecs", code, re.I):
+        import codecs
+        variants.append(codecs.decode(flat, "rot13"))
+    for v in variants:
+        if "tripwire" in v:
+            return "a dynamic import that spells out 'tripwire'"
+    return None
+
+
 def _clip(s: str | None, n: int = 160) -> str | None:
     if s is None:
         return None
@@ -321,6 +362,11 @@ def _is_secret(full: str) -> bool:
 GUARD_FILES = ("token", "audit.key", "audit.db", "settings.json", "learned.yaml", "policy.yaml", "pins.json", "pins.key")
 
 
+def _under_home(full: str) -> bool:
+    home = os.path.expanduser("~")
+    return full == home or full.startswith(home.rstrip("/") + "/")
+
+
 def _guard_home() -> str:
     return os.path.normpath(os.environ.get("TRIPWIRE_HOME") or os.path.join(HOME, ".tripwire"))
 
@@ -350,11 +396,17 @@ def guard_glob(word: str, cwd: str | None) -> bool:
     if len(word) > 1024 or not re.search(r"tri|\.t|[*?\[$]", word, re.I):
         return False
     gh = _guard_home()
-    w = re.sub(r"^~(?=/|$)", HOME, word)
-    w = re.sub(r"\$\{?HOME\}?", HOME, w)
+    home = os.path.expanduser("~")
+    w = re.sub(r"^~(?=/|$)", home, word)
+    w = re.sub(r"\$\{?HOME\}?", home, w)
     w = re.sub(r"\$\{?TRIPWIRE_HOME\}?", gh, w)
     w = re.sub(r"\$\{[^}]{0,80}\}|\$\w{1,64}|\$\([^)]{0,200}\)|`[^`]{0,200}`", "*", w)
     w = w.replace('"', "").replace("'", "")
+    # The live TRIPWIRE_HOME and the default ~/.tripwire are both the guard's (a second install, a stale shell).
+    return any(_guard_glob_at(w, g, cwd) for g in dict.fromkeys([gh, os.path.join(home, ".tripwire")]))
+
+
+def _guard_glob_at(w: str, gh: str, cwd: str | None) -> bool:
     gc = [c for c in gh.split("/") if c]
     for cand in _brace(w):
         if not cand.startswith("/"):
@@ -1333,6 +1385,12 @@ class _Analyzer:
         self.staged_secrets: list[str] = list(getattr(s, "staged_secrets", ()) or ())  # secret files added to git
         self.task = (s.task or "").lower()
         self.net_targets: list[tuple[str, bool]] = []  # (url or host, sends data) for every network call
+        # Write-then-run: what this command writes into files (target, text), what files it runs (kind, target),
+        # and what it downloads or clones (path -> (severity of running it, host)). The engine judges the written
+        # text like Write-tool content, reads run targets from disk, and remembers downloads for later calls.
+        self.writes: list[tuple[str, str]] = []
+        self.runs: list[tuple[str, str]] = []
+        self.downloaded: dict[str, tuple[int, str | None]] = {}
 
     # ---- bookkeeping ----
     def add(self, rule: str, sev: int, cat: str, msg: str, ev: str | None = None) -> None:
@@ -1371,6 +1429,9 @@ class _Analyzer:
         hs = [h for h in hosts if h]
         if hs and all(self.mentioned(h) for h in hs):
             return MEDIUM + 10
+        if hs and all(h.lower() in OFFICIAL_INSTALLERS for h in hs) and not self.s.taint.injection_seen \
+                and not any(self.s.taint.tainted_values(h) for h in hs):
+            return MEDIUM + 10  # an official installer: ask, never silently, never hard-block
         return CRITICAL
 
     def expand_path(self, p: str) -> str:
@@ -1547,6 +1608,12 @@ class _Analyzer:
                 elif "file_read" in up and inf.stdin_send and not (inf.host and LOCAL_HOST.match(inf.host)):
                     sev = LOW if self.mentioned(inf.host) else MEDIUM
                     self.add("shell.upload_file", sev, "exfiltration", f"Sends the contents of a local file to {host}.", ev)
+            if j > 0 and inf.name == "tee":
+                body = self.produced(infos[j - 1])
+                if body:
+                    for t in [x for x in inf.args if not x.startswith("-")]:
+                        if not t.startswith("/dev/"):
+                            self.writes.append((t, body))
             if j > 0 and "sudo_stdin" in inf.wrappers:
                 self.add("shell.sudo_password", HIGH, "privilege", "Types a password into sudo automatically.", ev)
             if j > 0 and inf.name in ("rm", "shred", "unlink", "srm") and "xargs" in inf.wrappers:
@@ -1561,6 +1628,8 @@ class _Analyzer:
         cands: list[str] = []
         if inf.exec_path and ("/" in inf.exec_path or norm(inf.exec_path) in downloads):
             cands.append(inf.exec_path)
+            if "/" in inf.exec_path:
+                self.runs.append(("file", inf.exec_path))
         if inf.name in SHELLS | INTERPS | {"source", ".", "chmod"}:
             pos = [a for a in inf.args if not a.startswith("-") and not a.startswith("+")]
             if inf.name == "chmod":
@@ -1570,14 +1639,22 @@ class _Analyzer:
                         if norm(t) in downloads:
                             self.add("shell.download_chmod", MEDIUM, "network",
                                      f"Makes a file downloaded from the internet runnable: {t}", inf.c.raw)
-            elif pos:
+            elif pos and not (inf.name in SHELLS and self._shell_payload(inf.args)[0] is not None) \
+                    and not (inf.name in INTERPS and (self._code_payload(inf.name, inf.args)[0] is not None
+                                                      or "-m" in inf.args[:2])):
                 cands.append(pos[0])
+                self.runs.append(("file", pos[0]))
         for e in cands:
-            if norm(e) in downloads:
-                self.add("shell.download_exec", self.rce_sev([downloads[norm(e)]]), "network",
-                         f"Downloads a program from {downloads[norm(e)] or 'the internet'} and runs it.", inf.c.raw)
+            src = norm(e)
+            hit = src if src in downloads else next((d for d in downloads if d.endswith("/") and src.startswith(d)), None)
+            if hit is not None:
+                self.add("shell.download_exec", self.rce_sev([downloads[hit]]), "network",
+                         f"Downloads a program from {downloads[hit] or 'the internet'} and runs it.", inf.c.raw)
         for out in inf.outputs:
-            downloads[norm(out)] = inf.host
+            key = norm(out.rstrip("/")) + ("/" if out.endswith("/") else "")
+            downloads[key] = inf.host
+            # Remember it past this command: running it in a later call is still running downloaded code.
+            self.downloaded[key] = (self.rce_sev([inf.host]), inf.host)
 
     # ---- command level ----
     def expand(self, w: str) -> str:
@@ -1714,6 +1791,48 @@ class _Analyzer:
                          f"Runs '{inf.name}' with administrator (root) power.", c.raw)
         return inf
 
+    def guard_programs(self, inf: Info) -> None:
+        """Running Tripwire's own program or code, or switching Claude Code's hooks off, from inside the agent."""
+        n, a, raw = inf.name, inf.args, inf.c.raw
+        hit = None
+        if n == "tripwire" and not (a and set(a) <= TRIPWIRE_CLI_OK):
+            hit = f"tripwire {' '.join(a[:2])}".strip()
+        elif n in ("uvx", "pipx", "uv", "pip-run", "pdm", "hatch", "rye") and any(
+                re.fullmatch(r"(?:--from=)?tripwire(?:[=@<>\[].{0,80})?", x) for x in a[:8]):
+            hit = f"{n} {' '.join(a[:4])}"
+        elif n in INTERPS and a[:1] == ["-m"] and len(a) > 1 and a[1].split(".")[0] == "tripwire":
+            hit = f"{n} -m {a[1]}"
+        elif re.search(r"(?:^|/)(?:\.venv|venv|site-packages)/.{0,80}tripwire", inf.exec_path or "") or \
+                any(re.search(r"(?:^|/)tripwire/(?:auth|adapters|server|cli|engine|audit)\b", x) for x in a[:4]
+                    if n in INTERPS):
+            hit = inf.exec_path
+        if hit:
+            self.add("shell.guard_tamper", CRITICAL, "scope",
+                     "Runs Tripwire's own program or code from inside the agent. Run tripwire commands yourself, "
+                     "in your own terminal.", raw)
+        if n == "claude" and a[:1] == ["config"] and any("hook" in x.lower() or "permission" in x.lower() for x in a):
+            self.add("shell.guard_tamper", CRITICAL, "scope",
+                     "Changes Claude Code's hooks or permissions, which would switch Tripwire off.", raw)
+
+    def run_targets(self, inf: Info) -> None:
+        """Commands that run files from the project: the engine reads those files from disk and judges them."""
+        n, a = inf.name, inf.args
+        sub = next((x for x in a if not x.startswith("-")), "")
+        if n in ("make", "gmake"):
+            d = next((a[k + 1] for k, x in enumerate(a[:-1]) if x in ("-C", "--directory")), ".")
+            f = next((a[k + 1] for k, x in enumerate(a[:-1]) if x in ("-f", "--file", "--makefile")), None)
+            self.runs.append(("make", f if f else d.rstrip("/") + "/"))
+        elif n in ("pytest", "py.test", "tox", "nox") or n in INTERPS and a[:2] in (["-m", "pytest"], ["-m", "unittest"]):
+            self.runs.append(("pytest", "."))
+        elif n in ("npm", "pnpm", "yarn", "bun") and (sub in ("test", "t", "start", "run", "run-script", "install", "i", "ci",
+                                                             "add", "build", "dev", "exec") or not a and n == "yarn"):
+            self.runs.append(("npm", "."))
+        elif (n in ("pip", "pip3") or n == "uv" and a[:1] == ["pip"]) and "install" in a and any(
+                x in (".", "./") or x.startswith((".[", "./[", "-e.")) or x == "-e" for x in a):
+            self.runs.append(("pip", "."))
+        elif n == "uv" and sub in ("sync", "build") or n in ("poetry", "pdm", "hatch") and sub in ("install", "build"):
+            self.runs.append(("pip", "."))
+
     def bulk_copy_guard(self, inf: Info) -> None:
         """tar, zip, rsync or cp -r of a folder that holds ~/.tripwire (usually your whole home folder) copies the
         guard's key and token along with everything else."""
@@ -1774,6 +1893,24 @@ class _Analyzer:
                 t |= _cred_traits(n, words[1:])
         return t
 
+    def produced(self, inf: Info) -> str | None:
+        """The text a command prints that a redirection or tee would put in a file: a heredoc fed to cat/tee,
+        or echo/printf arguments. None when we can't tell (the file's content then isn't judged here)."""
+        c = inf.c
+        if inf.name in ("cat", "tee", "dd") and not [x for x in inf.args if not x.startswith("-")] or inf.name == "tee":
+            body = c.heredoc if c.heredoc is not None else c.herestring
+            if body is not None:
+                return body
+        if inf.name == "echo":
+            flags = [x for x in inf.args[:3] if re.fullmatch(r"-[neE]{1,3}", x)]
+            text = " ".join(inf.args[len(flags):])
+            return _escapes(text) if any("e" in f for f in flags) else text
+        if inf.name == "printf" and inf.args:
+            args = inf.args[1:] if inf.args[0] != "--" else inf.args[2:]
+            fmt = inf.args[0] if inf.args[0] != "--" else (inf.args[1] if len(inf.args) > 1 else "")
+            return _escapes(fmt) + ("\n" + "\n".join(args) if args else "")
+        return None
+
     def redirects(self, inf: Info, depth: int) -> None:
         c = inf.c
         for op, tgt in c.redirects:
@@ -1781,6 +1918,9 @@ class _Analyzer:
                 if not tgt or tgt.isdigit() or tgt == "-":
                     continue
                 self.write(tgt, c.raw)
+                body = self.produced(inf)
+                if body and not tgt.startswith("/dev/"):
+                    self.writes.append((tgt, body))
                 if "secret_read" in inf.traits:
                     self.tainted_files.add(os.path.normpath(self.expand_path(tgt)))
                 if inf.name in DOWNLOADERS:
@@ -1873,6 +2013,8 @@ class _Analyzer:
     def rules(self, inf: Info, depth: int, sub_info: list) -> None:
         n, a, c = inf.name, inf.args, inf.c
         raw = c.raw
+        self.guard_programs(inf)
+        self.run_targets(inf)
 
         # executors: sh -c, eval, source, interpreters
         if n in SHELLS:
@@ -1895,7 +2037,12 @@ class _Analyzer:
                     except Exception:
                         self.add("shell.encoded_command", HIGH, "obfuscation",
                                  "Runs a PowerShell command hidden with base64.", raw)
+                had_dl = "download_stdout" in inf.traits
                 self.code(n, payload, inf, depth)
+                if not had_dl and "download_stdout" in inf.traits:
+                    # The code fetches something itself. That is a FETCH, like curl; it only runs what it fetched
+                    # if the code says so (exec/eval, checked in code()). Piping its output on to a shell still counts.
+                    inf.traits.add("own_fetch")
             elif n == "python" and a[:1] == ["-m"] and len(a) > 1:
                 if a[1] in ("pip", "pip3"):
                     self.install("pip", a[2:], raw)
@@ -1916,7 +2063,7 @@ class _Analyzer:
             if a and a[0] in ("/dev/stdin", "-", "/dev/fd/0"):
                 inf.traits.add("shell_in")
         if "executor" in inf.traits:
-            dl = "download_stdout" in inf.traits
+            dl = "download_stdout" in inf.traits and "own_fetch" not in inf.traits
             hosts = [t[5:] for t in inf.traits if t.startswith("host=")]
             if dl:
                 self.add("shell.pipe_to_shell", self.rce_sev(hosts), "network",
@@ -1974,10 +2121,18 @@ class _Analyzer:
             for t in [x for x in a if not x.startswith("-")]:
                 self.write(t, raw)
         elif n in ("sed", "perl") and any(x.startswith("-i") or re.fullmatch(r"-[a-zA-Z]*i[a-zA-Z]*", x) for x in a):
-            pos = [x for x in a if not x.startswith("-")]
-            for t in pos[1:]:
-                if t not in ("''", ""):
-                    self.write(t, raw)
+            exprs = [a[k + 1] for k, x in enumerate(a[:-1]) if x in ("-e", "--expression")]
+            pos = [x for k, x in enumerate(a) if not x.startswith("-") and x not in ("''", "")
+                   and not (k > 0 and a[k - 1] in ("-e", "--expression"))]
+            if not exprs and pos:
+                exprs, pos = [pos[0]], pos[1:]
+            if n == "sed" and a and a[0] == "-i" and len(a) > 1 and a[1] in ("", "''"):
+                pass  # BSD sed: `-i ''` is the (empty) backup suffix
+            text = "\n".join(re.sub(r"^\s{0,4}(?:\d{1,9}|\$|/[^/\n]{0,200}/)?\s{0,4}[iac]\\?\n?", "", e) for e in exprs)
+            for t in pos:
+                self.write(t, raw)
+                if text.strip():
+                    self.writes.append((t, text))
         elif n == "git":
             self.git(inf)
         elif n == "kubectl" or n == "oc":
@@ -2169,6 +2324,11 @@ class _Analyzer:
 
     def code(self, name: str, code: str, inf: Info, depth: int) -> None:
         raw = inf.c.raw or code
+        tw = _tripwire_code(code)
+        if tw:
+            self.add("shell.guard_tamper", CRITICAL, "scope",
+                     f"Loads Tripwire's own code ({_clip(tw, 60)}), which can read its login key and switch it off. "
+                     "Agents may not do that.", raw)
         if REV_SOCK.search(code) and REV_EXEC.search(code):
             self.add("shell.reverse_shell", CRITICAL, "network",
                      "Gives someone on the internet remote control of this computer (reverse shell).", raw)
@@ -2320,7 +2480,10 @@ class _Analyzer:
             return ("home", CRITICAL if recursive else HIGH, "Deletes your whole home folder.")
         if GUARD_RE.search(" " + full):
             return ("guard", CRITICAL, "Deletes Tripwire's own settings, the guard watching this agent.")
-        if full.startswith(TMP_PREFIXES) and full not in EXTRA_SYSTEM:
+        if full == os.path.join(os.path.expanduser("~"), ".claude"):
+            return ("guard", CRITICAL, "Deletes Claude Code's settings and hooks, which switches Tripwire off.")
+        # HOME can itself live under /tmp (containers, CI, scratch runs): the temp-folder allowance never covers it.
+        if full.startswith(TMP_PREFIXES) and full not in EXTRA_SYSTEM and not _under_home(full):
             return None
         if full in EXTRA_SYSTEM or paths.is_system(full) or full.startswith(("/Applications/", "/Users/Shared")):
             if full.startswith(("/usr/local/", "/opt/homebrew/")) and full.count("/") > 3:
@@ -2391,7 +2554,7 @@ class _Analyzer:
             else:
                 self.add("shell.persistence", HIGH + 5, "persistence",
                          f"Changes a file that controls what runs on your machine later: {t}", ev)
-        elif full.startswith(TMP_PREFIXES):
+        elif full.startswith(TMP_PREFIXES) and not _under_home(full):
             return
         elif paths.is_system(full) or full.split("/")[1:2] and "/" + full.split("/")[1] in EXTRA_SYSTEM and full.count("/") <= 2:
             if full.startswith(("/usr/local/", "/opt/homebrew/", "/opt/")):
@@ -2539,8 +2702,10 @@ class _Analyzer:
             for s_ in srcs:
                 r = self.classify_delete(s_, True)
                 if r and r[1] >= HIGH and r[0] not in ("ws", "glob"):
-                    self.add("shell.mv_away", r[1], "destructive", "Moves away " + r[2][0].lower() + r[2][1:], raw)
-        elif n in ("cp", "rsync"):
+                    what = re.sub(r"^Deletes\s", "", r[2])
+                    self.add("shell.guard_tamper" if r[0] == "guard" else "shell.mv_away", r[1],
+                             "scope" if r[0] == "guard" else "destructive", "Moves away " + (what if what.startswith("Claude") else what[0].lower() + what[1:]), raw)
+        elif n in ("cp", "rsync", "ln"):
             for s_ in srcs:
                 if _is_secret(self.expand_path(s_)) or os.path.normpath(self.expand_path(s_)) in self.tainted_files:
                     # a copy of a secret is a secret wherever it lands; only reading one from outside the project is news
@@ -2562,6 +2727,12 @@ class _Analyzer:
         sub, rest = a[i], a[i + 1:]
         flags = [x for x in rest if x.startswith("-")]
         pos = [x for x in rest if not x.startswith("-")]
+        if sub == "clone" and pos:
+            url = pos[0]
+            dest = pos[1] if len(pos) > 1 else re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1])
+            if dest:
+                inf.host = inf.host or _host(url)
+                inf.outputs.append(dest.rstrip("/") + "/")
         if sub == "add":
             self.git_add(pos, flags, raw)
         elif sub == "commit" and self.staged_secrets:
@@ -2613,7 +2784,7 @@ class _Analyzer:
         j = " ".join(a)
         if a[:2] == ["system", "prune"]:
             big = any(x in ("-a", "--all", "--volumes") or (x.startswith("-") and not x.startswith("--") and "a" in x) for x in a[2:])
-            self.add("shell.docker_prune", HIGH if big else MEDIUM, "destructive",
+            self.add("shell.docker_prune", MEDIUM + 10 if big else MEDIUM, "destructive",
                      "Deletes all Docker images, containers and saved data." if big else "Deletes unused Docker data.", raw)
         elif a[:2] in (["volume", "prune"], ["volume", "rm"]) or (a[:1] in (["compose"],) or inf.name == "docker-compose") and "down" in a and any(x in ("-v", "--volumes") for x in a):
             self.add("shell.docker_volumes", MEDIUM, "destructive", "Deletes Docker volumes, which often hold database data.", raw)
@@ -3095,6 +3266,9 @@ def analyze_shell(command: str, session: Session, state_out: dict | None = None)
             state_out["tainted_files"] = set(a.tainted_files)
             state_out["staged_secrets"] = list(a.staged_secrets)
             state_out["net"] = list(a.net_targets)
+            state_out["writes"] = list(a.writes)[:50]
+            state_out["runs"] = list(dict.fromkeys(a.runs))[:20]
+            state_out["downloaded"] = dict(a.downloaded)
         return a.result()
     except Exception as e:  # never raise: a broken analyzer must not crash the guard
         return [Finding(rule="shell.analyzer_error", severity=MEDIUM, category="general",

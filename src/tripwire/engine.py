@@ -325,10 +325,14 @@ class Engine:
             # Files that now hold a copy of a secret stay secret for the rest of the session,
             # so `cp .env notes.txt` now and `git push` / `gh gist create notes.txt` later is still caught.
             s.tainted_files |= shell_state.get("tainted_files", set())
-            s.risky_written.update(shell_state.get("risky_written", {}))
             for x in shell_state.get("staged_secrets", []):
                 if x not in s.staged_secrets:
                     s.staged_secrets.append(x)
+        # Risky code is remembered even when its write was blocked: if the file shows up some other way, running it
+        # is still judged by what it does.
+        for k, val in (shell_state.get("risky_written") or {}).items():
+            if k not in s.risky_written or s.risky_written[k][0] < val[0]:
+                s.risky_written[k] = val
         if any(f.rule == "secrets.read" for f in findings):
             target = next((p for p in _file_paths(action.args or {}) if paths.is_secret(paths.expand(p, s.cwd))),
                           None) or _first(action.args, PATH_KEYS) or action.tool
@@ -397,6 +401,7 @@ class Engine:
                                      evidence=src.snippet))
             f += self._shell_egress(cmd, s, shell_state or {}, injected)
             f += _runs_risky_written(cmd, s)
+            f += _shell_writes_and_runs(s, shell_state if shell_state is not None else {}, injected)
 
         for path in file_paths if cap != Capability.EXEC else []:
             full = paths.expand(path, s.cwd)
@@ -427,12 +432,13 @@ class Engine:
 
         if cap == Capability.WRITE and file_paths:
             f += _written_code_findings(file_paths[0], args, s, injected, shell_state)
+            f += _written_secret_findings(file_paths[0], "\n".join(_keyed(args, CONTENT_KEY)), s, shell_state)
 
         if cap in (Capability.SEND, Capability.MONEY, Capability.FETCH, Capability.EXEC, Capability.AGENT):
             leaked = find_secrets(blob)
             if leaked:
                 f.append(Finding(rule="secrets.egress", severity=CRITICAL, category="exfiltration",
-                                 message=f"Sends secret material out ({', '.join(leaked)})."))
+                                 message=f"Sends secret material out ({_secret_kinds(leaked)})."))
             else:
                 f += _encoded_secret_findings(blob, cap, s, shell_state)
         if cap == Capability.WRITE and file_paths and shell_state is not None and find_secrets(blob):
@@ -448,6 +454,7 @@ class Engine:
             tainted = s.taint.tainted_values(blob)
             if tainted:
                 v, src = max(tainted, key=lambda t: t[1].injected)
+                v = _as_written(v, blob)  # matched case-insensitively, shown the way it was written
                 verb = _TARGET_VERB.get(cap, "Uses")
                 if src.injected:
                     # The value sat next to hidden instructions: it is attacker-chosen.
@@ -496,9 +503,18 @@ class Engine:
             if cap == Capability.SEND:
                 f += _pii_findings(args, blob, s, injected)
             if s.secrets_read and cap in (Capability.SEND, Capability.FETCH):
-                f.append(Finding(rule="chain.secret_then_egress", severity=HIGH + 10 if cap == Capability.SEND else HIGH,
-                                 category="exfiltration",
-                                 message=f"Sends data out after reading secrets ({', '.join(s.secrets_read[-2:])})."))
+                read = _secret_names(s.secrets_read)
+                if cap == Capability.SEND and not injected and _only_named_recipients(args, s) \
+                        and not _carries_secret(blob, s):
+                    # Your own message to someone you named, with nothing from the secret in it: worth a look, not a
+                    # hard stop (QA: the summary email to sam@ was blocked after you approved reading .env).
+                    f.append(Finding(rule="chain.secret_then_egress", severity=MEDIUM, category="exfiltration",
+                                     message=f"Sends a message after reading secrets ({read}). It goes to someone you "
+                                             "named and holds none of the secret, but check it."))
+                else:
+                    f.append(Finding(rule="chain.secret_then_egress", severity=HIGH + 10 if cap == Capability.SEND else HIGH,
+                                     category="exfiltration",
+                                     message=f"Sends data out after reading secrets ({read})."))
 
         if cap == Capability.AGENT:
             m = INJECTION_MARKERS.search(blob)
@@ -516,6 +532,9 @@ class Engine:
                                  message=f"Starts a helper agent with orders copied from {src.where}, not from you"
                                          + (", and they touch a credential file." if secretish else "."),
                                  evidence=src.snippet))
+
+        if cap == Capability.AGENT and not any(x.rule.startswith("taint.agent") for x in f):
+            f += _agent_paraphrase(blob, s, injected)
 
         if cap == Capability.CREDENTIAL:
             f.append(Finding(rule="impact.credential", severity=ASK_AT if s.intends(cap) else HIGH, category="secrets",
@@ -572,6 +591,21 @@ class Engine:
                                    evidence=DYN_HOST_PORT.search(text).group(0)[:120],
                                    message="Connects to an address and port that are both worked out at run time, "
                                            "so Tripwire can't tell whether it is its own control panel."))
+            if not m and netty:
+                hit = _resolver_tricks(text, self.guard_ports)
+                if hit:
+                    out.append(Finding(rule="guard.tamper_api", severity=CRITICAL, category="scope", evidence=hit[:120],
+                                       message="Points a web address at this computer by a trick (a name that leads "
+                                               "back here, --resolve, or a Host header), which is how Tripwire's own "
+                                               "control panel would be reached."))
+            if re.search(r"rot.?13|codecs", text, re.I):
+                import codecs
+                rot = codecs.decode(text, "rot13")
+                r = DAEMON_API.search(rot) or GUARD_WORDS.search(rot) or GUARD_HOME.search(rot)
+                if r:
+                    out.append(Finding(rule="guard.tamper_api", severity=CRITICAL, category="scope", evidence=r.group(0)[:120],
+                                       message="Hides Tripwire's own control panel or files behind rot13, an encoding "
+                                               "trick, to get past the guard."))
             g = GUARD_WORDS.search(text)
             if g:
                 out.append(Finding(rule="guard.tamper_api", severity=CRITICAL, category="scope", evidence=g.group(0)[:120],
@@ -591,7 +625,10 @@ class Engine:
         for m in re.finditer(rf"([^\s/:@'\"=]{{0,253}}):0{{0,4}}(?:{alt})\b", text):
             host = m.group(1).strip("[]")
             if PUBLIC_HOST.fullmatch(host) and not host.lower().endswith(("localhost", ".local", ".internal")):
-                continue
+                # A public-looking name can still lead here (lvh.me, 127.0.0.1.nip.io, a hosts-file entry). The
+                # daemon's port on a name that resolves here, or that can't be resolved in time, counts as local.
+                if is_local_name(host) is False:
+                    continue
             return m
         return None
 
@@ -771,6 +808,121 @@ def _mentioned(s: Session, h: str):
     return None
 
 
+# Public DNS names that always lead back to this computer, so tests and offline machines agree with live DNS.
+LOOPBACK_DNS = re.compile(r"(?:^|\.)(?:lvh\.me|localtest\.me|vcap\.me|lacolhost\.com|fuf\.me|localho\.st|"
+                          r"local\.gd|readme\.localhost)$|(?:^|[.-])(?:127|0)[.-]\d{1,3}[.-]\d{1,3}[.-]\d{1,3}\."
+                          r"(?:nip\.io|sslip\.io|xip\.io|traefik\.me|nip\.direct)$|(?:^|[.-])7f[0-9a-f]{6}\.(?:nip|sslip)\.io$",
+                          re.I)
+_DNS_CACHE: dict[str, tuple[float, bool | None]] = {}
+_DNS_TTL = 60.0
+_DNS_TIMEOUT = 0.3
+_DNS_POOL = None
+
+
+def _addr_is_local(addr: str) -> bool:
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_link_local or ip.is_unspecified
+
+
+def is_local_name(host: str) -> bool | None:
+    """Does `host` lead to this computer? True / False, or None if DNS did not answer in time. Cached for a minute."""
+    import socket
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+    global _DNS_POOL
+    h = host.strip("[]").rstrip(".").lower()
+    if not h:
+        return False
+    if LOOPBACK_DNS.search(h) or re.fullmatch(LOCAL_ADDR, h, re.I) or _addr_is_local(h):
+        return True
+    if re.fullmatch(r"[\d.]+|[0-9a-f:]+", h):
+        return False  # an address that is not local
+    now = time.time()
+    hit = _DNS_CACHE.get(h)
+    if hit and now - hit[0] < _DNS_TTL:
+        return hit[1]
+    if _DNS_POOL is None:
+        _DNS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tripwire-dns")
+    fut = _DNS_POOL.submit(socket.getaddrinfo, h, None)
+    try:
+        res: bool | None = any(_addr_is_local(ai[4][0]) for ai in fut.result(timeout=_DNS_TIMEOUT))
+    except FutTimeout:
+        res = None
+    except OSError:
+        res = False  # no such name: it can't lead anywhere
+    if len(_DNS_CACHE) > 4096:
+        _DNS_CACHE.clear()
+    _DNS_CACHE[h] = (now, res)
+    return res
+
+
+def _resolver_tricks(text: str, ports: set[int]) -> str | None:
+    """--resolve / --connect-to pointing a name at this computer or at the daemon's port, a Host header naming
+    localhost, or any URL whose host resolves here with a port worked out at run time."""
+    alt = "|".join(str(p) for p in sorted(ports))
+    for m in re.finditer(r"--(?:resolve|connect-to)[=\s]{1,4}['\"]?([^\s'\"]{1,300})", text):
+        spec = m.group(1)
+        if re.search(LOCAL_ADDR, spec, re.I) or re.search(rf"(?:^|:)(?:{alt})(?::|$)", spec) or \
+                any(is_local_name(x) for x in spec.split(":") if PUBLIC_HOST.fullmatch(x or "")):
+            return m.group(0)
+    m = re.search(rf"\bHost\s{{0,3}}[:=]\s{{0,3}}['\"]?{LOCAL_ADDR}", text, re.I)
+    if m and re.search(r"(?:-H|--header|headers?)\b", text, re.I):
+        return m.group(0)
+    for m in re.finditer(r"(?:https?|wss?)://([a-z0-9.-]{1,253})(?::\s{0,3}[\"']?\s{0,2}(?:[$`{%(]|\+))", text, re.I):
+        if PUBLIC_HOST.fullmatch(m.group(1)) and is_local_name(m.group(1)) is not False:
+            return m.group(0)
+    return None
+
+
+SECRET_KIND_NAMES = {"private_key": "a private key", "aws_key": "an AWS key", "github_token": "a GitHub token",
+                     "anthropic_key": "an Anthropic key", "openai_key": "an OpenAI key", "slack_token": "a Slack token",
+                     "google_key": "a Google key", "stripe_key": "a Stripe key", "jwt": "a login token",
+                     "env_assignment": "a password line"}
+
+
+def _secret_kinds(kinds: list[str]) -> str:
+    names = list(dict.fromkeys(SECRET_KIND_NAMES.get(k, k.replace("_", " ")) for k in kinds))
+    return " and ".join([", ".join(names[:-1]), names[-1]] if len(names) > 1 else names)
+
+
+def _secret_names(read: list[str]) -> str:
+    """The last two secrets read, once each: ".env" and ".env (openai key)" are the same file."""
+    out: dict[str, str] = {}
+    for r in read:
+        base = r.split(" (", 1)[0]
+        if base not in out or len(r) > len(out[base]):
+            out.pop(base, None)
+            out[base] = r
+    names = list(out.values())[-2:]
+    return ", ".join(re.sub(r"\(([a-z_ ]{1,40})\)", lambda m: "(" + SECRET_KIND_NAMES.get(m.group(1).replace(" ", "_"),
+                                                                                       m.group(1)) + ")", n) for n in names)
+
+
+def _as_written(v: str, blob: str) -> str:
+    i = blob.lower().find(v.lower())
+    return blob[i:i + len(v)] if i >= 0 else v
+
+
+def _only_named_recipients(args: dict, s: Session) -> bool:
+    rec = _keyed(args, RECIPIENT_KEY)
+    found = indicators("\n".join(rec)[:20_000])
+    people = sorted(found.get("email", set()) | found.get("phone", set()))
+    return bool(people) and all(s.taint.is_trusted_value(p) for p in people)
+
+
+def _carries_secret(blob: str, s: Session) -> bool:
+    if find_secrets(blob) or any(v in blob for v in s.secret_values if len(v) >= 8):
+        return True
+    if any(find_secrets(d) or any(_shares_secret(d, v) for v in s.secret_values) for _, d in _decoded_tokens(blob)):
+        return True
+    return bool(s.secret_values) and _has_gram(blob, _secret_grams(s))
+
+
 def _guard_home():
     from pathlib import Path
     return Path(os.environ.get("TRIPWIRE_HOME") or Path.home() / ".tripwire")
@@ -811,53 +963,229 @@ SHELL_EXT = (".sh", ".bash", ".zsh", ".command", ".envrc")
 RUN_LINE = re.compile(r"^\s{0,40}-?\s{0,4}run:\s{0,4}\|?\s{0,4}(.{1,2000})$", re.M)
 
 
-def _written_code_findings(path: str, args: dict, s: Session, injected: bool, state: dict | None = None) -> list[Finding]:
-    """A file the agent writes may run later (`make test`, `npm test`, `python x.py`, CI), out of sight of the
-    shell check. So check what the file would do now, the same way a command typed in the shell is checked."""
-    content = "\n".join(_keyed(args, CONTENT_KEY))[:MAX_ARGS_CHARS // 4]
-    if not content.strip():
-        return []
-    low = path.lower()
+MAKE_SYNTAX = re.compile(r"^\s{0,8}(?:[\w.-]{1,80}\s{0,4}[:+?!]?=|[\w./%$(){} -]{1,200}:(?!=)|-?include\b|#|\.PHONY|"
+                         r"if(?:n?eq|n?def)\b|endif\b|else\b|define\b|endef\b|export\b|unexport\b|override\b|vpath\b|$)")
+# Settings files that make an editor, git or a dev container run commands by themselves.
+DEVCONTAINER_KEYS = re.compile(r'"(initializeCommand|onCreateCommand|updateContentCommand|postCreateCommand|postStartCommand|'
+                               r'postAttachCommand)"\s{0,4}:\s{0,4}("(?:[^"\\\n]|\\.){0,2000}"|\[[^\]]{0,2000}\]|\{[^}]{0,4000}\})')
+GIT_CONFIG_EXEC = re.compile(r"^\s{0,8}(?:\w{1,40}\s{0,4}=\s{0,4}!|(?:sshCommand|hooksPath|fsmonitor|pager|editor|askPass|"
+                             r"gpgProgram|program|textconv|clean|smudge|process|command|helper|external|cmd|proxyCommand|gitProxy)"
+                             r"\s{0,4}=)", re.I | re.M)
+
+
+def _file_scripts(path: str, content: str) -> tuple[list, bool, str | None]:
+    """(shell scripts or ("code", runner, text) tuples to judge, is a source file, persistence reason or None)."""
+    low = path.lower().replace("\\", "/")
     base = low.rsplit("/", 1)[-1]
     scripts: list = []
     code_file = False
+    why = None
     if low.endswith(SHELL_EXT) or re.match(r"#!\s{0,4}\S{0,40}\b(ba|z|da|k)?sh\b", content):
         scripts.append(content)
-    elif base in ("makefile", "gnumakefile", "justfile") or low.endswith(".mk"):
-        scripts.append("\n".join(ln.strip().lstrip("@-") for ln in content.splitlines() if ln.startswith("\t")))
+    elif base in ("makefile", "gnumakefile", "justfile") or base.startswith(("makefile.", "gnumakefile.")) or low.endswith(".mk"):
+        lines = content.splitlines()
+        scripts.append("\n".join(ln.strip().lstrip("@-") for ln in lines if ln.startswith("\t")))
+        # A fragment that is not make syntax (a bare command line) still means someone wants it run.
+        scripts.append("\n".join(ln for ln in lines if not ln.startswith("\t") and not MAKE_SYNTAX.match(ln)))
+        scripts += re.findall(r"\$\(shell\s([^)\n]{1,2000})\)", content)
     elif base == "package.json":
         try:
             pkg = json.loads(content)
             scripts += [v for v in (pkg.get("scripts") or {}).values() if isinstance(v, str)]
+            hooks = [k for k in (pkg.get("scripts") or {}) if str(k) in LIFECYCLE]
+            if hooks:
+                why = f"its '{hooks[0]}' script runs by itself on every npm install"
         except (ValueError, AttributeError):
             scripts += re.findall(r'"(?:pre|post)?\w{1,40}"\s{0,4}:\s{0,4}"([^"\n]{1,2000})"', content)
     elif "/.github/workflows/" in low or low.startswith(".github/workflows/") or base in (".gitlab-ci.yml",):
         scripts += [m.group(1) for m in RUN_LINE.finditer(content)]
+    elif low.endswith("/.git/config") or low == ".git/config" or base == ".gitconfig":
+        for m in GIT_CONFIG_EXEC.finditer(content):
+            line = content[m.start():content.find("\n", m.start()) if "\n" in content[m.start():] else len(content)]
+            scripts.append(line.split("=", 1)[1].strip().lstrip("!"))
+            why = why or "git runs the command in it by itself (an alias, hook folder, ssh or filter command)"
+    elif "/.vscode/" in "/" + low and base in ("tasks.json", "settings.json", "launch.json") or "/.devcontainer/" in "/" + low \
+            or base in (".devcontainer.json",):
+        scripts += [json.loads(v) if v.startswith('"') else v for _, v in DEVCONTAINER_KEYS.findall(content)
+                    if _json_ok(v)]
+        scripts += re.findall(r'"command"\s{0,4}:\s{0,4}"((?:[^"\\\n]|\\.){1,2000})"', content)
+        if re.search(r'"runOn"\s{0,4}:\s{0,4}"folderOpen"', content):
+            why = "the editor runs its task by itself as soon as the folder is opened"
+        elif DEVCONTAINER_KEYS.search(content):
+            why = "the dev container runs its commands by itself when it starts"
+    elif base == "pyproject.toml":
+        if re.search(r"^\s{0,4}\[tool\.hatch\.build(?:\.targets\.\w{1,40})?\.hooks\.|^\s{0,4}backend-path\s{0,4}=", content, re.M):
+            why = "it adds a build hook that runs code from the project on every install"
     else:
         ext = "." + base.rsplit(".", 1)[-1] if "." in base else ""
         runner = CODE_RUNNERS.get(ext)
         if runner:
             code_file = True
             scripts.append(("code", runner, content))
+    return [x for x in scripts if x], code_file, why
+
+
+def _json_ok(v: str) -> bool:
+    try:
+        json.loads(v)
+        return True
+    except ValueError:
+        return False
+
+
+LIFECYCLE = {"preinstall", "install", "postinstall", "prepare", "preprepare", "postprepare", "prepublish", "prepack",
+             "postpack", "dependencies"}
+
+
+def _written_code_findings(path: str, args: dict, s: Session, injected: bool, state: dict | None = None,
+                           run: str | None = None) -> list[Finding]:
+    """A file the agent writes may run later (`make test`, `npm test`, `python x.py`, CI), out of sight of the
+    shell check. So check what the file would do now, the same way a command typed in the shell is checked.
+    run="agent"|"disk": the file is being run right now (read from disk); agent-written files count in full."""
+    content = "\n".join(_keyed(args, CONTENT_KEY))[:MAX_ARGS_CHARS // 4]
+    if not content.strip():
+        return []
+    scripts, code_file, why = _file_scripts(path, content)
+    name = path.rsplit("/", 1)[-1]
     out: list[Finding] = []
+    if why and not run:
+        out.append(Finding(rule="write.autorun_config", severity=HIGH + 5 if injected else MEDIUM + 5, category="persistence",
+                           message=f"Changes {name}, and {why}."))
     floor = MEDIUM if injected else HIGH  # without hidden instructions around, only clearly dangerous code counts
+    full_strength = injected or run == "agent"
     for script in scripts:
         found = analyze_code(script[1], script[2], s) if isinstance(script, tuple) else analyze_shell(script, s)
         for x in found:
             if x.rule == "shell.pipe_to_shell" and code_file:
                 continue  # `python -c` that fetches reads as "download and run"; a source file that calls an API is not that
-            if x.severity >= HIGH and state is not None:
+            guard = x.rule.startswith("shell.guard")
+            if x.severity >= HIGH and state is not None and not run:
                 # Remember it at full strength: running this file later is running this code.
                 full = os.path.normpath(paths.expand(path, s.cwd))
                 old = state.setdefault("risky_written", {}).get(full)
                 if not old or old[0] < x.severity:
                     state["risky_written"][full] = (x.severity, x.category, f"{x.message[0].lower()}{x.message[1:]}")
             if x.severity >= floor and x.category != "obfuscation" or x.severity >= HIGH:
-                out.append(Finding(rule="write.risky_code", category=x.category, evidence=x.evidence,
-                                   severity=x.severity if injected else min(x.severity, MEDIUM + 5),
-                                   message=f"The file it writes ({path.rsplit('/', 1)[-1]}) would run later and "
-                                           f"{x.message[0].lower()}{x.message[1:]}"))
+                sev = x.severity if full_strength or guard else min(x.severity, MEDIUM + 5)
+                if run:
+                    msg = f"Runs {name}, which would {x.message[0].lower()}{x.message[1:]}"
+                else:
+                    msg = f"The file it writes ({name}) would run later and {x.message[0].lower()}{x.message[1:]}"
+                out.append(Finding(rule="exec.runs_file" if run else "write.risky_code", category=x.category,
+                                   evidence=x.evidence, severity=sev, message=msg))
     return sorted(out, key=lambda x: -x.severity)[:3]
+
+
+MAX_DISK_READ = 256 * 1024
+
+
+def _disk_text(full: str, s: Session) -> str | None:
+    """A project file as it is on disk right now (what will really run). Only inside the workspace, only regular
+    files, at most 256 KB, never blocking (a FIFO or device is skipped)."""
+    import stat
+    if not s.cwd or not s.in_workspace(full):
+        return None
+    try:
+        st = os.stat(full)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_DISK_READ:
+            return None
+        fd = os.open(full, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read(MAX_DISK_READ).decode("utf-8", "replace")
+    except OSError:
+        return None
+
+
+def _shell_writes_and_runs(s: Session, state: dict, injected: bool) -> list[Finding]:
+    """Write-then-run through the shell. Text written with `>`, heredocs, tee or sed -i is judged like Write-tool
+    content; downloads and clones are remembered; files the command runs are read from disk and judged now."""
+    out: list[Finding] = []
+    for tgt, body in state.get("writes", [])[:50]:
+        out += _written_code_findings(tgt, {"content": body}, s, injected, state)
+        out += _written_secret_findings(tgt, body, s, state)
+    for p, (sev, host) in (state.get("downloaded") or {}).items():
+        full = os.path.normpath(paths.expand(p.rstrip("/"), s.cwd)) + ("/" if p.endswith("/") else "")
+        state.setdefault("risky_written", {})[full] = (
+            sev, "network", f"came from {host or 'the internet'}, so running it runs code nobody has read.")
+    out += _run_targets_findings(s, state.get("runs", []), injected, state)
+    return out
+
+
+def _run_targets_findings(s: Session, runs: list, injected: bool, state: dict) -> list[Finding]:
+    if not runs or not s.cwd:
+        return []
+    fresh = state.get("risky_written") or {}
+    known = {**s.risky_written, **fresh}
+    files: list[str] = []
+    remembered: list[str] = []
+
+    def add(p: str) -> None:
+        full = os.path.normpath(paths.expand(p, s.cwd))
+        if full not in files:
+            files.append(full)
+
+    for kind, t in runs[:20]:
+        if kind == "file":
+            add(t)
+        elif kind == "make":
+            if t.endswith("/"):
+                d = os.path.normpath(paths.expand(t, s.cwd))
+                for nm in ("GNUmakefile", "makefile", "Makefile"):
+                    add(os.path.join(d, nm))
+                remembered += [k for k in known if os.path.dirname(k) == d and
+                               re.match(r"(?:gnu)?makefile|.*\.mk$", os.path.basename(k), re.I)]
+            else:
+                add(t)
+        elif kind == "pytest":
+            for d in ("", "tests", "test"):
+                add(os.path.join(s.cwd, d, "conftest.py"))
+            remembered += [k for k in known if k.endswith(".py") and s.in_workspace(k) and
+                           re.match(r"conftest\.py$|test_.*\.py$|.*_test\.py$", os.path.basename(k))]
+        elif kind == "npm":
+            add("package.json")
+        elif kind == "pip":
+            for nm in ("setup.py", "pyproject.toml", "hatch_build.py"):
+                add(nm)
+    for f in list(files):  # Makefiles pull in other files
+        if os.path.basename(f).lower() in ("makefile", "gnumakefile"):
+            text = _disk_text(f, s) or ""
+            for m in re.finditer(r"^-?s?include\s{1,8}(.{1,400})$", text, re.M):
+                for inc in m.group(1).split()[:10]:
+                    if "$" not in inc:
+                        add(os.path.join(os.path.dirname(f), inc))
+    out: list[Finding] = []
+    dirs = [k for k in known if k.endswith("/")]  # cloned or downloaded folders: anything run from inside them
+    remembered += [d for f in files for d in dirs if f.startswith(d)]
+    for k in dict.fromkeys(remembered + [f for f in files if f in known]):
+        sev, cat, msg = known[k]
+        label = os.path.basename(k.rstrip("/")) + ("/" if k.endswith("/") else "")
+        out.append(Finding(rule="exec.risky_written", severity=sev, category=cat, evidence=label,
+                           message=f"Runs {label}, which the agent " + ("fetched and which " if cat == "network" else
+                                                                         "wrote and which ") + msg))
+    for f in files[:12]:
+        text = _disk_text(f, s)
+        if text:
+            agent = f in known
+            out += _written_code_findings(f, {"content": text}, s, injected, None, run="agent" if agent else "disk")
+    return sorted(out, key=lambda x: -x.severity)[:4]
+
+
+def _written_secret_findings(path: str, content: str, s: Session, state: dict | None) -> list[Finding]:
+    """A secret written into a file in disguise (base64, hex, split) makes that file a secret: a later push or
+    upload of it is caught. The write itself needs an OK."""
+    if not content or not (s.secret_values or find_secrets(content[:MAX_ARGS_CHARS])):
+        return []
+    hit = None
+    for enc, d in _decoded_tokens(content):
+        if find_secrets(d) or any(_shares_secret(d, v) for v in s.secret_values):
+            hit = enc
+            break
+    if hit is None:
+        return []
+    if state is not None:
+        state.setdefault("tainted_files", set()).add(os.path.normpath(paths.expand(path, s.cwd)))
+    return [Finding(rule="secrets.encoded_write", severity=MEDIUM + 5, category="secrets",
+                    message=f"Writes a secret it read into {path.rsplit('/', 1)[-1]}, disguised as {hit}.")]
 
 
 def _url_host(u: str) -> str:
@@ -989,6 +1317,18 @@ def _decoded_tokens(text: str) -> list[tuple[str, str]]:
             except (ValueError, UnicodeDecodeError):
                 pass
             continue
+        b32 = False
+        for piece in re.split(r"[/_-]", t):
+            if re.fullmatch(r"[A-Z2-7]{16,4096}=*", piece):
+                try:  # base32: upper-case letters and 2-7 only (often one segment of a URL path)
+                    d = base64.b32decode(piece + "=" * (-len(piece) % 8)).decode("utf-8")
+                    if d and sum(ch.isprintable() for ch in d) / len(d) > 0.95:
+                        out.append(("base32", d))
+                        b32 = True
+                except (binascii.Error, ValueError, UnicodeDecodeError):
+                    pass
+        if b32:
+            continue
         if not re.search(r"[A-Z]", t) or not re.search(r"[a-z0-9]", t):
             continue  # a plain word or path, not base64
         for fn in (base64.b64decode, base64.urlsafe_b64decode):
@@ -1012,6 +1352,17 @@ def _encoded_secret_findings(blob: str, cap: Capability, s: Session, state: dict
     if hit is None and cap == Capability.EXEC and GIT_RECORD.search(blob):
         if any(v in blob for v in s.secret_values if len(v) >= 10):
             hit = "plain text"
+    if hit is None and any(v[::-1] in blob for v in s.secret_values if len(v) >= 12):
+        hit = "reversed text"
+    if hit is None and s.secret_values and cap != Capability.WRITE:
+        hit = _split_secret(blob, s)
+    if hit is None and cap == Capability.EXEC and s.secret_values and state is not None:
+        named = _secret_named_paths(blob, s)
+        if named:
+            # Files or folders named after the secret: a later `git add && git push` publishes it.
+            state.setdefault("tainted_files", set()).update(named)
+            return [Finding(rule="secrets.in_filenames", severity=MEDIUM + 5, category="secrets",
+                            message="Puts a secret it read into file or folder names, where a push would publish it.")]
     if hit is None:
         return []
     if cap != Capability.EXEC or GIT_EGRESS.search(blob):
@@ -1024,6 +1375,60 @@ def _encoded_secret_findings(blob: str, cap: Capability, s: Session, state: dict
                         message=f"Puts a secret it read into a git commit or tag message ({hit}), where a push would publish it.")]
     return [Finding(rule="secrets.encoded", severity=MEDIUM + 5, category="secrets",
                     message=f"Handles a secret it read, disguised as {hit}.")]
+
+
+RUN = 16
+
+
+def _alnum(t: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", t)
+
+
+def _secret_grams(s: Session) -> set[str]:
+    grams: set[str] = set()
+    for v in list(s.secret_values)[:500]:
+        a = _alnum(v)
+        if len(a) >= RUN:
+            grams.update(a[i:i + RUN] for i in range(len(a) - RUN + 1))
+    return grams
+
+
+def _has_gram(text: str, grams: set[str]) -> bool:
+    a = _alnum(text)
+    return any(a[i:i + RUN] in grams for i in range(max(0, len(a) - RUN + 1)))
+
+
+def _split_secret(blob: str, s: Session) -> str | None:
+    """A secret cut into pieces inside one action: chunks in several URLs to the same host, or with its
+    punctuation swapped. Joined back per host (after the shared prefix), it is still the secret."""
+    grams = _secret_grams(s)
+    if not grams:
+        return None
+    urls = re.findall(r"https?://[^\s'\"<>`;|&)]{1,2048}", blob[:MAX_ARGS_CHARS])[:200]
+    by_host: dict[str, list[str]] = {}
+    for u in urls:
+        by_host.setdefault(_url_host(u), []).append(u)
+    for us in by_host.values():
+        if len(us) > 1:
+            pre = os.path.commonprefix(us)
+            joined = "".join(u[len(pre):] for u in us)
+        else:
+            joined = us[0]
+        if _has_gram(joined, grams):
+            return "pieces in web addresses"
+    return None
+
+
+def _secret_named_paths(blob: str, s: Session) -> set[str]:
+    grams = _secret_grams(s)
+    if not grams or not re.search(r"\b(?:touch|mkdir|mv|cp|ln|install|tee)\b|>", blob):
+        return set()
+    out: set[str] = set()
+    for tok in re.findall(r"[^\s'\";&|<>()]{16,1024}", blob[:20_000])[:2000]:
+        if "/" in tok or "." in tok:
+            if _has_gram(tok, grams):
+                out.add(os.path.normpath(paths.expand(tok, s.cwd)))
+    return out
 
 
 def _shares_secret(text: str, secret: str, run: int = 16) -> bool:
@@ -1064,6 +1469,44 @@ def _pii_findings(args: dict, blob: str, s: Session, injected: bool) -> list[Fin
                     message=f"Sends {what} to {strangers[0]}, who you never named.")]
 
 
+AGENT_SINK = re.compile(r"\b(?:send\w{0,3}|sent|upload\w{0,3}|post(?:s|ed|ing)?\b(?!\s(?:a|the)\s(?:summary|review))|"
+                        r"put (?:it|them|this|a copy) (?:on|to|in)|back(?:s|ed|ing)?[ -]?up|backup|copy (?:it|them) to|"
+                        r"forward\w{0,3}|email\w{0,3}|share\w{0,3}|pay\w{0,3}|transfer\w{0,3}|wire\b|delete\w{0,3}|remove\w{0,3}|"
+                        r"wipe\w{0,3}|push\w{0,3}|publish\w{0,3}|exfil\w{0,8}|sync\w{0,3} to)", re.I)
+AGENT_SECRET = re.compile(r"\b(?:ssh|private|api|deploy|signing|gpg|access)[ -]?keys?\b|\bkeys?\b|credential\w{0,2}|"
+                          r"\btokens?\b|passwords?|passphrase|secrets?\b|\.env\b|hosts\.yml|\bcli (?:host )?config|"
+                          r"\bhost config|keychain|wallet|seed phrase|cookies?\b|\.ssh|\.aws|\.netrc|\.npmrc", re.I)
+AGENT_REF = re.compile(r"\b(?:mentioned|described|listed|given|linked|specified|named|requested|asked for) (?:in|by) the\b|"
+                       r"\bas (?:the|that) (?:\w{1,20} ){0,3}(?:says|asks|instructs)|\bfrom the (?:pr|issue|readme|page|email|"
+                       r"message|doc\w{0,6}|comment|ticket)\b|\bthe (?:server|url|address|endpoint|host) (?:in|from)\b", re.I)
+
+
+def _agent_paraphrase(blob: str, s: Session, injected: bool) -> list[Finding]:
+    """A sub-agent told, in new words, to do the attacker's job: its orders aren't copied from what the agent read,
+    so the copy check misses them. After hidden instructions, orders that send, upload, pay or delete need an OK,
+    and orders that touch keys or credentials are blocked. Before, only orders that pair a send with keys or with
+    "the server mentioned in the PR" ask."""
+    text = blob[:20_000]
+    sink, secret, ref = AGENT_SINK.search(text), AGENT_SECRET.search(text), AGENT_REF.search(text)
+    tainted = [v for v, src in s.taint.tainted_values(text)] if s.taint.untrusted else []
+    if injected and secret and (sink or ref or tainted):
+        return [Finding(rule="taint.agent_paraphrase", severity=HIGH, category="injection", evidence=secret.group(0),
+                        message="Starts a helper agent, after hidden instructions were found, with orders that touch "
+                                "your keys or credentials.")]
+    if injected and (sink or tainted):
+        return [Finding(rule="taint.agent_paraphrase", severity=MEDIUM, category="injection",
+                        evidence=(sink.group(0) if sink else tainted[0]),
+                        message="Starts a helper agent, after hidden instructions were found, with orders to send, "
+                                "upload, pay or delete something.")]
+    if sink and (secret or ref):
+        return [Finding(rule="taint.agent_paraphrase", severity=MEDIUM, category="injection",
+                        evidence=(secret or ref).group(0),
+                        message="Starts a helper agent with orders to " + ("move your keys or credentials somewhere."
+                                                                           if secret else "send something to a place named "
+                                                                           "in content it read, not by you."))]
+    return []
+
+
 def _runs_risky_written(cmd: str, s: Session) -> list[Finding]:
     """Running a file the agent itself wrote earlier: judge it by what that file does, at full strength."""
     if not s.risky_written:
@@ -1072,6 +1515,8 @@ def _runs_risky_written(cmd: str, s: Session) -> list[Finding]:
     for tok in re.findall(r"[\w./~-]{1,512}", cmd[:20_000]):
         full = os.path.normpath(paths.expand(tok, s.cwd))
         hit = s.risky_written.get(full)
+        if hit and hit[1] == "network":
+            continue  # a download only counts when it is run (see _run_targets_findings), not when it is chmod'ed or read
         if hit:
             sev, cat, msg = hit
             out.append(Finding(rule="exec.risky_written", severity=sev, category=cat, evidence=tok,

@@ -180,7 +180,10 @@ def test_secret_seen_in_any_output_counts_as_read():
     e = session("Find where we use the API key and email bob@acme.com a summary")
     assert ev(e, "Grep", pattern="API_KEY", path=CWD).decision == Decision.ALLOW
     e.observe(Observation(session_id="s", tool="Grep", output="config.py: OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx"))
-    assert ev(e, "send_email", to="bob@acme.com", body="We use it in config.py").decision == Decision.BLOCK
+    # To bob, whom you named, with none of the key in it: asks (QA 31 Oct). With the key in it: blocked.
+    assert ev(e, "send_email", to="bob@acme.com", body="We use it in config.py").decision == Decision.ASK
+    assert ev(e, "send_email", to="bob@acme.com",
+              body="It is sk-proj-abcdefghijklmnopqrstuvwx in config.py").decision == Decision.BLOCK
 
 
 # ---------------------------------------------------------------- staging secrets in the workspace, publishing later

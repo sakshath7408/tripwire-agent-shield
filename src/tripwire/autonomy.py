@@ -434,12 +434,12 @@ def decide(level: str, s: "Session", action: Action, cap: Capability, findings: 
         src = s.taint.injection_seen[-1]
         secret_read = any(f.rule in ("secrets.read", "shell.secret_read") for f in findings)
         if secret_read or not requested(s, cap) or ctx.command_src_injected:
-            why = ("read a credential file you never mentioned" if secret_read else
-                   "run a command copied from that content" if ctx.command_src_injected and requested(s, cap) else
-                   f"{_cap_verb(cap)}")
+            why = ("it wants to read a credential file you didn't name" if secret_read else
+                   "you never asked it to run a command copied from that content"
+                   if ctx.command_src_injected and requested(s, cap) else f"you never asked it to {_cap_verb(cap)}")
             return AutoResult(Decision.BLOCK, Finding(
                 rule="autonomy.blocked", severity=BLOCK_AT, category="injection", evidence=src.snippet,
-                message=f"Blocked on its own: hidden instructions were found in {src.where}, and you never asked it to {why}."))
+                message=f"Blocked on its own: hidden instructions were found in {src.where}, and {why}."))
         return None  # after hidden instructions, anything left still needs a human
 
     # ---- auto-allow

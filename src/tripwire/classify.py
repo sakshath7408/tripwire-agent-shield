@@ -54,7 +54,10 @@ PATTERNS: list[tuple[re.Pattern[str], Capability]] = [
     (re.compile(r"(exec|run_|shell|terminal|command|eval)"), Capability.EXEC),
     (re.compile(r"(send|email|mail|message|post_|post\b|publish|share|invite|reply|forward|upload|webhook|http_post|create_issue|comment|tweet|slack)"), Capability.SEND),
     (re.compile(r"(write|edit|create|update|append|insert|set_|save|rename|move|patch|commit|push|replace|modify|overwrite|chmod)"), Capability.WRITE),
-    (re.compile(r"(fetch|browse|web|url|http|download|search_web|get_webpage|inbox|read_email|get_unread|read_channel|get_messages)"), Capability.FETCH),
+    (re.compile(r"(fetch|browse|web|url|http|download|search_web|get_webpage)"), Capability.FETCH),
+    # Your own mail and chat: reading it is a read ("read your inbox"), not a trip to the web. What it returns is
+    # still untrusted (every tool output is), and sending from it is judged as a send.
+    (re.compile(r"(inbox|read_email|get_unread|read_channel|get_messages|read_message|list_email|search_email)"), Capability.READ),
     (re.compile(r"(?:^|_)(read|get|list|search|find|query|show|view|cat|describe)"), Capability.READ),
 ]
 
@@ -90,7 +93,7 @@ def _has_side_effect(name: str) -> bool:
 
 
 READ_PREFIX = re.compile(r"^(get|list|search|read|check|find|fetch|count|lookup)_")
-OUTSIDE_DATA = re.compile(r"(inbox|email|mail|message|channel|web|url|page|feed|post|review|comment)")
+OUTSIDE_DATA = re.compile(r"(web|url|page|feed|post|review|comment)")
 VERB_RULES: list[tuple[re.Pattern[str], Capability]] = [
     (re.compile(r"(password|passwd|credential|2fa|mfa|api_key|access_key|recovery|security_question)"), Capability.CREDENTIAL),
     (re.compile(r"^(reserve|book|purchase|buy|order|checkout)_"), Capability.MONEY),
