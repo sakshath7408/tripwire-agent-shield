@@ -57,7 +57,8 @@
   const lvl = (n) => (n >= 80 ? "high" : n >= 50 ? "mid" : n > 0 ? "low" : "none");
 
   async function api(path, opts = {}) {
-    const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts });
+    const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts }); // same-origin: the token cookie rides along
+    if (r.status === 401) throw new Error("Reload the page to reconnect to Tripwire");
     if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(() => "")}`.trim());
     return r.json();
   }
@@ -796,19 +797,23 @@
 
   // ---- actions --------------------------------------------------------------
   let toastT;
-  function toast(msg) {
+  function toast(msg, ms = 3200) {
     el.toast.textContent = msg;
     el.toast.hidden = false;
     clearTimeout(toastT);
-    toastT = setTimeout(() => (el.toast.hidden = true), 3200);
+    toastT = setTimeout(() => (el.toast.hidden = true), ms);
   }
 
   async function resolve(id, decision, btn, remember) {
     const btns = document.querySelectorAll(`[data-resolve][data-id="${id}"]`);
     btns.forEach((b) => (b.disabled = true));
     try {
-      await api(`/v1/verdicts/${id}/resolve`, { method: "POST", body: JSON.stringify(remember ? { decision, remember } : { decision }) });
-      if (remember) { toast(remember === "always" ? "Learned. Tripwire will allow this on its own from now on." : "Allowed for the rest of this session."); loadRules(400); }
+      const res = await api(`/v1/verdicts/${id}/resolve`, { method: "POST", body: JSON.stringify(remember ? { decision, remember } : { decision }) });
+      if (remember) {
+        if (res && res.remember_refused) toast(`Allowed this once. Not remembered: ${res.remember_refused}`, 5200);
+        else toast(remember === "always" ? "Learned. Tripwire will allow this on its own from now on." : "Allowed for the rest of this session.");
+        loadRules(400);
+      }
       const v = S.verdicts.get(id);
       if (v) { v.decision = decision; v.resolved_by = "human"; S.history.delete(id); setTimeout(() => loadHistory(v, true), 400); }
       refreshStats(0);
@@ -1249,6 +1254,8 @@
       loadAll().catch(() => {});
       toast("Cleared. Ready for a fresh run.");
     });
+    on("rule", () => loadRules(0));
+    on("settings", (d) => { if (S.settings && d && d.autonomy) { S.settings.autonomy = d.autonomy; paintSettings(); } });
     on("ping", () => setConn("live"));
   }
 
