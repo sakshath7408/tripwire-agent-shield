@@ -135,8 +135,11 @@
     return li;
   }
 
+  let runId = 0; // bumped when you leave the Demo tab mid-run: the old run stops at its next step
   let run = async function (guarded) {
     if (running) return;
+    const me = ++runId;
+    const gone = () => me !== runId;
     setRunning(true, guarded);
     status(guarded ? "Starting the agent, with Tripwire checking every call..." : "Starting the agent, with no guard...");
     const scn = current;
@@ -144,14 +147,18 @@
     try {
       const t0 = performance.now();
       const resp = await fetch(`/api/run?scenario=${encodeURIComponent(scn)}&guard=${guarded ? 1 : 0}`);
-      r = await resp.json();
-      if (!resp.ok) throw new Error(r.error || resp.status);
+      r = await resp.json().catch(() => null); // a gateway timeout answers with a plain-text page, not JSON
+      if (!resp.ok || !r || !Array.isArray(r.steps)) throw new Error(resp.ok ? "bad answer" : String(resp.status));
       r._ms = Math.round(performance.now() - t0);
     } catch (e) {
-      status(`The demo server did not answer (${e.message}). Try again in a moment.`);
+      if (gone()) return;
+      // Plain words only: "Unexpected token 'A'" or "Load failed" means nothing to a visitor.
+      status(navigator.onLine === false ? "You look offline. Reconnect and press Run again."
+        : "The demo server did not answer. Press Run again in a moment.");
       setRunning(false);
       return;
     }
+    if (gone()) return;
 
     TW.reset();
     document.body.classList.toggle("unguarded", !guarded);
@@ -172,14 +179,17 @@
     for (let i = 0; i < n; i++) {
       const step = r.steps[i];
       await sleep(STEP_MS);
+      if (gone()) return;
       status(`Step ${i + 1} of ${n}: ${step.tool}`);
       if (guarded) {
         for (const ev of step.events) {
           if (ev.kind === "observe") await sleep(120);
+          if (gone()) return;
           TW.event(ev.kind, ev.data);
           if (ev.kind === "verdict" && step.human) {
             status(`Step ${i + 1} of ${n}: waiting for an OK. A simulated human answers ${step.human === "allow" ? "yes, it is part of the task" : "no, nobody asked for this"}.`);
             await sleep(HUMAN_MS);
+            if (gone()) return;
             TW.resolved(ev.data.id, step.human, "simulated human");
           }
         }
@@ -193,6 +203,7 @@
       setBank(step.after.balance, r.start_balance, "running");
     }
     await sleep(STEP_MS);
+    if (gone()) return;
     setInbox(r.attacker_inbox, "done");
     setBank(r.balance, r.start_balance, "done");
     setTask(r);
@@ -226,16 +237,20 @@
   function leaveDemo() {
     if (!demoOn) return;
     demoOn = false;
+    if (running) { runId++; setRunning(false); } // leaving mid-run stops it; it used to keep both tabs selected
     delete document.body.dataset.demo;
     $("demo").hidden = true;
     $("tab-demo").setAttribute("aria-selected", "false");
-    if (location.hash === "#demo") history.replaceState(null, "", location.pathname + location.search);
+    // Drop #demo and ?scenario= too: either one would put a reload of the Live view back into the Demo tab.
+    const u = new URL(location.href);
+    u.hash = ""; u.searchParams.delete("scenario"); u.searchParams.delete("tab"); u.searchParams.delete("autorun");
+    history.replaceState(null, "", u.pathname + u.search);
     if (ran) { TW.reset(); ran = false; idleOutcome(); for (const k in last) delete last[k]; paintCompare(); status(""); }
     document.body.classList.remove("unguarded");
     $("raw-log").hidden = true; $("raw-note").hidden = true;
   }
   $("tab-demo").addEventListener("click", enterDemo);
-  for (const id of ["tab-live", "tab-audit"]) $(id).addEventListener("click", () => { if (demoOn && !running) leaveDemo(); }, true);
+  for (const id of ["tab-live", "tab-audit"]) $(id).addEventListener("click", () => { if (demoOn) leaveDemo(); }, true);
   const opener = $("open-demo");
   if (opener) opener.addEventListener("click", enterDemo);
   const origRun = run;
