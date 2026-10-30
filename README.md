@@ -14,7 +14,7 @@ Built from scratch in 24 hours for the PARALLAX hackathon (BMSCE IEEE Computer S
 git clone https://github.com/sakshath7408/tripwire-agent-shield && cd tripwire-agent-shield
 uv sync                                   # Python 3.12+, installs everything
 uv run tripwire serve                     # daemon; in a terminal it prints a one-time dashboard link
-uv run tripwire open                      # (later) type "pair" to open the dashboard with a fresh one-time code
+uv run tripwire open                      # (later) shows 6 digits: type them into the serve terminal, or OK them in a paired dashboard
 ```
 
 Want `tripwire` on your PATH instead of `uv run tripwire`? From the repo folder: `uv tool install .` (or `pip install .` in any Python 3.12+ virtualenv).
@@ -25,9 +25,12 @@ In a second terminal, watch an attack succeed with no guard, then fail with Trip
 
 ```bash
 uv run python demo/run_demo.py --scenario injected-doc --no-guard --delay 0   # Act 1: keys stolen
-uv run python demo/run_demo.py --scenario injected-doc --guard-only --delay 0 --approve auto   # Act 2: blocked
+uv run python demo/run_demo.py --scenario injected-doc --guard-only --delay 0 --approve dashboard   # Act 2: blocked
 uv run python demo/run_demo.py --scenario all --offline --delay 0 --approve auto   # all five, no daemon needed
+uv run python demo/run_demo.py --scenario all --offline --delay 0 --approve all    # hard floor: the human allows everything
 ```
+
+Who answers when Tripwire asks: with `--approve dashboard` it's you. `--approve auto` is a careful simulated human. It sees only what a person sees: Tripwire's reason, where the call goes, the task you typed and your contacts. It never sees which steps are the attack, so it can be fooled. `--approve all` clicks Allow on everything, so what's left is what Tripwire stops on its own.
 
 Put it in front of a real agent:
 
@@ -37,7 +40,7 @@ uv run tripwire uninstall claude          # takes them out again; an untouched s
 uv run tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 905 tests (plus 1 expected failure)
+uv run pytest -q                          # 1,271 tests (plus 1 expected failure)
 uv run python bench/run_all.py            # benchmarks, about 20 s, writes bench/results/summary.md
 ```
 
@@ -46,7 +49,7 @@ The dashboard shows every verdict live. It holds "ask" actions in an approval qu
 ## What else is in the box
 
 - **Tamper-evident audit trail across agents.** Every task, tool output, verdict and human click is one row in `~/.tripwire/audit.db`. Rows are hash-chained (SHA-256) and signed (HMAC). Edit, delete or reorder a row and `tripwire audit verify` names the first broken one. Agents are blocked from reading the key (`~/.tripwire/audit.key`), but same-user code outside the hooks could, so this proves tampering by anyone without the key. Every row says which agent acted and who spawned it: Claude Code sub-agents, MCP servers and SDK agents all land in one tree. Commands: `tripwire audit verify`, `tripwire audit export --format jsonl` (anyone can recheck the hashes with `verify --file`), `tripwire audit tail -f`.
-- **Hosted app with a Demo tab.** https://tripwire-agent-shield.vercel.app opens the real dashboard (first-open guide, then "Connect your agent"; a website cannot reach the daemon on your machine). Its **Demo** tab (https://tripwire-agent-shield.vercel.app/#demo) runs the same engine and the same demo world on Vercel, one act per click. **Try your own attack** (the last chip) plants your text (max 4 KB, plain text only) in the clean world and runs it the same way. Anything outside the user's world counts as the attacker's and only lands in a temp file; commands are simulated, never run. The pitch deck is not part of the site; it lives in `docs/pitch/`.
+- **Hosted app with a Demo tab.** The same careful simulated human answers every ASK there, and a **Hard floor** switch makes it click Allow on everything. Each run prints "Stopped on its own: N of M attack steps · with a careful human: K of M". https://tripwire-agent-shield.vercel.app opens the real dashboard (first-open guide, then "Connect your agent"; a website cannot reach the daemon on your machine). Its **Demo** tab (https://tripwire-agent-shield.vercel.app/#demo) runs the same engine and the same demo world on Vercel, one act per click. **Try your own attack** (the last chip) plants your text (max 4 KB, plain text only) in the clean world and runs it the same way. Anything outside the user's world counts as the attacker's and only lands in a temp file; commands are simulated, never run. The pitch deck is not part of the site; it lives in `docs/pitch/`.
 - **Stage kit.** `scripts/preflight.sh` is a green/red checklist before going on stage. `scripts/stage.sh` starts a clean daemon and opens the dashboard in presenter mode. Backup videos were recorded from the real code. See [docs/PRESENTING.md](docs/PRESENTING.md).
 - **Optional judge, off by default.** See step 7 below. Honest result: a plain rule beat it.
 - **Optional real local model.** With Ollama installed, `--planner ollama --model qwen2.5:3b` drives the demo world with a real model and native tool calling (`demo/world/ollama_planner.py`). Honest result: qwen2.5 3B and 1.5B never fell for any injection (0 of 8 attack acts). So the main demo uses a scripted stand-in for a hijacked model, and we say so. Tripwire also never blocked the real model's real work. Details: [bench/results/ollama_demo.md](bench/results/ollama_demo.md).
@@ -94,7 +97,7 @@ Your prompt is the only trusted text in a session. Every tool output (a file, a 
 
 Tripwire records every URL, email address, IBAN, UPI id, IP, phone number, domain and command line that shows up in untrusted output, and where it came from. When the agent later tries to send, pay, fetch or run something that uses one of those values, and you never typed it, that is the injection signal. The reason names the source: "Uses `attacker@evil.invalid`, which came from README.md, not from you."
 
-There is a second, separate signal: a phrase detector (`INJECTION_MARKERS`) that spots text talking to the AI, like "ignore your previous instructions". It is one signal, not the core, and it matters a lot on benchmarks. On AgentDojo, provenance and the other checks alone stop 86.0% of attacks (45.3% hard block). The phrase detector lifts that to 96.2% (92.1% hard block), because AgentDojo's main attack uses one fixed template the list knows. Attack texts the list does not know get only the provenance number. Full table under [Benchmark numbers](#benchmark-numbers).
+There is a second, separate signal: a phrase detector (`INJECTION_MARKERS`) that spots text talking to the AI, like "ignore your previous instructions". It is one signal, not the core, and it matters a lot on benchmarks. On AgentDojo, provenance and the other checks alone stop 92.0% of attacks (45.3% hard block). The phrase detector lifts that to 96.2% (92.1% hard block), because AgentDojo's main attack uses one fixed template the list knows. Attack texts the list does not know get only the provenance number. Full table under [Benchmark numbers](#benchmark-numbers).
 
 The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM pattern: untrusted data must never decide where data flows, and no model that reads attacker text gets to make the decision.
 
@@ -127,16 +130,16 @@ The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM 
 |---|---|
 | 01 Threat relevance | `demo/THREAT_MODEL.md` names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, `bench/results/` |
-| 03 Technical implementation | `src/tripwire/` (about 9,000 lines of Python), 905 tests (plus 1 expected failure), `docs/ARCHITECTURE.md` |
+| 03 Technical implementation | `src/tripwire/` (about 10,800 lines of Python), 1,271 tests (plus 1 expected failure), `docs/ARCHITECTURE.md` |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
 | 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app (Demo tab: `/#demo`) |
-| 06 Safety, privacy, responsible engineering | local only, args redacted before storage (`secrets.redact`), fail closed, split credentials (`auth.py`): the agent hook's token can only send tasks, tool outputs and actions to check; everything else needs the admin key or a dashboard paired with a one-time code that `tripwire open` mints only in your own terminal. The engine blocks the agent's known routes to the guard: the daemon's port (also via `lvh.me`-style names, `--resolve`, a Host header, rot13), `~/.tripwire` through globs or variables, importing or running Tripwire's own code, and switching Claude Code's hooks off. The audit log records the credential used (`hook-token`, `admin` or `dashboard`). Hard boundary: [docs/HARDENING.md](docs/HARDENING.md). Plain "Known limits" below |
+| 06 Safety, privacy, responsible engineering | local only, no network lookups by the guard, args redacted before storage (`secrets.redact`), fail closed. Control: Tripwire keeps no admin key on disk. The token your agent's hooks use can only send a task, tool outputs and actions to check. It can't answer an ASK, change settings, reset, or pair a browser. Only a paired dashboard can, and a browser is paired only through a person: a one-time link printed straight to the terminal running `tripwire serve` (never to a log), or a 6-digit code from `tripwire open` that you type into that terminal or approve in a dashboard you already paired. While a session has seen hidden instructions, nobody can loosen autonomy and no new link is printed. This stops an agent that can read every file in ~/.tripwire and talk to the daemon directly. It does not stop a process running as your OS user that reads your browser's cookies, attaches a debugger to the daemon, or kills it and starts its own copy. For that, `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. Details: [docs/HARDENING.md](docs/HARDENING.md). Plain "Known limits" below |
 | 07 Feasibility and real-world impact | `tripwire install claude` works on a real Claude Code today; `mcp-proxy` works with any MCP server |
 | 08 Presentation and live demo | `demo/SCRIPT.md`, `docs/PRESENTING.md` (preflight, stage, backup video), `docs/pitch/index.html` |
 
 ## Benchmark numbers
 
-Run on 30 Oct 2026 22:30 with `uv run python bench/run_all.py` (about 100 s, no LLM, no cost). Rerun before quoting.
+Run on 31 Oct 2026 04:38 with `uv run python bench/run_all.py` (about 30 s, no LLM, no cost). Same numbers under any `PYTHONHASHSEED`. Rerun before quoting.
 
 Three words, used the same way everywhere:
 - **Hard block**: the call is refused. Nobody is asked.
@@ -157,19 +160,28 @@ The headline AgentDojo number leans on the phrase detector. Its list includes Ag
 
 | AgentDojo attack text | Phrase list ON: stopped | ON: hard block | Phrase list OFF: stopped | OFF: hard block |
 |---|---|---|---|---|
-| important_instructions | 96.2% | 92.1% | 86.0% | 45.3% |
-| tool_knowledge | 99.5% | 95.4% | 86.0% | 45.3% |
-| injecagent | 96.2% | 88.5% | 86.0% | 45.3% |
-| ignore_previous | 86.0% | 45.3% | 86.0% | 45.3% |
-| direct | 86.0% | 45.3% | 86.0% | 45.3% |
-| system_message | 86.0% | 45.3% | 86.0% | 45.3% |
+| important_instructions | 96.2% | 92.1% | 92.0% | 45.3% |
+| tool_knowledge | 99.5% | 95.4% | 92.0% | 45.3% |
+| injecagent | 96.2% | 88.5% | 92.0% | 45.3% |
+| ignore_previous | 92.0% | 45.3% | 92.0% | 45.3% |
+| direct | 92.0% | 45.3% | 92.0% | 45.3% |
+| system_message | 92.0% | 45.3% | 92.0% | 45.3% |
 | benign tasks allowed (all texts) | 95.9% | | 95.9% | |
 
 How to read it:
 - **Detector on, known template** (important_instructions, tool_knowledge, injecagent): the phrase list fires, so most attacks are hard-blocked.
-- **Detector off, or a template the list does not know** (ignore_previous, direct, system_message): only provenance, intent, secret and policy checks are left. That is the honest floor: 86.0% stopped, 45.3% hard block (79.5% before calendar invites got recipient checks on 31 Oct).
+- **Detector off, or a template the list does not know** (ignore_previous, direct, system_message): only provenance, intent, secret and policy checks are left. That is the honest floor: 92.0% stopped, 45.3% hard block.
 - Benign tasks do not change, because the phrase list only fires on injected text.
-- Weakest suites without the detector: slack (41.0% stopped, 11.4% hard block), travel (82.5% stopped, 37.5% hard block). Every missed pair is listed in `bench/results/agentdojo_*_nomarkers.json` (`missed`).
+- Earlier versions of this page said 86.0% here. That was one sample: verdicts depended on Python's hash seed (set order), and slack swung between 41% and 75% stopped. Since 31 Oct every seed gives the same verdicts (`tests/test_redteam4.py` checks three seeds; a full `bench/run_all.py` under `PYTHONHASHSEED=0` and `=2` gives identical tables).
+- Weakest suites without the detector: slack (75.2% stopped, 11.4% hard block), travel (82.5% stopped, 37.5% hard block). Every missed pair is listed in `bench/results/agentdojo_*_nomarkers.json` (`missed`).
+
+### Hard floor: what Tripwire stops when the human allows everything
+
+"Stopped" counts asks, and a person can click Allow on an ask. So here is what's left with nobody saying no:
+
+- **AgentDojo:** the hard block column above. 92.1% with the phrase list, 45.3% without it.
+- **The four stage attack scenarios** (`demo/run_demo.py --scenario all --offline --approve all`): 13 of 13 attack steps blocked on its own. The attacker got nothing in all 4, and every task got done.
+- **The 10 attacks a reviewer typed into the live page** (9 of them got something out with no guard): with a careful simulated human, none got anything out (8 of 13 attack steps blocked on its own, 5 refused by the human). With the hard floor, 9 of 13 steps are blocked on its own and 2 of 10 attacks got something out: a README summary POSTed to a web address the README named, and a cc to a Gmail look-alike of Sam's address. Tripwire asked about both; it didn't block them.
 
 Before the recipient and provenance hardening of 30 Oct, the floor was 62.6% stopped and 36.1% hard block ([bench/results/matrix_baseline.md](bench/results/matrix_baseline.md)).
 
@@ -180,10 +192,10 @@ Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in
 ## Known limits
 
 > **Read this before you trust it.**
-> - **Same OS user = defence in depth, not a sandbox.** Tripwire runs as you, and so does your agent. It splits its credentials. The hook token (`~/.tripwire/token`, which the hooks need) can only send a task, tool outputs and actions to check. Pairing a browser, settings, resets, rules and the audit need the admin key (`~/.tripwire/admin.key`, which no hook or adapter reads) or the paired dashboard. `tripwire open` mints a pairing code only in a real terminal after you type `pair`, and no link is written to a log. A session that saw hidden instructions can't be re-tasked over the API, and a reset never forgets what it saw. On top of that, the engine blocks the agent's known routes: reading `~/.tripwire`, calling the daemon's port by any name that leads back here, importing or running Tripwire's own code, and turning Claude Code's hooks off. Three reviews each found a new route, and each is now a test (`tests/test_redteam*.py`). But a process running as your OS user can, in principle, read any file you can, including the admin key. For a hard boundary, run the daemon as a separate OS user: [docs/HARDENING.md](docs/HARDENING.md).
+> - **Same OS user = defence in depth, not a sandbox.** Tripwire keeps no admin key on disk. The token your agent's hooks use can only send a task, tool outputs and actions to check. It can't answer an ASK, change settings, reset, or pair a browser. Only a paired dashboard can, and a browser is paired only through a person: a one-time link printed straight to the terminal running `tripwire serve` (never to a log), or a 6-digit code from `tripwire open` that you type into that terminal or approve in a dashboard you already paired. While a session has seen hidden instructions, nobody can loosen autonomy and no new link is printed. This stops an agent that can read every file in ~/.tripwire and talk to the daemon directly. It does not stop a process running as your OS user that reads your browser's cookies, attaches a debugger to the daemon, or kills it and starts its own copy. For that, `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. A session that saw hidden instructions can't be re-tasked over the API, and a reset never forgets what it saw. On top of that, the engine blocks the routes to the guard that reviews found (each is a test in `tests/test_redteam*.py` and `tests/test_guard4.py`), but the control above doesn't depend on catching every one. Steps: [docs/HARDENING.md](docs/HARDENING.md).
 > - **The hijacked agent in the demo is scripted.** Real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged.
 > - **Intent is keyword matching.** If your prompt says "send", "reply" or "pay", that kind of action counts as expected. A send to an address taken from data can still pass if the email carried no hidden-instruction phrasing and the recipient check does not catch it.
-> - **The phrase list is a list.** Without it, AgentDojo drops from 96.2% to 86.0% stopped. A new wording gets the lower number.
+> - **The phrase list is a list.** Without it, AgentDojo drops from 96.2% to 92.0% stopped, and hard blocks from 92.1% to 45.3%. A new wording gets the lower number.
 
 Other limits:
 

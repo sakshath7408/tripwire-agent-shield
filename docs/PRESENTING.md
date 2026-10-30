@@ -8,7 +8,7 @@ The full talk track is `demo/SCRIPT.md`. This page is the stage kit around it.
 
 ```
 scripts/preflight.sh     # green/red checklist, about 40 s
-scripts/stage.sh         # clean daemon, reset, dashboard in presenter mode, prints the next commands
+scripts/stage.sh         # clean daemon, empty view, one-time presenter link, prints the next commands
 ```
 
 `preflight.sh` checks: uv env synced, daemon healthy and really Tripwire on the port (or the port is free),
@@ -16,17 +16,21 @@ the daemon accepts your token (`~/.tripwire/token`), the autonomy level is balan
 both acts offline, the backup video exists, Ollama (optional), and AC power. It only reminds you about
 Do Not Disturb and fonts. It never changes a system setting.
 
-`stage.sh` restarts the daemon with `scripts/restart_daemon.sh`, resets it with the token, empties the attacker's
-inbox, pins the autonomy level to balanced (the level is saved across restarts, so a strict rehearsal would
+`stage.sh` restarts the daemon with `scripts/restart_daemon.sh` and an empty view (`--clear-view`; attacks it saw
+stay remembered), empties the attacker's inbox, pins the autonomy level to balanced (the level is saved across restarts, so a strict rehearsal would
 otherwise change the show; `AUTONOMY=strict scripts/stage.sh` to choose another), lists any learned rules
-(they survive a reset and can change what the demo asks; it never deletes them), opens
+(they survive a reset and can change what the demo asks; it never deletes them), prints a one-time
+presenter link straight to your terminal (Cmd-click it once to pair this browser), opens
 `http://127.0.0.1:7777/?stage=1&theme=light`, and prints the exact commands for Act 1, Act 2, "it asks once"
 and the proof. Both take a port: `scripts/stage.sh 7778`. `NO_OPEN=1` skips the browser.
 
-The daemon's mutating endpoints need the per-install token. The scripts and the demo read it from
-`$TRIPWIRE_HOME/token` (default `~/.tripwire/token`), so run them from a shell with the same `TRIPWIRE_HOME` as
-the daemon. The dashboard gets the token as an HttpOnly cookie when the page loads: if it ever says
-"Reload the page to reconnect", reload it.
+Run `stage.sh` (or `scripts/restart_daemon.sh`) in your own terminal: the one-time link is printed only to a
+real terminal, never to a log. There is no admin key on disk. The demo's agent uses the hook token
+(`$TRIPWIRE_HOME/token`) to send tasks and actions, so run it from a shell with the same `TRIPWIRE_HOME` as the
+daemon. Only the paired dashboard can answer an ask, which is why the stage commands use `--approve dashboard`.
+`--approve auto` against a live daemon needs a throwaway `serve --demo-admin` daemon; offline it needs nothing.
+If the dashboard says it is not connected, Cmd-click a fresh link from `scripts/restart_daemon.sh`, or run
+`uv run tripwire open` and type its 6 digits into the serve terminal.
 
 ## The story in one breath
 

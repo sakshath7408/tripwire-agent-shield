@@ -123,6 +123,8 @@
   th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--ink); }
   th { font-size: 16px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
   td.n { font-variant-numeric: tabular-nums; font-weight: 650; }
+  p.floor { margin: 18px 0 0; font-size: 20px; color: var(--ink); line-height: 1.35; }
+  p.floor b { color: var(--ask, #b45309); }
 
   /* slide 7 */
   .cmdline { font-family: var(--mono); font-size: 24px; background: var(--bar-bg); color: #e8ecf2; border-radius: 12px; padding: 18px 22px; box-shadow: inset 0 1px 0 rgba(255,255,255,.1); }
@@ -219,17 +221,18 @@
   <h2>AgentDojo replay, 609 attacks, no LLM, reproducible.</h2>
   <div class="nums">
     <div class="stat"><div class="big good">96.2%</div><div class="lbl">stopped, phrase list on<br>92.1% hard block</div></div>
-    <div class="stat"><div class="big">86.0%</div><div class="lbl">stopped, phrase list off<br>45.3% hard block</div></div>
+    <div class="stat"><div class="big">92.0%</div><div class="lbl">stopped, phrase list off<br>45.3% hard block</div></div>
     <div class="stat"><div class="big">95.9%</div><div class="lbl">benign tasks allowed<br>7.1% of calls ask or block</div></div>
   </div>
   <table>
     <tr><th>Attack text</th><th>List on: stopped / block</th><th>List off: stopped / block</th></tr>
-    <tr><td>important_instructions</td><td class="n">96.2% / 92.1%</td><td class="n">86.0% / 45.3%</td></tr>
-    <tr><td>tool_knowledge</td><td class="n">99.5% / 95.4%</td><td class="n">86.0% / 45.3%</td></tr>
-    <tr><td>injecagent</td><td class="n">96.2% / 88.5%</td><td class="n">86.0% / 45.3%</td></tr>
-    <tr><td>3 texts the list misses</td><td class="n">86.0% / 45.3%</td><td class="n">86.0% / 45.3%</td></tr>
+    <tr><td>important_instructions</td><td class="n">96.2% / 92.1%</td><td class="n">92.0% / 45.3%</td></tr>
+    <tr><td>tool_knowledge</td><td class="n">99.5% / 95.4%</td><td class="n">92.0% / 45.3%</td></tr>
+    <tr><td>injecagent</td><td class="n">96.2% / 88.5%</td><td class="n">92.0% / 45.3%</td></tr>
+    <tr><td>3 texts the list misses</td><td class="n">92.0% / 45.3%</td><td class="n">92.0% / 45.3%</td></tr>
   </table>
-  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Stopped = hard block + ask a human. Shell corpus: 84 of 84 stopped. bench/results/matrix.md, 30 Oct 23:17.</span></div>
+  <p class="floor"><b>Hard floor, the human clicks Allow on everything:</b> AgentDojo 92.1% / 45.3% hard block (list on / off). Stage demo: 13 of 13 attack steps blocked on its own. Ten attacks a reviewer typed: 9 of 13 steps blocked on its own, 2 got something out.</p>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Stopped = hard block + ask a human. Shell corpus: 84 of 84 stopped. Same numbers under any hash seed. bench/results/matrix.md, 31 Oct 2026 04:38.</span></div>
 </section>
 
 <!-- 6 Responsible engineering -->
@@ -239,10 +242,10 @@
   <div class="grid cols-3">
     <div class="card allow"><h3>Local only</h3><p>Binds to 127.0.0.1, so other machines can't reach it. No cloud, no telemetry.</p></div>
     <div class="card allow"><h3>Fail closed</h3><p>Daemon down, hook crash, engine bug: the call is denied by default.</p></div>
-    <div class="card allow"><h3>Split keys</h3><p>The agent's hook token can only ask for verdicts. Pairing, resets and settings need an admin key, or a code typed into <span class="mono">tripwire open</span> in your own terminal.</p></div>
+    <div class="card allow"><h3>No admin key; dashboard-only control</h3><p>The agent's hook token can only ask for verdicts. Only a paired dashboard answers asks or changes settings, and pairing goes through a person at the <span class="mono">serve</span> terminal.</p></div>
     <div class="card allow"><h3>Redaction</h3><p>Secrets are masked before any verdict is stored or shown.</p></div>
     <div class="card allow"><h3>Synthetic data</h3><p>Fake keys, fake bank, attacker hosts on .invalid.</p></div>
-    <div class="card ask"><h3>Known limits</h3><p>Same OS user: we block the agent's known routes, not every file read. Hard boundary: run the daemon as its own user. Demo agent is scripted.</p></div>
+    <div class="card ask"><h3>Known limits</h3><p>Same OS user: a process that reads your browser cookies or debugs the daemon can still take over. <span class="mono">tripwire harden</span> gives a real OS boundary. Demo agent is scripted.</p></div>
   </div>
   <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>No component that reads attacker text makes a decision.</span></div>
 </section>
@@ -256,7 +259,7 @@
     <div class="card"><h3>Any MCP agent</h3><p>Wrap any MCP server. Tools pinned and signed. Role profiles.</p></div>
   </div>
   <div class="cmdline"><span class="c">$</span> uv run tripwire install claude<br><span class="c">$</span> uv run tripwire mcp-proxy --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .</div>
-  <p class="lead" style="margin-top:30px">Open source. 905 tests. Built from scratch in 24 hours.</p>
+  <p class="lead" style="margin-top:30px">Open source. 1,271 tests. Built from scratch in 24 hours.</p>
   <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>github: agent-shield &nbsp;|&nbsp; docs/ARCHITECTURE.md &nbsp;|&nbsp; demo/SCRIPT.md</span></div>
 </section>
 
