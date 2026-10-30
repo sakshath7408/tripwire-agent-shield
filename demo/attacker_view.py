@@ -20,7 +20,8 @@ DROP = Path(__file__).parent / "world" / "attacker_drop.json"
 
 def render() -> str:
     items = json.loads(DROP.read_text() or "[]") if DROP.exists() else []
-    lines = ["\033[1mATTACKER'S INBOX\033[0m  (synthetic, demo/world/attacker_drop.json)", ""]
+    count = f"{len(items)} item{'s' if len(items) != 1 else ''}" if items else "empty"
+    lines = [f"\033[1mATTACKER'S INBOX: {count}\033[0m  (synthetic, demo/world/attacker_drop.json)", ""]
     if not items:
         lines.append("\033[32;1m  empty: the attacker got nothing\033[0m")
     for d in items:

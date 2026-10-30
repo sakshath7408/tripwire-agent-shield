@@ -64,6 +64,11 @@ class TaintSource:
     tool: str
     snippet: str
     injected: bool = False  # the output this came from also carried hidden instructions
+    label: str = ""  # human name for the source, e.g. "README.md"; falls back to the tool name
+
+    @property
+    def where(self) -> str:
+        return self.label or self.tool
 
 
 @dataclass
@@ -81,20 +86,20 @@ class TaintStore:
         for kind, vals in indicators(text).items():
             self.trusted.setdefault(kind, set()).update(vals)
 
-    def add_untrusted(self, tool: str, text: str) -> None:
+    def add_untrusted(self, tool: str, text: str, label: str = "") -> None:
         text = text[:MAX_OBSERVE]
         m = INJECTION_MARKERS.search(text)
         for vals in indicators(text).values():
             for v in vals:
                 if v not in self.untrusted or (m and not self.untrusted[v].injected):
-                    self.untrusted[v] = TaintSource(tool, _snippet(text, v), injected=bool(m))
+                    self.untrusted[v] = TaintSource(tool, _snippet(text, v), injected=bool(m), label=label)
         for line in text.splitlines():
             n = _norm(line)
             if 8 <= len(n) <= 400:
-                self.untrusted_lines.append((n, TaintSource(tool, line.strip()[:160], injected=bool(m))))
+                self.untrusted_lines.append((n, TaintSource(tool, line.strip()[:160], injected=bool(m), label=label)))
         self.untrusted_lines = self.untrusted_lines[-5000:]
         if m:
-            self.injection_seen.append(TaintSource(tool, _snippet(text, m.group(0)), injected=True))
+            self.injection_seen.append(TaintSource(tool, _snippet(text, m.group(0)), injected=True, label=label))
 
     def is_trusted_value(self, value: str) -> bool:
         v = value.lower()

@@ -40,6 +40,28 @@ def _strings(value: Any) -> list[str]:
     return [str(value)] if value is not None else []
 
 
+def _source_label(s, tool: str) -> str:
+    """Name the thing a tool output came from, e.g. "README.md" or a URL, from the last call to that tool."""
+    for v in reversed(s.history):
+        if v.action.tool != tool:
+            continue
+        target = _first(v.action.args, PATH_KEYS) or _first(v.action.args, ("url", "uri", "endpoint"))
+        if not target:
+            break
+        cwd = s.cwd or ""
+        if cwd and target.startswith(cwd.rstrip("/") + "/"):
+            target = target[len(cwd.rstrip("/")) + 1:]
+        if len(target) <= 80:
+            return target
+        break
+    low = tool.lower()
+    for words, name in (("inbox mail message", "an email"), ("web fetch url http browse", "a web page"),
+                        ("file read cat", "a file"), ("search", "a search result")):
+        if any(w in low for w in words.split()):
+            return name
+    return ""
+
+
 def _first(args: dict[str, Any], keys: tuple[str, ...]) -> str | None:
     for k in keys:
         if isinstance(args.get(k), str):
@@ -61,14 +83,15 @@ class Engine:
 
     def observe(self, obs: Observation) -> None:
         s = self.sessions.get(obs.session_id)
-        s.taint.add_untrusted(obs.tool, obs.output)
+        label = _source_label(s, obs.tool)
+        s.taint.add_untrusted(obs.tool, obs.output, label)
         # An output arriving from a tool with a pending secret read means the human let it run.
         for vid, (tool, path) in list(s.pending_secrets.items()):
             if tool == obs.tool:
                 s.secrets_read.append(path)
                 del s.pending_secrets[vid]
-        self._emit("observe", {"session_id": obs.session_id, "tool": obs.tool, "bytes": len(obs.output),
-                               "injection": bool(s.taint.injection_seen)})
+        self._emit("observe", {"session_id": obs.session_id, "tool": obs.tool, "source": label or obs.tool,
+                               "bytes": len(obs.output), "injection": bool(s.taint.injection_seen)})
 
     def resolve(self, verdict_id: str, decision: Decision) -> None:
         """A human (or a timeout) answered an ASK."""
@@ -178,7 +201,7 @@ class Engine:
                     sev = MEDIUM if s.taint.injection_seen else LOW
                 if sev:
                     f.append(Finding(rule="taint.command_from_data", severity=sev, category="injection",
-                                     message=f"This exact command was written inside content the agent read ({src.tool}), not by you.",
+                                     message=f"This exact command was written inside content the agent read ({src.where}), not by you.",
                                      evidence=src.snippet))
 
         if path:
@@ -211,19 +234,19 @@ class Engine:
                 if src.injected:
                     # The value sat next to hidden instructions: it is attacker-chosen.
                     sev = CRITICAL if cap == Capability.MONEY else HIGH + 5
-                    msg = f"Uses '{v}', which came from the same content as hidden instructions ({src.tool})."
+                    msg = f"Uses '{v}', which came from the same content as hidden instructions ({src.where})."
                 elif cap == Capability.WRITE:
                     sev = 0
                 elif cap == Capability.FETCH:
                     sev = MEDIUM if injected else LOW
-                    msg = f"Visits '{v}', which came from content the agent read ({src.tool}), not from you."
+                    msg = f"Visits '{v}', which came from content the agent read ({src.where}), not from you."
                 elif s.intends(cap):
                     # User asked for this kind of action and the value came from a clean document they pointed at.
                     sev = MEDIUM if cap == Capability.MONEY else LOW
-                    msg = f"Uses '{v}' from {src.tool}. You asked for this, but check the details."
+                    msg = f"Uses '{v}' from {src.where}. You asked for this, but check the details."
                 else:
                     sev = CRITICAL if cap == Capability.MONEY else HIGH + 5
-                    msg = f"Uses '{v}', which came from content the agent read ({src.tool}), not from you."
+                    msg = f"Uses '{v}', which came from content the agent read ({src.where}), not from you."
                 if sev:
                     f.append(Finding(rule=f"taint.{cap.value}_target", severity=sev, category="injection",
                                      message=msg, evidence=src.snippet))
@@ -245,7 +268,7 @@ class Engine:
         if injected and f and (cap in SINKS or any(x.category == "secrets" for x in f)):
             src = s.taint.injection_seen[-1]
             f.append(Finding(rule="taint.injection_context", severity=max(x.severity for x in f) + 5, category="injection",
-                             message=f"Hidden instructions were found in {src.tool} earlier in this session.",
+                             message=f"Hidden instructions were found in {src.where} earlier in this session.",
                              evidence=src.snippet))
 
         if cap == Capability.UNKNOWN:  # fail closed: if we can't tell what a tool does, a human decides

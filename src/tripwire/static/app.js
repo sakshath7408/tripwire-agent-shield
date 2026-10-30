@@ -130,7 +130,8 @@
 
   /** Where an evidence snippet came from, read from the finding's own words. */
   function evidenceSource(f) {
-    const m = f.message.match(/\(([^()]+)\),? not (?:from|by) you/) || f.message.match(/found in (.+?) earlier/);
+    const m = f.message.match(/\(([^()]+)\),? not (?:from|by) you/) || f.message.match(/found in (.+?) earlier/)
+      || f.message.match(/hidden instructions \(([^()]+)\)/) || f.message.match(/ from (\S+)\. You asked/);
     return m ? m[1] : "content the agent read";
   }
 
@@ -273,6 +274,9 @@
       const hot = vs.some(isPending) ? "ask" : vs.some((v) => v.decision === "block") ? "block" : "";
       return `<button type="button" data-sid="${esc(s.id)}" aria-pressed="${s.id === S.session}"><span class="dot" data-hot="${hot}" aria-hidden="true"></span>${esc(s.id)}</button>`;
     }).join("");
+    const on = el.sessions.querySelector('[aria-pressed="true"]');
+    if (on && on.scrollIntoViewIfNeeded) on.scrollIntoViewIfNeeded(false);
+    else if (on) on.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
   function renderBrief() {
@@ -280,7 +284,10 @@
     const task = sess && sess.task;
     el.task.textContent = task || "Nothing yet. Give your agent a task and it shows up here.";
     el.task.classList.toggle("is-empty", !task);
-    el.cwd.textContent = sess && sess.cwd ? sess.cwd : "";
+    const cwd = sess && sess.cwd ? sess.cwd : "";
+    const parts = cwd.split("/").filter(Boolean);
+    el.cwd.textContent = parts.length > 3 ? "…/" + parts.slice(-3).join("/") : cwd;
+    el.cwd.title = cwd;
     const prof = sess && (sess.profile || sess.permission_profile);
     el.profile.hidden = !prof;
     el.profile.textContent = prof ? `Profile: ${typeof prof === "string" ? prof : prof.name || prof.id}` : "";
@@ -300,7 +307,8 @@
     const inj = sess && sess.injection_seen > 0;
     el.inject.hidden = !inj;
     if (inj) {
-      const src = S.injectSrc.get(sess.id);
+      const inj0 = (sess.injections || [])[0];
+      const src = (inj0 && (inj0.source || inj0.tool)) || S.injectSrc.get(sess.id);
       el.injectText.innerHTML = `<b>Hidden instructions found${src ? " in " + esc(src) : ""}.</b> Tripwire treats them as data, not as your instructions.`;
     }
   }
@@ -378,6 +386,13 @@
     const v = S.selected && S.verdicts.get(S.selected);
     el.detailEmpty.hidden = !!v;
     el.detailBody.hidden = !v;
+    if (!v) {
+      const vs = viewVerdicts();
+      const clean = vs.length > 0 && vs.every((x) => x.decision === "allow");
+      el.detailEmpty.querySelector("p").textContent = clean
+        ? "All clear. Every action so far matched what you asked for. Pick one to see why."
+        : "Pick any action to see exactly why Tripwire decided what it did.";
+    }
     if (!v) { el.detail.classList.remove("is-open"); document.body.classList.remove("sheet-open"); return; }
     const by = byText(v);
     const pending = isPending(v);
@@ -421,7 +436,7 @@
     el.auditRows.innerHTML = all.map((v) => {
       const who = v.resolved_by === "human" ? `<span class="who-human">You</span>` : v.resolved_by === "timeout" ? `<span class="who-timeout">Timed out</span>` : v.resolved_by ? esc(v.resolved_by) : isPending(v) ? "Waiting" : "Tripwire";
       return `<tr data-id="${v.id}"><td>${fmtTime(v.ts)}</td><td>${esc(v.action.session_id)}</td><td>${esc(toolLabel(v.action.tool))}</td>
-        <td><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span></td><td>${badge(v.decision)}</td><td>${who}</td>
+        <td><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span></td><td>${badge(v.decision)}</td><td><span class="why" title="${esc(cleanSummary(v))}">${esc(cleanSummary(v))}</span></td><td>${who}</td>
         <td class="num">${v.risk}</td><td class="num">${fmtMs(v.elapsed_ms)}</td></tr>`;
     }).join("");
   }
@@ -451,6 +466,7 @@
       const v = S.verdicts.get(id);
       if (v) { v.decision = decision; v.resolved_by = "human"; }
       refreshStats(0);
+      if (phone.matches && el.detail.classList.contains("is-open")) { closeDetail(); return; } // show the next waiting item
       render();
     } catch (e) {
       btns.forEach((b) => (b.disabled = false));
@@ -579,7 +595,7 @@
         const s = S.sessions.find((x) => x.id === v.action.session_id);
         s.actions = (s.actions || 0) + 1;
       }
-      if (S.followSession && v.action.session_id !== S.session) { S.session = v.action.session_id; }
+      if (S.followSession && v.action.session_id !== S.session) { S.session = v.action.session_id; S.selected = null; }
       const recentPick = Date.now() - S.manualPickAt < 20000;
       if ((v.decision !== "allow") && v.action.session_id === S.session && !recentPick && !phone.matches) S.selected = v.id;
       if (v.decision === "ask") refreshStats(300);
@@ -599,7 +615,7 @@
       refreshSessions(0);
     });
     on("observe", (o) => {
-      if (o.injection && !S.injectSrc.has(o.session_id)) S.injectSrc.set(o.session_id, o.source_tool || o.tool);
+      if (o.injection && !S.injectSrc.has(o.session_id)) S.injectSrc.set(o.session_id, o.source || o.tool);
       refreshSessions(0);
     });
     on("reset", () => {

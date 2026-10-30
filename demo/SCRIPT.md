@@ -51,17 +51,21 @@ Point at terminal 2 as it fills: "That is my SSH key. That is my .env. And the a
 
 ## 2:00 Act 2: same agent, with Tripwire (75 s)
 
+Click **Reset** on the dashboard first, so it starts clean.
+
 ```
-uv run python demo/run_demo.py --scenario injected-doc --guard-only --delay 1 --approve prompt
+uv run python demo/run_demo.py --scenario injected-doc --guard-only --delay 1 --approve dashboard
 ```
 
 "Same agent. Same files. Now every call asks Tripwire first."
 
-- When it asks about `~/.ssh/id_rsa` and `.env`: type `n`. "It asks me, because I never mentioned those files."
+- The yellow banner appears: read it out. "Found hidden instructions in README.md." Point at the evidence box on the right: "From README.md, not from you."
 - The POST and `curl | bash` go red on their own. "Blocked. The address came from the README, not from me."
+- On the projector, click **Block** on `~/.ssh/id_rsa`. Then click **Allow** on `.env`.
+- The email to the attacker goes red anyway. Say: "Even when I say yes to the read, the moment the agent tries to mail it out, Tripwire stops it. Secret material leaving after a secret read."
 - The typo fix and the tests go green. "The real work still gets done."
 
-Point at terminal 2: "Attacker inbox: empty." Point at the dashboard: "Every decision, with a reason anyone can read, in an audit log."
+Point at terminal 2: "Attacker's inbox: empty." Point at the Audit log tab: "Every decision, with a reason anyone can read."
 
 ## 3:15 Beyond permission (45 s)
 
@@ -99,3 +103,4 @@ The deciding logic never reads the attacker's text as instructions, so it cannot
 | Typing y/n feels slow | Use `--approve auto` (a simulated human approves only what was asked for) |
 | Anything else breaks | `uv run python demo/run_demo.py --scenario all --offline --delay 0 --approve auto` prints both acts and a summary for all four scenarios in a few seconds |
 | No time for live run | `uv run pytest -q tests/test_bench.py`: the tests assert the attack succeeds without Tripwire and fails with it |
+| Dashboard looks stale or old | Hard refresh (Cmd+Shift+R) |

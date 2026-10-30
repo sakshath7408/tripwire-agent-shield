@@ -91,6 +91,7 @@ svg { flex: none; }
   height: 100dvh;
   display: grid;
   grid-template-rows: auto auto 1fr;
+  grid-template-columns: minmax(0, 1fr); /* never let a long session list widen the page */
   max-width: 1600px;
   margin: 0 auto;
   padding: 0 20px 16px;
@@ -119,8 +120,8 @@ svg { flex: none; }
   display: inline-flex; align-items: center; gap: 7px;
 }
 .sessions button:hover { color: var(--ink); background: var(--surface); }
-.sessions button[aria-pressed="true"] { color: var(--ink); background: var(--surface); border-color: var(--line); box-shadow: var(--shadow); }
-.sessions .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); }
+.sessions button[aria-pressed="true"] { color: var(--ink); background: var(--surface); border-color: var(--line); box-shadow: var(--shadow); font-weight: 600; }
+.sessions .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); }
 .sessions .dot[data-hot="block"] { background: var(--block); }
 .sessions .dot[data-hot="ask"] { background: var(--ask); }
 
@@ -473,12 +474,14 @@ pre.json {
 .audit-table tbody tr { cursor: pointer; }
 .audit-table tbody tr:hover td { background: var(--surface-2); }
 .audit-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.audit-table .act { max-width: 280px; display: block; }
+.audit-table .act { max-width: 200px; display: block; }
+.audit-table .why { max-width: 260px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
 .audit-table .badge { font-size: 13.5px; padding: 3px 10px 3px 7px; }
 .audit-table .badge svg { width: 15px; height: 15px; }
 .who-human { color: var(--ink); font-weight: 600; }
 .who-timeout { color: var(--block); }
 
+@media (max-width: 1400px) { .audit-table th:last-child, .audit-table td:last-child { display: none; } }
 body[data-view="audit"] .work { grid-template-columns: minmax(0, 1fr); }
 body[data-view="audit"] .detail { display: none; }
 
@@ -535,6 +538,7 @@ body[data-view="audit"] .detail { display: none; }
   .row-side { grid-auto-flow: column; gap: 10px; align-items: center; }
   .row-side > span:last-child { display: none; }
   .row-side .risk-bar { display: none; }
+  .row[data-d="allow"] .row-side .risk[data-lvl="none"] { display: none; }
   .row-badge { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
   .row-badge .by { margin: 0; }
   .row-sum { font-size: 17px; }

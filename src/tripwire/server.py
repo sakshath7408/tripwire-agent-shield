@@ -133,7 +133,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
     def sessions() -> list[dict]:
         return [{"id": s.id, "cwd": s.cwd, "task": s.task, "profile": s.profile,
                  "injection_seen": len(s.taint.injection_seen),
-                 "injections": [{"tool": i.tool, "snippet": i.snippet} for i in s.taint.injection_seen[-5:]],
+                 "injections": [{"tool": i.tool, "source": i.where, "snippet": i.snippet} for i in s.taint.injection_seen[-5:]],
                  "secrets_read": s.secrets_read, "actions": len(s.history)} for s in engine.sessions.all()]
 
     @app.post("/v1/reset")
@@ -176,6 +176,14 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
 
     if STATIC.exists():
         app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+        @app.middleware("http")
+        async def no_stale_dashboard(request: Request, call_next):
+            # A browser that cached last week's dashboard must not show it against today's daemon.
+            resp = await call_next(request)
+            if request.url.path == "/" or request.url.path.startswith("/static/"):
+                resp.headers["Cache-Control"] = "no-cache"
+            return resp
 
         @app.get("/")
         def index():
