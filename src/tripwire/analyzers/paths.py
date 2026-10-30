@@ -33,7 +33,9 @@ def expand(path: str, cwd: str | None = None) -> str:
 
 
 def is_secret(path: str) -> bool:
-    return bool(SECRET_PATHS.search(path)) and not path.endswith((".env.example", ".env.sample", ".env.template"))
+    if path.endswith((".env.example", ".env.sample", ".env.template", ".pub", "/known_hosts")):
+        return False  # public keys and templates hold nothing secret
+    return bool(SECRET_PATHS.search(path))
 
 
 def is_persistence(path: str) -> bool:
