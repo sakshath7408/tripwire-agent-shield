@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tripwire live demo</title>
+  <meta name="description" content="Live demo: the real Tripwire engine checks a hijacked agent's tool calls against a synthetic world. Run it without Tripwire, then with it.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z' fill='%23121a2c'/%3E%3Cpath d='M7 12h10' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script>
+    // Theme and presenter mode are decided before paint, so nothing flashes.
+    (function () {
+      var q = new URLSearchParams(location.search), h = document.documentElement;
+      var t = q.get("theme") || localStorage.getItem("tw-theme");
+      if (t !== "dark" && t !== "light") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      h.dataset.theme = t;
+      if (q.get("stage") === "1" || localStorage.getItem("tw-stage") === "1") h.classList.add("stage");
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/demo.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-allow" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m6.3 10.3 2.5 2.5 5-5.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-ask" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7.7 7.6a2.4 2.4 0 1 1 3.3 2.2c-.6.3-1 .8-1 1.5v.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="10" cy="14.4" r="1.1" fill="currentColor"/></symbol>
+    <symbol id="i-block" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4.4 15.6 11.2-11.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.2 4.2 5.1v5.8c0 4.9 3.3 9.2 7.8 10.9 4.5-1.7 7.8-6 7.8-10.9V5.1L12 2.2z" fill="currentColor"/><path d="M7.6 12.2h8.8" stroke="var(--surface)" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-shield-line" viewBox="0 0 24 24"><path d="M12 2.2 4.2 5.1v5.8c0 4.9 3.3 9.2 7.8 10.9 4.5-1.7 7.8-6 7.8-10.9V5.1L12 2.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7.6 12.2h8.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-hidden" viewBox="0 0 20 20"><path d="M4 3.5h12v13H4z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 7h6M7 10h6M7 13h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m3 17 14-14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-user" viewBox="0 0 20 20"><circle cx="10" cy="6.8" r="3.3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3.6 17.2c.8-3.2 3.3-5 6.4-5s5.6 1.8 6.4 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 20 20"><path d="M5 2.5h6.5L15.5 6.5v11H5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11.3 2.6v4h4" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 20 20"><path d="M4 10a6 6 0 1 0 1.8-4.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M4 3.2v3.6h3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 20 20"><path d="M16.5 12.2A6.8 6.8 0 0 1 7.8 3.5a6.8 6.8 0 1 0 8.7 8.7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-stage" viewBox="0 0 20 20"><rect x="2.5" y="4" width="15" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M7 17h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-play" viewBox="0 0 20 20"><path d="M6.5 4.6v10.8a.6.6 0 0 0 .9.5l8.6-5.4a.6.6 0 0 0 0-1L7.4 4.1a.6.6 0 0 0-.9.5z" fill="currentColor"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 20 20"><rect x="2.5" y="4.5" width="15" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m3 5.5 7 5.2 7-5.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+    <symbol id="i-bank" viewBox="0 0 20 20"><path d="M3 8 10 3.5 17 8M4.5 8.5v6M8 8.5v6M12 8.5v6M15.5 8.5v6M3 16.5h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-task" viewBox="0 0 20 20"><rect x="3.5" y="3.5" width="13" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m7 10.2 2.1 2.1L13.3 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-git" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
+    <symbol id="i-deck" viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 13.5v3M7 16.5h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-judge" viewBox="0 0 20 20"><path d="M4 16.5h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M10 3.5v13M5 8l5-3 5 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11.5 5 8l2 3.5a2 2 0 0 1-4 0zM13 11.5 15 8l2 3.5a2 2 0 0 1-4 0z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <svg class="brand-mark" aria-hidden="true"><use href="#i-shield"/></svg>
+        <span class="brand-name">Tripwire</span>
+      </div>
+      <nav class="sessions" id="sessions" aria-label="Agent sessions" hidden></nav>
+      <div class="top-right">
+        <span class="conn" id="conn" data-state="connecting" role="status" aria-live="polite" hidden>
+          <span class="conn-dot" aria-hidden="true"></span><span class="conn-text">Connecting</span>
+        </span>
+        <a class="btn-quiet top-link" href="/pitch" title="The pitch deck"><svg aria-hidden="true"><use href="#i-deck"/></svg><span>Pitch</span></a>
+        <a class="btn-quiet top-link" href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener" title="Source code on GitHub"><svg aria-hidden="true"><use href="#i-git"/></svg><span>GitHub</span></a>
+        <button class="btn-quiet btn-icon" id="theme" type="button" aria-label="Switch to dark theme" title="Switch theme">
+          <svg aria-hidden="true"><use href="#i-moon"/></svg>
+        </button>
+        <button class="btn-quiet" id="stage" type="button" aria-pressed="false" title="Bigger type and less chrome, for a projector">
+          <svg aria-hidden="true"><use href="#i-stage"/></svg><span>Presenter</span>
+        </button>
+        <button class="btn-quiet" id="reset" type="button" hidden title="Clear every action and session, for a fresh run">
+          <svg aria-hidden="true"><use href="#i-reset"/></svg><span>Reset</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="offline" id="offline" hidden role="alert">
+      <svg aria-hidden="true"><use href="#i-block"/></svg>Tripwire is not reachable.
+      <span>Agents fail closed while it is down: every tool call is denied. Retrying.</span>
+    </div>
+
+    <section class="demo" aria-label="Live demo controls">
+      <div class="demo-run">
+        <p class="demo-label"><span class="demo-pill">Live demo</span>Real Tripwire engine running on this server against a synthetic world. The agent is a scripted stand-in for a hijacked AI.</p>
+        <div class="scenarios" id="scenarios" role="radiogroup" aria-label="Scenario"></div>
+        <p class="scenario-story" id="scenario-story"></p>
+        <div class="demo-buttons">
+          <button type="button" class="btn-run btn-run-off" id="run-off"><svg aria-hidden="true"><use href="#i-play"/></svg>Run without Tripwire</button>
+          <button type="button" class="btn-run btn-run-on" id="run-on"><svg aria-hidden="true"><use href="#i-shield"/></svg>Run with Tripwire</button>
+          <span class="run-status" id="run-status" role="status" aria-live="polite"></span>
+        </div>
+      </div>
+      <div class="outcome" id="outcome" aria-label="What happened">
+        <div class="oc oc-inbox" id="oc-inbox" data-state="idle">
+          <div class="oc-head"><svg aria-hidden="true"><use href="#i-mail"/></svg>Attacker's inbox</div>
+          <div class="oc-big" id="oc-inbox-n">Empty</div>
+          <ol class="oc-list" id="oc-inbox-list"></ol>
+        </div>
+        <div class="oc oc-bank" id="oc-bank" data-state="idle">
+          <div class="oc-head"><svg aria-hidden="true"><use href="#i-bank"/></svg>Your bank balance</div>
+          <div class="oc-big" id="oc-bank-n">$12,500.00</div>
+          <div class="oc-sub" id="oc-bank-sub">Synthetic account</div>
+        </div>
+        <div class="oc oc-task" id="oc-task" data-state="idle">
+          <div class="oc-head"><svg aria-hidden="true"><use href="#i-task"/></svg>Your task</div>
+          <div class="oc-big" id="oc-task-n">Not run yet</div>
+          <div class="oc-sub" id="oc-task-sub"></div>
+        </div>
+        <p class="compare" id="compare" hidden></p>
+      </div>
+    </section>
+
+    <section class="brief" aria-label="What you asked for and how it went">
+      <div class="asked">
+        <div class="asked-label"><svg aria-hidden="true"><use href="#i-user"/></svg>You asked</div>
+        <p class="asked-text is-empty" id="task">No task yet. When your agent starts working, what you asked it shows up here.</p>
+        <div class="asked-meta"><span class="profile" id="profile" hidden></span><span id="cwd"></span></div>
+      </div>
+      <div class="tally" id="tally" aria-label="Verdict counts">
+        <div class="stat stat-allow is-zero"><svg aria-hidden="true"><use href="#i-allow"/></svg><b id="n-allow">0</b><span>allowed</span></div>
+        <div class="stat stat-ask is-zero"><svg aria-hidden="true"><use href="#i-ask"/></svg><b id="n-ask">0</b><span>needed your OK</span></div>
+        <div class="stat stat-block is-zero"><svg aria-hidden="true"><use href="#i-block"/></svg><b id="n-block">0</b><span>blocked</span></div>
+      </div>
+      <div class="story" id="story" hidden>
+        <svg aria-hidden="true"><use href="#i-hidden"/></svg>
+        <p id="story-text" style="margin:0"></p>
+      </div>
+    </section>
+
+    <main class="work">
+      <section class="feed" aria-label="Agent actions">
+        <div class="views" role="tablist" aria-label="View">
+          <button type="button" role="tab" id="tab-live" aria-selected="true" aria-controls="live">Live</button>
+          <button type="button" role="tab" id="tab-audit" aria-selected="false" aria-controls="audit">Audit log<span class="count" id="audit-count"></span></button>
+          <div class="views-right" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span id="ms-note"></span></div>
+        </div>
+        <div id="live" role="tabpanel" aria-labelledby="tab-live">
+          <section class="queue" id="queue" hidden aria-label="Waiting for your approval">
+            <div class="queue-head">
+              <h2 class="queue-title" id="queue-title">Waiting for your approval</h2>
+              <div class="queue-hint" aria-hidden="true"><kbd>A</kbd> allow <kbd>B</kbd> block the first one</div>
+            </div>
+            <ol class="queue-list" id="queue-list"></ol>
+          </section>
+          <ol class="timeline" id="timeline" aria-label="Decisions, newest first"></ol>
+          <ol class="timeline raw-log" id="raw-log" aria-label="What the agent did with no guard, newest first" hidden></ol>
+        </div>
+        <div id="audit" role="tabpanel" aria-labelledby="tab-audit" hidden>
+          <div class="audit-bar">
+            <p class="audit-note" id="audit-note">Every decision Tripwire made, newest first.</p>
+            <button type="button" class="btn-quiet" id="export">Export JSON</button>
+          </div>
+          <div class="audit-scroll">
+            <table class="audit-table">
+              <thead><tr><th>Time</th><th>Session</th><th>Tool</th><th>Action</th><th>Decision</th><th>Why</th><th>Decided by</th><th class="num">Risk</th><th class="num">ms</th></tr></thead>
+              <tbody id="audit-rows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="empty" id="empty">
+          <div class="empty-mark"><svg aria-hidden="true"><use href="#i-shield-line"/></svg></div>
+          <p class="empty-title">Pick a scenario and press Run</p>
+          <p>Run it without Tripwire first and watch the attacker's inbox fill. Then run it with Tripwire. Every tool call shows up here as it happens.</p>
+          <ul class="empty-cmds">
+            <li><code>uv sync</code><span>after cloning the repo</span></li>
+            <li><code>uv run tripwire serve</code><span>local dashboard</span></li>
+          </ul>
+        </div>
+      </section>
+      <aside class="detail" id="detail" aria-label="Action details">
+        <div class="raw-note" id="raw-note" hidden>
+          <div class="raw-note-head"><svg aria-hidden="true"><use href="#i-block"/></svg>No guard on this run</div>
+          <p>Every call ran the moment the agent asked. Nothing checked where its instructions came from, so there is no reason to show.</p>
+          <p>Press <b>Run with Tripwire</b> to see the same agent, same world, with every call checked first.</p>
+        </div>
+        <div class="detail-empty" id="detail-empty">
+          <p>Pick any action to see exactly why Tripwire decided what it did.</p>
+        </div>
+        <div class="detail-body" id="detail-body" hidden></div>
+      </aside>
+    </main>
+  </div>
+
+  <div class="sr-only" id="announce" role="status" aria-live="assertive" aria-atomic="true"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/demo.js"></script>
+  <script src="/static/app.js"></script>
+  <script src="/demo-player.js"></script>
+</body>
+</html>

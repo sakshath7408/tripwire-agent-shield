@@ -1,0 +1,15 @@
+/.venv
+/.git
+/.pytest_cache
+**/__pycache__
+/bench
+/tests
+/scripts
+/public
+/demo/world/sandbox
+/demo/world/attacker_drop.json
+/demo/world/ollama_planner.py
+/demo/attacker_view.py
+/pyproject.toml
+/uv.lock
+/.claude
