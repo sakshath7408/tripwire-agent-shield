@@ -61,3 +61,4 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - Verified 30 Oct with real Claude Code 2.1.241: PreToolUse from inside a sub-agent carries `agent_id` and `agent_type` (e.g. "Explore"); the main agent's calls carry neither. The spawn tool is named `Agent` (older docs say `Task`); both are handled.
 - `.vercelignore` is gitignore-style: an unanchored `tests` also dropped `demo/poisoned-repo/tests`, so the hosted unittest ran 0 tests and the task showed "not done". Anchor root-only entries with `/`.
 - macOS temp dirs live under `/var/folders`, and Tripwire rightly calls writes under `/var` system-folder writes. Demo worlds go under `/tmp` (also Vercel's only writable path).
+- Record the backup video only when the machine is quiet, and always look at `tripwire-dashboard.png` after. One recording made during a benchmark + test run showed a session with its blocked rows missing; a quiet re-record was correct.

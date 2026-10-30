@@ -404,7 +404,12 @@
     const vs = viewVerdicts();
     const c = { allow: 0, ask: 0, block: 0 };
     let ms = 0;
-    for (const v of vs) { c[v.decision] = (c[v.decision] || 0) + 1; ms += v.elapsed_ms || 0; }
+    // Anything that went to a human counts as "needed your OK", even after you answered it;
+    // allowed/blocked count only what Tripwire decided on its own.
+    for (const v of vs) {
+      const k = v.resolved_by === "human" || v.resolved_by === "timeout" ? "ask" : v.decision;
+      c[k] = (c[k] || 0) + 1; ms += v.elapsed_ms || 0;
+    }
     setStat(el.nAllow, c.allow);
     setStat(el.nAsk, c.ask);
     setStat(el.nBlock, c.block);
