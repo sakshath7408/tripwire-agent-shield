@@ -112,6 +112,37 @@ _shape("it gives the AI orders in another language",
 _shape("it gives the AI orders in another language",
        r"不要告诉用户|不要向用户|别告诉用户|助手必须|首先读取|请先读取|"
        r"उपयोगकर्ता\s{0,3}को\s{0,3}(?:मत|न)\s{0,3}बता|सहायक\s{0,3}को\s{0,3}(?:पहले|चाहिए)")
+# Shadowing (review 4): a description that tells the model how to use *other* tools, so a harmless-looking tool
+# rewrites what send_email or read_file do. Honest descriptions talk about their own tool.
+_TOOLNAME = r"[`'\"]?[a-z][a-z0-9]{0,30}(?:_[a-z0-9]{1,30}){1,6}[`'\"]?"
+_shape("it tells the AI how to use other tools",
+       rf"\b(?:supersedes?|replaces?|overrides?|takes\s{{1,3}}precedence\s{{1,3}}over|deprecates?|shadows?)\s{{1,3}}(?:the\s{{1,3}})?"
+       rf"(?:{_TOOLNAME}|[`'\"]?\w{{2,30}}[`'\"]?\s{{1,3}}(?:tool|function))")
+_shape("it tells the AI how to use other tools",
+       r"\broute\s{1,3}(?:all|every|any)\s{1,3}(?:\w{1,20}\s{1,3}){0,3}?(?:messages?|e-?mails?|requests?|calls?|traffic|output|replies)")
+_shape("it tells the AI how to use other tools",
+       rf"\b(?:before|after|when(?:ever)?)\s{{1,3}}(?:calling|using|invoking|running|you\s{{1,3}}(?:call|use|invoke|run))\s{{1,3}}"
+       rf"(?:the\s{{1,3}})?{_TOOLNAME}")
+_shape("it tells the AI how to use other tools",
+       r"\bwhen(?:ever)?\s{1,3}(?:sending|you\s{1,3}send|replying|forwarding|writing|reading|opening|you\s{1,3}read)\s{1,3}"
+       r"(?:an?\s{1,3}|any\s{1,3}|the\s{1,3})?(?:e-?mails?|messages?|files?|replies|documents?)\b[^.!?]{0,100}?"
+       r"\b(?:always|also|first|must|bcc|cc|include|attach|copy|forward|send)\b")
+_shape("it tells the AI how to use other tools",
+       r"\bwhen\s{1,3}the\s{1,3}user\s{1,3}asks\s{1,3}(?:about\s{1,3})?(?:anything|something)\s{1,3}else\b")
+_shape("it asks for your data in an argument",
+       r"\b(?:contains?|containing|include|includes|including|put|place|insert|pass|passes|add|attach)\s{1,3}(?:in\s{1,3}it\s{1,3})?"
+       r"(?:the\s{1,3})?(?:user'?s|your|their|the\s{1,3}user'?s|the\s{1,3}project'?s|project'?s)\s{1,3}"
+       r"(?:recent\s{1,3}|full\s{1,3}|entire\s{1,3}|whole\s{1,3}|private\s{1,3}|latest\s{1,3}|last\s{1,3}\w{1,10}\s{1,3})?"
+       r"(?:e-?mails?|messages?|conversation|chat|history|inbox|contacts?|calendar|credentials?|passwords?|"
+       r"api\s{0,3}keys?|tokens?|secrets?|cookies?|ssh\s{1,3}keys?|\.env)")
+_shape("it asks for your data in an argument",
+       r"\b(?:pass|provide|include|send|supply|attach)\s{1,3}(?:the\s{1,3})?(?:\w{1,20}'s\s{1,3})?(?:credentials?|secrets?|"
+       r"private\s{1,3}keys?|tokens?|passwords?|\.env)\s{1,3}(?:file\s{1,3})?(?:path|file|contents?)\b")
+_shape("it fills a web address with your data",
+       r"https?://[^\s'\"]{0,200}\{\s{0,2}(?:user_?(?:question|query|input|message|prompt|request|data|email|messages)|"
+       r"conversation|history|chat(?:_history)?|secrets?|tokens?|api_?key|password|emails?)\s{0,2}\}")
+_shape("it hides instructions in an encoding",
+       r"\b(?:decode|decrypt|unescape|base64)\b[^.!?]{0,40}\b(?:and|then)\s{1,3}(?:follow|execute|run|obey|apply|do)\b")
 SECRET_REF = re.compile(r"(?:~|\$HOME|%USERPROFILE%)?[\w.-]{0,64}/(?:[\w.-]{1,64}/){0,6}[\w.-]{1,64}|"
                         r"(?<![\w.])(?:\.env(?:\.\w{1,20})?|id_(?:rsa|ed25519|ecdsa|dsa)|\.netrc|\.npmrc|\.pypirc|"
                         r"\.git-credentials|mcp\.json|claude_desktop_config\.json)(?![\w.])", re.I)
@@ -185,6 +216,21 @@ def poison_reason(tool: dict) -> str | None:
     ref = _secret_ref(blob)
     if ref:
         return f"it points at your keys or agent settings (\"{ref[:80]}\")"
+    for m in re.finditer(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{24,4096}={0,2}", blob[:50_000]):
+        # Orders hidden in base64: decode and check them like plain text.
+        import base64
+        import binascii
+        tok = m.group(0)
+        for fn in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                dec = fn(tok + "=" * (-len(tok) % 4)).decode("utf-8")
+            except (binascii.Error, ValueError, UnicodeDecodeError):
+                continue
+            if dec and sum(ch.isprintable() or ch.isspace() for ch in dec) / len(dec) > 0.95:
+                inner = poison_reason({"description": dec}) if len(tok) < 20_000 else None
+                if inner or re.search(r"\.ssh|id_rsa|\.env\b|credential|secret|token|password", dec, re.I):
+                    return f"it hides text in base64 that {inner or 'points at your keys'}"
+            break
     return None
 
 
