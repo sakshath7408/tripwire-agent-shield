@@ -120,7 +120,7 @@ cat bench/results/matrix.md
 
 "We replayed AgentDojo from ETH Zurich: 4 suites, 609 attack runs, no LLM, fully reproducible.
 We stop 96 percent. 92 percent are hard blocks, the rest wait for a human.
-Part of that is a phrase list that knows AgentDojo's template. Switch it off and we still stop 80 percent.
+Part of that is a phrase list that knows AgentDojo's template. Switch it off and we still stop 86 percent.
 We also wrongly stop about 4 percent of real tasks. We show all of it."
 Read only the important_instructions on and OFF rows out loud. Point at the rest, don't read them.
 
@@ -134,9 +134,9 @@ Stop at about 4:45. Take questions.
 ## Hard questions: say these, word for word
 
 **"Turn off the phrase list. What's your number?"**
-"80 percent stopped, 45 percent hard-blocked, down from 96 and 92.
+"86 percent stopped, 45 percent hard-blocked, down from 96 and 92.
 The list knows AgentDojo's template, so we publish both numbers, and five other attack texts too.
-The 80 is provenance and the other checks with no phrase list. That's what a brand-new wording gets."
+The 86 is provenance and the other checks with no phrase list. That's what a brand-new wording gets."
 (Proof on screen: `cat bench/results/matrix.md`. Rerun live: `uv run python bench/agentdojo_replay.py --no-markers`, about 40 s.)
 
 **"Your agent runs as me. Can't it just switch Tripwire off?"**
@@ -224,7 +224,7 @@ Say, while it runs:
 Without Tripwire, my SSH key and .env go to the attacker and their script runs. Look: attacker received 3 items.
 Same agent with Tripwire: hidden instructions found, six off-task actions blocked on their own,
 zero questions, the typo still fixed. Attacker received nothing.
-On AgentDojo, 609 attack runs, we stop 96 percent, and 80 percent with our phrase list switched off.
+On AgentDojo, 609 attack runs, we stop 96 percent, and 86 percent with our phrase list switched off.
 We wrongly stop about 4 percent of real tasks.
 It runs locally and fails closed."
 

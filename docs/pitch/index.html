@@ -219,17 +219,17 @@
   <h2>AgentDojo replay, 609 attacks, no LLM, reproducible.</h2>
   <div class="nums">
     <div class="stat"><div class="big good">96.2%</div><div class="lbl">stopped, phrase list on<br>92.1% hard block</div></div>
-    <div class="stat"><div class="big">79.5%</div><div class="lbl">stopped, phrase list off<br>45.3% hard block</div></div>
+    <div class="stat"><div class="big">86.0%</div><div class="lbl">stopped, phrase list off<br>45.3% hard block</div></div>
     <div class="stat"><div class="big">95.9%</div><div class="lbl">benign tasks allowed<br>7.1% of calls ask or block</div></div>
   </div>
   <table>
     <tr><th>Attack text</th><th>List on: stopped / block</th><th>List off: stopped / block</th></tr>
-    <tr><td>important_instructions</td><td class="n">96.2% / 92.1%</td><td class="n">79.5% / 45.3%</td></tr>
-    <tr><td>tool_knowledge</td><td class="n">99.5% / 95.4%</td><td class="n">79.5% / 45.3%</td></tr>
-    <tr><td>injecagent</td><td class="n">94.4% / 88.5%</td><td class="n">79.5% / 45.3%</td></tr>
-    <tr><td>3 texts the list misses</td><td class="n">79.5% / 45.3%</td><td class="n">79.5% / 45.3%</td></tr>
+    <tr><td>important_instructions</td><td class="n">96.2% / 92.1%</td><td class="n">86.0% / 45.3%</td></tr>
+    <tr><td>tool_knowledge</td><td class="n">99.5% / 95.4%</td><td class="n">86.0% / 45.3%</td></tr>
+    <tr><td>injecagent</td><td class="n">96.2% / 88.5%</td><td class="n">86.0% / 45.3%</td></tr>
+    <tr><td>3 texts the list misses</td><td class="n">86.0% / 45.3%</td><td class="n">86.0% / 45.3%</td></tr>
   </table>
-  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Stopped = hard block + ask a human. Shell corpus: 84 of 84 stopped. bench/results/matrix.md, 30 Oct.</span></div>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Stopped = hard block + ask a human. Shell corpus: 84 of 84 stopped. bench/results/matrix.md, 30 Oct 23:17.</span></div>
 </section>
 
 <!-- 6 Responsible engineering -->
@@ -256,7 +256,7 @@
     <div class="card"><h3>Any MCP agent</h3><p>Wrap any MCP server. Tools pinned and signed. Role profiles.</p></div>
   </div>
   <div class="cmdline"><span class="c">$</span> uv run tripwire install claude<br><span class="c">$</span> uv run tripwire mcp-proxy --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .</div>
-  <p class="lead" style="margin-top:30px">Open source. 653 tests. Built from scratch in 24 hours.</p>
+  <p class="lead" style="margin-top:30px">Open source. 717 tests. Built from scratch in 24 hours.</p>
   <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>github: agent-shield &nbsp;|&nbsp; docs/ARCHITECTURE.md &nbsp;|&nbsp; demo/SCRIPT.md</span></div>
 </section>
 
