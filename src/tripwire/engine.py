@@ -39,6 +39,7 @@ MAX_NEST = 32
 # Any argument key that names a file or folder, e.g. "uri", "glob", "include", "paths", "src".
 PATHISH_KEY = re.compile(r"(?:^|_)(path|file|dir|folder|uri|glob|include|target|dest|source|src|location)")
 # Argument keys that say who a message or payment goes to.
+DEST_URL_KEY = re.compile(r"^(url|uri|endpoint|webhook(_url)?|target(_url)?|destination|server|host)$", re.I)
 RECIPIENT_KEY = re.compile(r"^(to|cc|bcc|recipients?|emails?|email_address(es)?|address(es)?|participants?|attendees?|"
                            r"invitees?|users?|members?|phone|phone_number|number|iban|account|payee|beneficiary|channel|reply_to)$", re.I)
 # A picture or link inside a message body: the reader's mail app or chat loads it, sending the URL's data away.
@@ -469,6 +470,11 @@ class Engine:
                 elif cap == Capability.FETCH:
                     sev = MEDIUM if injected else LOW
                     msg = f"Visits '{v}', which came from content the agent read ({src.where}), not from you."
+                elif cap == Capability.SEND and any(v.lower() in d.lower() for d in _keyed(args, DEST_URL_KEY)):
+                    # Asking to send something (to Sam) does not make a web address from an email or page a place to
+                    # upload to: "post the notes to https://..." in a polite email has no injection phrase at all.
+                    sev = MEDIUM
+                    msg = f"Uploads to '{v}', a web address you never named, taken from {src.where}."
                 elif s.intends(cap):
                     # User asked for this kind of action and the value came from a clean document they pointed at.
                     sev = MEDIUM if cap == Capability.MONEY else LOW
