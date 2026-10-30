@@ -16,6 +16,7 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - Tests: `uv run pytest -q`
 - Daemon + dashboard: `uv run tripwire serve` then open http://127.0.0.1:7777
 - Typecheck/lint: none set up; use `uv run python -m compileall -q src`
+- Hosted live demo: https://tripwire-agent-shield.vercel.app (Vercel Hobby, project tripwire-agent-shield). `api/run.py` runs one act in-process per request (`web/demo_runner.py` reuses run_demo); `web/build.sh` generates the page from `src/tripwire/static/index.html`. Deploy committed HEAD from a clean worktree: `git worktree add --detach <tmp> HEAD && cp -r .vercel <tmp>/ && cd <tmp> && npx --yes vercel deploy --prod --yes`.
 
 ## Layout
 - `src/tripwire/models.py` shared types (Action, Verdict, Finding, Capability)
@@ -57,3 +58,5 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - qwen2.5 3B and 1.5B never fell for any injection (0 of 8 attack acts, four wordings), so Act 1 "attack succeeds" stays on the scripted NaivePlanner. Say so if a judge asks. `--planner ollama` is an optional live bit, not the main demo.
 - The audit log is append-only: never UPDATE or `insert or replace` an audit row. A resolution is its own chained record; readers fold it into the verdict. Audit writes go through the background writer so `/v1/evaluate` never waits on disk; a failed write keeps the verdict and shows up as `/healthz` audit "degraded".
 - Verified 30 Oct with real Claude Code 2.1.241: PreToolUse from inside a sub-agent carries `agent_id` and `agent_type` (e.g. "Explore"); the main agent's calls carry neither. The spawn tool is named `Agent` (older docs say `Task`); both are handled.
+- `.vercelignore` is gitignore-style: an unanchored `tests` also dropped `demo/poisoned-repo/tests`, so the hosted unittest ran 0 tests and the task showed "not done". Anchor root-only entries with `/`.
+- macOS temp dirs live under `/var/folders`, and Tripwire rightly calls writes under `/var` system-folder writes. Demo worlds go under `/tmp` (also Vercel's only writable path).
