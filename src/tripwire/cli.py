@@ -51,7 +51,12 @@ def main(argv: list[str] | None = None) -> int:
     args, rest = p.parse_known_args(argv)
 
     if args.cmd == "audit":
-        return _audit(args)
+        try:
+            return _audit(args)
+        except OSError as e:  # e.g. TRIPWIRE_HOME points at a file: say so plainly, no traceback
+            print(f"Tripwire could not open its audit folder: {e.strerror} ({e.filename}). "
+                  "Check TRIPWIRE_HOME points at a folder.", file=sys.stderr)
+            return 2
 
     if args.cmd == "hook":
         from .adapters.claude_code import hook_main
