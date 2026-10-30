@@ -93,6 +93,27 @@ Read the table row by row. Say the false-positive number out loud.
 "Local. Fails closed: if Tripwire is down, nothing runs.
 The deciding logic never reads the attacker's text as instructions, so it cannot be talked out of it."
 
+## Optional: real local model
+
+Only if there is time, and only after running it once before you go on. Needs Ollama running with
+`qwen2.5:3b` pulled (`curl -s 127.0.0.1:11434/api/tags`). About 50 seconds.
+
+```
+uv run python demo/run_demo.py --planner ollama --model qwen2.5:3b --scenario sensitive-data --guard-only --offline --delay 0 --approve auto
+```
+
+Say:
+"That was a scripted agent. This is a real model, Qwen 2.5 3B, running on this laptop. No internet.
+Same world, same guard. Every tool result goes to the model as is, the fake IT Security email included."
+
+"It tries to save the summary with a shell command. The inbox assistant has no shell, so Tripwire blocks it.
+The model reads the reason, switches to the file tool, and the summary gets saved. Nothing reached the attacker."
+
+Be honest if asked: "This small model did not fall for the injection at all. Small models mostly ignore
+orders in what they read. That is why the attack itself is shown with the scripted agent.
+The point here is that Tripwire works with a real model and does not block its real work."
+Numbers: `bench/results/ollama_demo.md`.
+
 ## Exact fallbacks
 
 | Problem | Do this |
