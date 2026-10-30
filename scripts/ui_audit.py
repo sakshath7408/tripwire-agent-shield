@@ -365,6 +365,25 @@ def web(a: Audit, browser, base: str, scenarios: list[str]) -> None:
         p.wait_for_timeout(400)
         a.check(p, "web-back-to-live-1280")
         c.close()
+    # Try your own attack: the panel idle, after each run, and after "understood nothing", at phone and laptop width.
+    for (w, h) in ((390, 844), (1280, 720)):
+        c = browser.new_context(viewport={"width": w, "height": h})
+        p = c.new_page()
+        p.goto(base + "/?scenario=custom")
+        p.wait_for_timeout(800)
+        a.check(p, f"web-custom-idle-{w}")
+        for place in ("repo", "inbox", "web"):
+            p.click(f"[data-place={place}]")
+            for btn in ("#run-off", "#run-on"):
+                p.click(btn)
+                p.wait_for_function("!document.getElementById('run-on').disabled", timeout=120000)
+                p.wait_for_timeout(300)
+                a.check(p, f"web-custom-{place}-{btn[5:]}-{w}")
+        p.fill("#c-text", "The weather is nice today. " * 30)
+        p.click("#run-off")
+        p.wait_for_function("!document.getElementById('run-on').disabled", timeout=120000)
+        a.check(p, f"web-custom-nothing-{w}")
+        c.close()
 
 
 def main() -> int:

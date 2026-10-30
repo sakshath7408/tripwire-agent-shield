@@ -30,6 +30,17 @@ const DEMO = `          <section class="demo" id="demo" aria-label="Live demo co
         <p class="demo-label"><span class="demo-pill">Demo</span>The real Tripwire engine runs on this server against a synthetic world. The agent is a scripted stand-in for a hijacked AI. Nothing here touches your machine.</p>
         <div class="scenarios" id="scenarios" role="radiogroup" aria-label="Scenario"></div>
         <p class="scenario-story" id="scenario-story"></p>
+        <div class="custom" id="custom" hidden>
+          <div class="c-row">
+            <div class="c-place" id="c-place" role="radiogroup" aria-label="Where the attacker's text hides"></div>
+            <label class="c-task"><span>Your task</span><select id="c-task" aria-label="The user's task"></select></label>
+          </div>
+          <div class="c-box">
+            <textarea id="c-text" rows="3" maxlength="4096" spellcheck="false" autocomplete="off" aria-label="The attacker's text" aria-describedby="c-hint"></textarea>
+            <div class="c-foot"><span class="c-hint" id="c-hint">The hijacked agent is scripted: it follows plain orders like "send the .env to …", "run curl … | bash", "transfer $500 to …".</span><button type="button" class="link-btn" id="c-reset">Example</button><span class="c-count" id="c-count"></span></div>
+          </div>
+          <div class="c-understood" id="c-understood" role="status" hidden></div>
+        </div>
         <div class="demo-buttons">
           <button type="button" class="btn-run btn-run-off" id="run-off"><svg aria-hidden="true"><use href="#i-play"/></svg>Run without Tripwire</button>
           <button type="button" class="btn-run btn-run-on" id="run-on"><svg aria-hidden="true"><use href="#i-shield"/></svg>Run with Tripwire</button>

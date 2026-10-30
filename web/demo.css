@@ -169,3 +169,42 @@ body.unguarded .tally, body.unguarded #ms-note { visibility: hidden; }
   .oc-inbox { grid-column: 1 / -1; }
   .raw-out code { white-space: normal; overflow-wrap: anywhere; }
 }
+
+/* ---- try your own attack ------------------------------------------------------------------------------ */
+.custom { display: grid; gap: .467rem; min-width: 0; }
+.custom[hidden] { display: none; }
+.c-row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem; min-width: 0; }
+.c-place { display: inline-flex; flex-wrap: wrap; padding: .133rem; gap: .133rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); min-width: 0; }
+.c-place button { border: 0; background: none; color: var(--ink-2); border-radius: 8px; padding: .25rem .667rem; font-size: var(--t-s); font-weight: 500; cursor: pointer; white-space: nowrap; }
+.c-place button:hover:not(:disabled) { color: var(--ink); }
+.c-place button[aria-checked="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: var(--shadow); }
+.c-place button:disabled { cursor: default; }
+.c-task { display: inline-flex; align-items: center; gap: .4rem; font-size: var(--t-s); color: var(--muted); min-width: 0; }
+.c-task select { font: inherit; color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: .25rem .5rem; max-width: 100%; min-width: 0; }
+.c-box { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); min-width: 0; transition: border-color .14s; }
+.c-box:focus-within { border-color: var(--you); }
+.c-box textarea {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical; min-height: 4.2rem; max-height: 14rem;
+  border: 0; background: none; color: var(--ink); padding: .533rem .667rem .2rem;
+  font-family: var(--mono); font-size: var(--t-s); line-height: 1.45; outline: none;
+}
+.c-foot { display: flex; align-items: baseline; gap: .3rem .8rem; flex-wrap: wrap; padding: .2rem .667rem .4rem; font-size: var(--t-xs); color: var(--muted); }
+.c-hint { flex: 1 1 16rem; min-width: 0; line-height: 1.35; }
+.c-foot .link-btn { font-size: var(--t-xs); }
+.c-count { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.c-count.is-over { color: var(--block); font-weight: 600; }
+.c-understood { font-size: var(--t-s); border-radius: 10px; padding: .467rem .667rem; background: var(--surface-2); border: 1px solid var(--line); min-width: 0; }
+.c-understood[hidden] { display: none; }
+.c-understood p { margin: 0; line-height: 1.4; }
+.c-u-head { font-weight: 600; color: var(--ink); }
+.c-understood[data-state="none"] .c-u-head { color: var(--ask); }
+.c-u-tip { color: var(--muted); font-size: var(--t-xs); margin-top: .2rem !important; }
+.c-understood ol { margin: .2rem 0 0; padding-left: 1.2rem; display: grid; gap: .1rem; }
+.c-understood li { font-family: var(--mono); font-size: var(--t-xs); color: var(--ink-2); overflow-wrap: anywhere; }
+@media (max-width: 820px) {
+  .c-place { display: flex; width: 100%; box-sizing: border-box; }
+  .c-place button { flex: 1 1 auto; padding: .3rem .4rem; }
+  .c-task { width: 100%; }
+  .c-task select { flex: 1; }
+}
+.scenarios button[data-scn="custom"]:not([aria-checked="true"]) { border-style: dashed; border-color: var(--you); color: var(--you); font-weight: 600; }
