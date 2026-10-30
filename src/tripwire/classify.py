@@ -32,9 +32,24 @@ EXACT: dict[str, Capability] = {
     "agent": Capability.AGENT,
 }
 
+# Money rails and coins. Anchored at a word start (`(?:^|_)`, see Lessons): "venmo_send" and "send_crypto" move money,
+# they are not messages. Short coin tickers also need a word end so "ethernet" or "solve" stay out.
+COINS = r"(?:crypto|btc|eth|usdc|usdt|sol|xrp|doge|bitcoin|ethereum|stablecoins?|tokens?|coins?)"
+MONEY_WORDS = re.compile(
+    r"(?:^|_)(?:venmo|zelle|paypal|cashapp|cash_app|wire|remit|remittance|payout|payouts|settle)(?:_|s?$)|"
+    rf"(?:^|_)(?:send|transfer|withdraw|swap|bridge|buy|sell|move)_(?:\w{{0,24}}_)?{COINS}(?:_|$)|"
+    rf"(?:^|_){COINS}_(?:send|transfer|withdraw|swap|bridge|payment|payout)|"
+    r"(?:^|_)(?:approve|authori[sz]e|execute)_(?:\w{0,24}_)?(?:transaction|payment|transfer)s?(?:_|$)"
+)
+
+VENDOR_READ = re.compile(r"(?:^|_)(?:get|list|read|search|find|show|view|check|lookup|count)_")
+MONEY_VERB = re.compile(r"(?:^|_)(?:send|transfer|pay|payment|withdraw|swap|bridge|buy|sell|payout|settle|approve|"
+                        r"authori[sz]e|execute|create|refund|request)(?:_|s?$)")
+
 # Then keyword patterns over the normalised name. Order matters: most dangerous first.
 PATTERNS: list[tuple[re.Pattern[str], Capability]] = [
-    (re.compile(r"(send_money|transfer|payment|pay_|_pay\b|upi|wire|refund|withdraw|schedule_transaction|update_scheduled_transaction)"), Capability.MONEY),
+    (MONEY_WORDS, Capability.MONEY),
+    (re.compile(r"(send_money|transfer|payment|pay_|_pay\b|(?:^|_)upi|refund|withdraw|schedule_transaction|update_scheduled_transaction)"), Capability.MONEY),
     (re.compile(r"(delete|remove|drop|purge|destroy|wipe|truncate|rm_)"), Capability.DELETE),
     (re.compile(r"(exec|run_|shell|terminal|command|eval)"), Capability.EXEC),
     (re.compile(r"(send|email|mail|message|post_|post\b|publish|share|invite|reply|forward|upload|webhook|http_post|create_issue|comment|tweet|slack)"), Capability.SEND),
@@ -101,5 +116,7 @@ def classify(tool: str, overrides: dict[str, str] | None = None) -> Capability:
         if mixed and cap == Capability.READ:
             break  # it reads *and* does something we could not name: let a human decide
         if pattern.search(name):
+            if pattern is MONEY_WORDS and not mixed and VENDOR_READ.search(name) and not MONEY_VERB.search(name):
+                return Capability.READ  # "paypal_get_balance" looks money up, it does not move it
             return cap
     return Capability.UNKNOWN

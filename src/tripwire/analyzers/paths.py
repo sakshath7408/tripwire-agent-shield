@@ -10,6 +10,11 @@ SECRET_PATHS = re.compile(
     r"(^|/)(\.ssh(/|$)|id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$|\.aws/|\.gnupg/|\.netrc$|\.npmrc$|\.pypirc$|"
     r"\.docker/config\.json$|\.kube/config$|\.config/gcloud/|\.git-credentials$|\.env(\.[\w-]+)?$|"
     r"credentials(\.json)?$|secrets?\.(ya?ml|json|toml)$|\.pem$|\.key$|\.p12$|keychain|\.bash_history$|\.zsh_history$|"
+    # CLI token stores: GitHub CLI and hub, Terraform Cloud, 1Password CLI, Azure, Vault, Postgres, Cargo, rclone, boto
+    r"\.config/gh/|\.config/hub$|\.terraform\.d/credentials|\.config/op/|\.op/|\.azure/|\.vault-token$|\.pgpass$|"
+    r"\.my\.cnf$|\.cargo/credentials|\.config/rclone/rclone\.conf$|\.boto$|\.s3cfg$|\.claude/\.credentials\.json$|"
+    # Tripwire's own state (audit key, API token, pin key, learned rules, settings): reading it lets an agent forge the log
+    r"\.tripwire(/|$)|"
     r"Library/Application Support/Google/Chrome/.*/(Login Data|Cookies)|\.mozilla/.*/(logins\.json|key4\.db)|/etc/shadow$|/etc/sudoers)",
     re.I,
 )
@@ -18,7 +23,7 @@ SECRET_PATHS = re.compile(
 PERSISTENCE_PATHS = re.compile(
     r"(^|/)(\.bashrc|\.zshrc|\.bash_profile|\.profile|\.zprofile|\.ssh/authorized_keys|\.ssh/config|"
     r"Library/LaunchAgents/|Library/LaunchDaemons/|/etc/cron|/var/spool/cron|crontab|/etc/systemd/|"
-    r"\.config/autostart/|\.git/hooks/|\.claude/settings(\.local)?\.json|\.vscode/settings\.json|\.cursor/)",
+    r"\.config/autostart/|\.git/hooks/|\.claude/settings[\w.-]{0,40}\.json|\.tripwire/|\.vscode/settings\.json|\.cursor/)",
     re.I,
 )
 

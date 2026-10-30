@@ -16,6 +16,7 @@ How it works:
 
 from __future__ import annotations
 
+import ast  # noqa: F401  (inline Python is folded with it)
 import base64
 import binascii
 import codecs
@@ -824,6 +825,443 @@ def _eval_pipe(cmds: list[Cmd]) -> tuple[str | None, bool]:
     if val is not None:
         val = _to_text(val)
     return val, dec
+
+
+# ---------------------------------------------------------------------------- inline code: constant folding
+# `python -c "open('.e'+'nv')"` hides a path from a plain literal scan. Fold the strings a short program builds
+# (concatenation, join, format, f-strings, chr/bytes/hex/base64), and list what it opens, writes, deletes or
+# sends, so the real target gets the same checks as a literal one. A target that can't be worked out ahead
+# of time is itself worth a question.
+@dataclass
+class Folded:
+    strings: dict[str, bool] = field(default_factory=dict)  # every string the code builds -> built by splitting words
+    sinks: list[tuple[str, str | None, str]] = field(default_factory=list)  # (kind, target or None, literal pieces)
+
+
+FOLD_BUDGET = 20_000  # expression nodes evaluated per program
+FOLD_MAX = 4096  # longest string or list we keep building
+_MODULES = {"os", "os.path", "posixpath", "pathlib", "shutil", "base64", "binascii", "codecs", "io", "sqlite3",
+            "urllib", "urllib.request", "requests", "httpx", "socket", "smtplib", "subprocess", "http.client", "ftplib",
+            "dbm", "shelve", "sys", "json", "glob", "tempfile", "aiohttp", "urllib3"}
+_PATH_FUNCS = {"expanduser", "expandvars", "abspath", "normpath", "realpath", "fspath", "Path", "PurePath",
+               "PosixPath", "PurePosixPath", "str", "resolve", "absolute", "expanduser"}
+_DELETE_FUNCS = {"remove", "unlink", "rmdir", "removedirs", "rmtree"}
+_COPY_FUNCS = {"copy", "copy2", "copyfile", "copytree", "move", "rename", "replace", "link", "symlink"}
+_NET_FUNCS = {"urlopen", "Request", "urlretrieve", "create_connection", "SMTP", "SMTP_SSL", "HTTPConnection",
+              "HTTPSConnection", "FTP", "FTP_TLS", "PoolManager"}
+_HTTP_VERBS = {"get", "post", "put", "patch", "delete", "head", "request", "options", "stream"}
+_SHELL_FUNCS = {"system", "popen", "run", "call", "check_call", "check_output", "Popen", "getoutput", "getstatusoutput"}
+
+
+def _dotted(node) -> str:
+    import ast
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _joins_words(left: str, right: str) -> bool:
+    """`'.e' + 'nv'` glues one word from two pieces; `home + '/.aws'` joins whole path parts."""
+    return bool(left and right and (left[-1].isalnum() or left[-1] in "._-") and (right[0].isalnum() or right[0] in "_-"))
+
+
+class _PyFold:
+    def __init__(self) -> None:
+        self.env: dict[str, object] = {}
+        self.out = Folded()
+        self.budget = FOLD_BUDGET
+        self.split: set[str] = set()
+
+    def note(self, v, split: bool = False):
+        if isinstance(v, bytes):
+            s = v.decode("latin-1")
+        elif isinstance(v, str):
+            s = v
+        else:
+            return v
+        if len(s) > FOLD_MAX:
+            return None
+        if split:
+            self.split.add(s)
+        self.out.strings[s] = self.out.strings.get(s, False) or s in self.split
+        return v
+
+    def tainted(self, *vals) -> bool:
+        return any(isinstance(v, (str, bytes)) and (v.decode("latin-1") if isinstance(v, bytes) else v) in self.split
+                   for v in vals) or any(isinstance(v, list) and self.tainted(*v) for v in vals)
+
+    def ev(self, node, d: int = 0):
+        import ast
+        self.budget -= 1
+        if d > 40 or self.budget <= 0 or node is None:
+            return None
+        try:
+            if isinstance(node, ast.Constant):
+                v = node.value
+                return v if isinstance(v, (str, bytes, int)) and not isinstance(v, bool) else None
+            if isinstance(node, ast.Name):
+                return self.env.get(node.id)
+            if isinstance(node, ast.Attribute):
+                return {"os.sep": "/", "os.path.sep": "/", "os.curdir": ".", "os.pardir": ".."}.get(_dotted(node))
+            if isinstance(node, ast.JoinedStr):
+                parts: list[str] = []
+                split = False
+                for v in node.values:
+                    if isinstance(v, ast.Constant):
+                        x = str(v.value)
+                    elif isinstance(v, ast.FormattedValue):
+                        x = self.ev(v.value, d + 1)
+                        if x is None:
+                            return None
+                        split |= self.tainted(x)
+                        x = x.decode("latin-1") if isinstance(x, bytes) else str(x)
+                    else:
+                        return None
+                    if parts and _joins_words(parts[-1], x):
+                        split = True
+                    parts.append(x)
+                return self.note("".join(parts), split)
+            if isinstance(node, ast.BinOp):
+                l, r = self.ev(node.left, d + 1), self.ev(node.right, d + 1)
+                if l is None or r is None:
+                    return None
+                op = node.op
+                if isinstance(op, ast.Add) and type(l) is type(r) and isinstance(l, (str, bytes, list, int)):
+                    if isinstance(l, (str, bytes)):
+                        ls = l.decode("latin-1") if isinstance(l, bytes) else l
+                        rs = r.decode("latin-1") if isinstance(r, bytes) else r
+                        return self.note(l + r, _joins_words(ls, rs) or self.tainted(l, r))
+                    return l + r
+                if isinstance(op, ast.Div) and isinstance(l, str) and isinstance(r, str):
+                    return self.note(os.path.join(l, r), self.tainted(l, r))
+                if isinstance(op, ast.Mod) and isinstance(l, str):
+                    args = tuple(r) if isinstance(r, list) else (r,)
+                    return self.note(l % args, True)
+                if isinstance(op, ast.Mult) and isinstance(l, (str, bytes, list)) and isinstance(r, int) and len(l) * r <= FOLD_MAX:
+                    return l * r
+                if all(isinstance(x, int) for x in (l, r)) and abs(l) < 1 << 32 and abs(r) < 1 << 32:
+                    if isinstance(op, ast.Sub):
+                        return l - r
+                    if isinstance(op, ast.Mult):
+                        return l * r
+                    if isinstance(op, ast.BitXor):
+                        return l ^ r
+                return None
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+                v = self.ev(node.operand, d + 1)
+                return -v if isinstance(v, int) else None
+            if isinstance(node, (ast.List, ast.Tuple)):
+                vals = [self.ev(e, d + 1) for e in node.elts[:FOLD_MAX]]
+                return None if any(v is None for v in vals) else vals
+            if isinstance(node, ast.Subscript):
+                if _dotted(node.value) in ("os.environ",):
+                    k = self.ev(node.slice, d + 1)
+                    return "~" if k == "HOME" else None
+                v = self.ev(node.value, d + 1)
+                if isinstance(node.slice, ast.Slice):
+                    lo, hi, st = (self.ev(x, d + 1) if x is not None else None for x in
+                                  (node.slice.lower, node.slice.upper, node.slice.step))
+                    if isinstance(v, (str, bytes, list)):
+                        return self.note(v[slice(lo, hi, st)], st is not None)
+                    return None
+                k = self.ev(node.slice, d + 1)
+                if isinstance(v, (str, bytes, list)) and isinstance(k, int) and -len(v) <= k < len(v):
+                    return v[k]
+                return None
+            if isinstance(node, (ast.ListComp, ast.GeneratorExp)) and len(node.generators) == 1:
+                g = node.generators[0]
+                it = self.ev(g.iter, d + 1)
+                if not isinstance(g.target, ast.Name) or g.ifs or not isinstance(it, (str, bytes, list)) or len(it) > FOLD_MAX:
+                    return None
+                saved = self.env.get(g.target.id)
+                out = []
+                for item in it:
+                    self.env[g.target.id] = item
+                    x = self.ev(node.elt, d + 1)
+                    if x is None:
+                        out = None
+                        break
+                    out.append(x)
+                self.env[g.target.id] = saved
+                return out
+            if isinstance(node, ast.Call):
+                return self.call(node, d)
+        except (TypeError, ValueError, IndexError, KeyError, OverflowError, UnicodeError, binascii.Error):
+            return None
+        return None
+
+    def call(self, node, d: int):
+        import ast
+        f = node.func
+        name = _dotted(f)
+        last = name.rsplit(".", 1)[-1] if name else (f.attr if isinstance(f, ast.Attribute) else "")
+        args = [self.ev(a, d + 1) for a in node.args[:64]]
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+        base_mod = name.rsplit(".", 1)[0] if "." in name else ""
+        is_method = isinstance(f, ast.Attribute) and base_mod not in _MODULES and base_mod not in ("bytes", "str", "Path")
+        if is_method:
+            base = self.ev(f.value, d + 1)
+            if base is None:
+                return None
+            if last == "join" and isinstance(base, (str, bytes)) and args and isinstance(args[0], list) \
+                    and all(type(x) is type(base) for x in args[0]):
+                pieces = args[0]
+                txt = [p.decode("latin-1") if isinstance(p, bytes) else p for p in pieces]
+                sep = base.decode("latin-1") if isinstance(base, bytes) else base
+                split = self.tainted(*pieces) or (not sep and any(_joins_words(a, b) for a, b in zip(txt, txt[1:])))
+                return self.note(base.join(pieces), split)
+            if last == "format" and isinstance(base, str) and all(a is not None for a in args):
+                return self.note(base.format(*args), True)
+            if last == "decode" and isinstance(base, bytes):
+                enc = args[0] if args and isinstance(args[0], str) else "utf-8"
+                return self.note(base.decode(enc, "replace"), self.tainted(base))
+            if last == "encode" and isinstance(base, str):
+                return self.note(base.encode("utf-8", "replace"), self.tainted(base))
+            if last in ("replace", "lower", "upper", "strip", "lstrip", "rstrip", "title", "capitalize", "swapcase") \
+                    and isinstance(base, (str, bytes)) and all(isinstance(a, type(base)) for a in args):
+                return self.note(getattr(base, last)(*args), last in ("replace", "swapcase") or self.tainted(base))
+            if last in ("joinpath",) and isinstance(base, str) and all(isinstance(a, str) for a in args):
+                return self.note(os.path.join(base, *args), self.tainted(base, *args))
+            if last in _PATH_FUNCS:
+                return base
+            return None
+        if last in ("join",) and base_mod in ("os.path", "posixpath") and args and all(isinstance(a, str) for a in args):
+            return self.note(os.path.join(*args), self.tainted(*args))
+        if last in _PATH_FUNCS and (base_mod in ("os.path", "posixpath", "os", "pathlib", "") or name in ("Path", "str")):
+            if name in ("Path", "pathlib.Path", "PurePath", "pathlib.PurePath", "PosixPath") and len(args) > 1:
+                if all(isinstance(a, str) for a in args):
+                    return self.note(os.path.join(*args), self.tainted(*args))
+                return None
+            if not args:
+                return None
+            a0 = args[0]
+            if last == "str" and isinstance(a0, int):
+                return str(a0)
+            return a0 if isinstance(a0, (str, bytes)) else None
+        if name in ("Path.home", "pathlib.Path.home", "os.path.expanduser") and not args:
+            return "~"
+        if name in ("os.getenv", "os.environ.get") and args[:1] == ["HOME"]:
+            return "~"
+        if name == "chr" and args and isinstance(args[0], int) and 0 <= args[0] < 0x110000:
+            return self.note(chr(args[0]), True)
+        if name in ("bytes", "bytearray") and args and isinstance(args[0], list) and all(isinstance(x, int) for x in args[0]):
+            return self.note(bytes(args[0]), True)
+        if name == "map" and len(args) == 2 and isinstance(node.args[0], ast.Name) and node.args[0].id == "chr" \
+                and isinstance(args[1], list) and all(isinstance(x, int) and 0 <= x < 0x110000 for x in args[1]):
+            return [self.note(chr(x), True) for x in args[1]]
+        if name in ("reversed",) and args and isinstance(args[0], (str, list)):
+            return [self.note(c, True) for c in reversed(args[0])] if isinstance(args[0], str) else list(reversed(args[0]))
+        if not args or not isinstance(args[0], (str, bytes)):
+            return None
+        a0 = args[0]
+        if name in ("bytes.fromhex", "binascii.unhexlify", "binascii.a2b_hex"):
+            return self.note(bytes.fromhex(a0.decode() if isinstance(a0, bytes) else a0), True)
+        if name in ("base64.b64decode", "base64.urlsafe_b64decode", "base64.b32decode", "base64.b16decode",
+                    "base64.decodebytes", "base64.standard_b64decode"):
+            fn = getattr(base64, last)
+            return self.note(fn(a0), True)
+        if name == "codecs.decode" and len(args) > 1 and isinstance(args[1], str):
+            enc = args[1].lower().replace("-", "_")
+            if enc in ("rot13", "rot_13") and isinstance(a0, str):
+                return self.note(codecs.decode(a0, "rot13"), True)
+            if enc in ("hex", "base64") and isinstance(a0, (str, bytes)):
+                return self.note(codecs.decode(a0.encode() if isinstance(a0, str) else a0, enc), True)
+        return None
+
+    def pieces(self, node) -> str:
+        import ast
+        out = []
+        for n in ast.walk(node):
+            if isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)):
+                out.append((n.lineno, n.col_offset, n.value.decode("latin-1") if isinstance(n.value, bytes) else n.value))
+            elif isinstance(n, ast.Name) and isinstance(self.env.get(n.id), str):
+                out.append((n.lineno, n.col_offset, self.env[n.id]))
+        return "".join(x for _, _, x in sorted(out))[:600]  # in source order, so '.e' + 'nv' reads ".env"
+
+    def target(self, node, kind: str):
+        v = self.ev(node)
+        if isinstance(v, bytes):
+            v = v.decode("latin-1")
+        if kind == "shell" and isinstance(v, list) and all(isinstance(x, str) for x in v):
+            return " ".join(shlex.quote(x) for x in v)
+        return v if isinstance(v, str) else None
+
+    def sink(self, kind: str, node) -> None:
+        import ast
+        if node is None:
+            return
+        if kind == "net" and isinstance(node, ast.Call) and _dotted(node.func).rsplit(".", 1)[-1] in _NET_FUNCS:
+            return  # urlopen(Request(url)): the inner call is the sink
+        self.out.sinks.append((kind, self.target(node, kind), self.pieces(node)))
+
+    def scan_call(self, node) -> None:
+        import ast
+        f = node.func
+        name = _dotted(f)
+        last = name.rsplit(".", 1)[-1] if name else (f.attr if isinstance(f, ast.Attribute) else "")
+        base_mod = name.rsplit(".", 1)[0] if "." in name else ""
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+        a = list(node.args)
+        on_obj = isinstance(f, ast.Attribute) and base_mod not in _MODULES
+
+        def arg(i: int, key: str | None = None):
+            return a[i] if len(a) > i else kw.get(key) if key else None
+
+        if last == "open" and (name in ("open", "io.open", "codecs.open", "os.open", "gzip.open", "bz2.open", "lzma.open")
+                               or on_obj):
+            tnode, mnode = (f.value, arg(0, "mode")) if on_obj and name not in ("io.open", "codecs.open") else (arg(0, "file"), arg(1, "mode"))
+            if name == "os.open":
+                flags = ast.unparse(mnode) if mnode is not None else ""
+                write = bool(re.search(r"O_WRONLY|O_RDWR|O_CREAT|O_APPEND|O_TRUNC", flags))
+            else:
+                mode = self.ev(mnode) if mnode is not None else "r"
+                write = not isinstance(mode, str) or bool(re.search(r"[wax+]", mode))
+                if mnode is None:
+                    write = False
+            self.sink("write" if write else "read", tnode)
+        elif last in ("write_text", "write_bytes") and on_obj:
+            self.sink("write", f.value)
+        elif last in ("read_text", "read_bytes") and on_obj:
+            self.sink("read", f.value)
+        elif last in ("unlink", "rmdir") and on_obj:
+            self.sink("delete", f.value)
+        elif last in _DELETE_FUNCS and base_mod in ("os", "shutil"):
+            self.sink("rmtree" if last == "rmtree" else "delete", arg(0, "path"))
+        elif last in _COPY_FUNCS and base_mod in ("os", "shutil"):
+            self.sink("read", arg(0, "src"))
+            self.sink("write", arg(1, "dst"))
+        elif last in ("connect",) and base_mod == "sqlite3" or name in ("dbm.open", "shelve.open"):
+            self.sink("write", arg(0, "database"))
+        elif last in _NET_FUNCS or last in _HTTP_VERBS and base_mod.split(".")[0] in ("requests", "httpx", "aiohttp", "session", "s", "client"):
+            self.sink("net", arg(1, "url") if last == "request" and len(a) > 1 else arg(0, "url"))
+        elif last in _SHELL_FUNCS and base_mod in ("os", "subprocess", "commands"):
+            self.sink("shell", arg(0, "args"))
+
+    def run(self, tree) -> Folded:
+        import ast
+        nodes = [n for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.Call, ast.For))]
+        nodes.sort(key=lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0)))
+        for n in nodes[:2000]:
+            if self.budget <= 0:
+                break
+            if isinstance(n, ast.Assign):
+                v = self.ev(n.value)
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        self.env[t.id] = v
+                    elif isinstance(t, ast.Tuple) and isinstance(v, list) and len(v) == len(t.elts):
+                        for e, x in zip(t.elts, v):
+                            if isinstance(e, ast.Name):
+                                self.env[e.id] = x
+            elif isinstance(n, (ast.AnnAssign, ast.NamedExpr)) and isinstance(n.target, ast.Name) and n.value is not None:
+                self.env[n.target.id] = self.ev(n.value)
+            elif isinstance(n, ast.For) and isinstance(n.target, ast.Name):
+                self.env[n.target.id] = None  # one name, many values: not a constant
+            elif isinstance(n, ast.Call):
+                self.ev(n)  # records the strings it builds
+                self.scan_call(n)
+        return self.out
+
+
+_LIT = r"""'(?:[^'\\\n]|\\.){0,300}'|"(?:[^"\\\n]|\\.){0,300}\""""
+_CHAIN = re.compile(rf"(?:{_LIT})(?:\s{{0,4}}(?:\+|\.)\s{{0,4}}(?:{_LIT})){{1,32}}")
+_CHR_CHAIN = re.compile(r"(?:chr|String\.fromCharCode)\s{0,2}\(\s{0,3}\d{1,7}(?:\s{0,3},\s{0,3}\d{1,7}){0,200}\s{0,3}\)"
+                        r"(?:\s{0,4}[.+]\s{0,4}(?:chr|String\.fromCharCode)\s{0,2}\(\s{0,3}\d{1,7}(?:\s{0,3},\s{0,3}\d{1,7}){0,200}\s{0,3}\)){0,200}")
+_ARRAY_JOIN = re.compile(rf"\[\s{{0,4}}((?:{_LIT})(?:\s{{0,4}},\s{{0,4}}(?:{_LIT})){{1,32}})\s{{0,4}},?\s{{0,4}}\]\s{{0,4}}\.join\(\s{{0,4}}({_LIT})?\s{{0,4}}\)")
+_PATH_JOIN = re.compile(rf"\b(?:path\.join|path\.resolve|File\.join|catfile)\s{{0,2}}\(\s{{0,4}}((?:[\w.()]{{1,40}}\s{{0,4}},\s{{0,4}})?(?:{_LIT})(?:\s{{0,4}},\s{{0,4}}(?:{_LIT})){{0,32}})\s{{0,4}}\)")
+_BUF_DECODE = re.compile(rf"""Buffer\.from\(\s{{0,4}}({_LIT})\s{{0,4}},\s{{0,4}}['"](base64|hex)['"]\s{{0,4}}\)""")
+_ARG = r"(?P<arg>[^,)]{0,300})"
+_OTHER_SINKS = [
+    ("write", re.compile(r"\b(?:writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream|truncateSync|"
+                         r"File\.write|File\.binwrite|IO\.write)\s{0,2}\(\s{0,4}" + _ARG)),
+    ("write", re.compile(r"\bFile\.(?:open|new)\s{0,2}\(\s{0,4}(?P<arg>[^,)]{0,300}),\s{0,4}['\"][wa]")),
+    ("write", re.compile(r"\bopen\s{0,2}\(?\s{0,4}(?:my\s{1,4})?[$\w]{1,40}\s{0,4},\s{0,4}['\"](?:>>?|\+<|\+>)['\"]\s{0,4},\s{0,4}" + _ARG)),
+    ("write", re.compile(r"""\bopen\s{0,2}\(?\s{0,4}(?:my\s{1,4})?[$\w]{1,40}\s{0,4},\s{0,4}(?P<arg>(?:"|')>>?[^,)]{0,300})""")),
+    ("copy", re.compile(r"\b(?:copyFileSync|copyFile|cpSync|renameSync|rename|FileUtils\.(?:cp|mv|copy|move))\s{0,2}\(\s{0,4}"
+                        r"(?P<src>[^,)]{0,300}),\s{0,4}" + _ARG)),
+    ("delete", re.compile(r"\b(?:unlinkSync|unlink|rmSync|rmdirSync|rmdir|File\.delete|FileUtils\.rm(?:_rf|_r|_f)?)\s{0,2}\(?\s{0,4}" + _ARG)),
+]
+
+
+def _lit_value(lit: str) -> str:
+    body = lit[1:-1]
+    return re.sub(r"\\(.)", r"\1", body) if "\\" in body else body
+
+
+def _fold_other(code: str) -> Folded:
+    """Rough folding for node/perl/ruby (and Python that does not parse): literal chains, char codes, joins."""
+    out = Folded()
+    code = code[:MAX_LEN]
+    for m in _CHAIN.finditer(code):
+        parts = [_lit_value(x.group(0)) for x in re.finditer(_LIT, m.group(0))]
+        out.strings["".join(parts)] = any(_joins_words(a, b) for a, b in zip(parts, parts[1:]))
+    for m in _CHR_CHAIN.finditer(code):
+        try:
+            out.strings["".join(chr(int(n)) for n in re.findall(r"\d{1,7}", m.group(0)) if int(n) < 0x110000)] = True
+        except ValueError:
+            pass
+    for m in _ARRAY_JOIN.finditer(code):
+        parts = [_lit_value(x.group(0)) for x in re.finditer(_LIT, m.group(1))]
+        sep = _lit_value(m.group(2)) if m.group(2) else ","
+        out.strings[sep.join(parts)] = not sep and any(_joins_words(a, b) for a, b in zip(parts, parts[1:]))
+    for m in _PATH_JOIN.finditer(code):
+        parts = [_lit_value(x.group(0)) for x in re.finditer(_LIT, m.group(1))]
+        lead = "~/" if re.match(r"\s{0,4}(?:os\.homedir\(\)|Dir\.home|ENV\[['\"]HOME['\"]\])", m.group(1)) else ""
+        out.strings[lead + "/".join(p.strip("/") for p in parts)] = False
+    for m in _BUF_DECODE.finditer(code):
+        raw = _lit_value(m.group(1))
+        try:
+            dec = base64.b64decode(raw + "=" * (-len(raw) % 4)) if m.group(2) == "base64" else bytes.fromhex(raw)
+            out.strings[dec.decode("latin-1")] = True
+        except (binascii.Error, ValueError):
+            pass
+    for kind, pat in _OTHER_SINKS:
+        for m in pat.finditer(code):
+            if kind == "copy":
+                out.sinks.append(("read",) + _other_target(m.group("src"), out))
+                kind_ = "write"
+            else:
+                kind_ = kind
+            out.sinks.append((kind_,) + _other_target(m.group("arg"), out))
+    return out
+
+
+def _other_target(arg: str, out: Folded) -> tuple[str | None, str]:
+    a = arg.strip().lstrip("+<>")
+    pieces = "".join(_lit_value(x.group(0)) for x in re.finditer(_LIT, a))
+    if re.fullmatch(_LIT, a):
+        return _lit_value(a).lstrip("+<> "), pieces
+    if _CHAIN.fullmatch(a):
+        v = "".join(_lit_value(x.group(0)) for x in re.finditer(_LIT, a))
+        return v.lstrip("+<> "), pieces
+    if re.fullmatch(r"""["']>>?\s{0,2}[^$@'"]{1,300}["']""", a):
+        return _lit_value(a).lstrip("> "), pieces
+    return None, pieces
+
+
+def fold_code(name: str, code: str) -> Folded:
+    if name == "python":
+        import ast
+        try:
+            tree = ast.parse(code[:MAX_LEN])
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            return _fold_other(code)
+        try:
+            return _PyFold().run(tree)
+        except RecursionError:
+            return _fold_other(code)
+    return _fold_other(code)
+
+
+GUARDISH = re.compile(r"trip\W{0,3}wire|\.claude\W{0,3}set|settings(?:\.local)?\.json", re.I)
+SECRETISH = re.compile(r"(?:^|[/'\"\s.])(?:\.?env\b|\.ssh|\.aws|id_(?:rsa|ed25519|ecdsa)|credentials|\.netrc|\.npmrc|\.pypirc|"
+                       r"\.git-credentials|\.kube|\.gnupg|config/gh|hosts\.yml|keychain|\.pgpass|\.vault-token|\.azure|"
+                       r"\.docker/config|\.pem\b)", re.I)
 
 
 # ---------------------------------------------------------------------------- analyzer
@@ -1667,23 +2105,88 @@ class _Analyzer:
         for m in re.finditer(r"""(?:rmtree|rmSync|rm_rf|rm_r|remove_dir_all|rimraf)\s*\(\s*(?:os\.path\.expanduser\(\s*)?['"]([^'"]+)['"]""", code):
             self.delete(m.group(1), True, raw)
         lits = re.findall(r"""['"]([~/.$][^'"\n]{0,200})['"]""", code)
+        fold = fold_code(name, code)
+        # strings the code builds from pieces (True = a word was split across pieces, or encoded)
+        built = {x.lstrip("<>+ "): sp for x, sp in fold.strings.items()
+                 if x not in lits and 0 < len(x) <= 300 and "\n" not in x and "://" not in x}
         secrets = [x for x in lits if paths.is_secret(self.expand_path(x))]
+        hidden = [x for x, sp in built.items() if paths.is_secret(self.expand_path(x))]
+        secrets += [x for x in hidden if x not in secrets]
+        hidden = [x for x in hidden if built[x]]
         if secrets:
             inf.traits.add("secret_read")
             if fetchy or re.search(r"socket|smtplib|requests|urllib|http|fetch|axios", code):
                 self.add("shell.exfil_secret", CRITICAL, "exfiltration",
                          f"Reads your credential file {secrets[0]} and sends it over the internet.", raw)
+            elif hidden:
+                self.add("shell.hidden_secret_path", HIGH, "secrets",
+                         f"Pieces together the name of your credential file {hidden[0]} so it doesn't show, then opens it.", raw)
             else:
                 self.add("shell.secret_read", MEDIUM + 5, "secrets", f"Reads your credential file {secrets[0]}.", raw)
+        self.code_sinks(name, fold, built, bool(secrets), fetchy, inf, depth)
         if name == "osascript":
             if re.search(r"login\s+item", code, re.I):
                 self.add("shell.login_item", HIGH, "persistence", "Sets a program to run every time you log in.", raw)
             if re.search(r"display\s+dialog", code, re.I) and re.search(r"password|hidden\s+answer", code, re.I):
                 self.add("shell.fake_prompt", HIGH, "secrets", "Shows a fake password prompt to trick you into typing your password.", raw)
-        for lit in lits:
+        for lit in lits + list(built):
             if GUARD_RE.search(" " + lit):
                 self.add("shell.guard_tamper", CRITICAL, "scope",
                          "Tries to change or read Tripwire's own settings, the guard watching this agent.", raw)
+                break
+
+    def code_sinks(self, name: str, fold: Folded, built: dict[str, bool], read_secret: bool, fetchy, inf: Info,
+                   depth: int) -> None:
+        """What inline code opens, writes, deletes or sends, judged on the folded target."""
+        raw = inf.c.raw
+        sus_read = any(t is None and (GUARDISH.search(p) or SECRETISH.search(p)) for k, t, p in fold.sinks if k == "read")
+        outbound = any(k in ("write", "net") for k, _, _ in fold.sinks)
+        net_resolved = False
+        for kind, t, pcs in fold.sinks[:200]:
+            if t is not None:
+                if kind == "write":
+                    self.write(t, raw)
+                    if read_secret:
+                        self.tainted_files.add(os.path.normpath(self.expand_path(t)))
+                elif kind in ("delete", "rmtree"):
+                    self.delete(t, kind == "rmtree", raw)
+                elif kind == "net":
+                    net_resolved = True
+                    if "://" in t and not inf.host:
+                        inf.host = _host(t)
+                elif kind == "shell" and t in built:
+                    self.text(t, depth + 1, quiet=True)
+                continue
+            guard, secret = GUARDISH.search(pcs), SECRETISH.search(pcs)
+            if kind in ("write", "delete", "rmtree"):
+                verb = "Writes" if kind == "write" else "Deletes"
+                if guard:
+                    self.add("shell.guard_tamper", HIGH, "scope",
+                             f"{verb} a file whose name is pieced together while the code runs, and the pieces "
+                             "point at Tripwire's own settings.", raw)
+                elif secret:
+                    self.add("shell.dynamic_secret_path", HIGH, "secrets",
+                             f"{verb} a file whose name is pieced together while the code runs, and the pieces look "
+                             "like a credential file.", raw)
+                else:
+                    self.add("shell.dynamic_path", MEDIUM, "obfuscation",
+                             f"{verb} a file whose name is only worked out while the code runs, so it can't be checked first.", raw)
+            elif kind == "net":
+                if sus_read:
+                    self.add("shell.dynamic_net", HIGH, "exfiltration",
+                             "Sends data to an address worked out while the code runs, after opening a file that looks "
+                             "like a credential file.", raw)
+                else:
+                    self.add("shell.dynamic_net", MEDIUM, "obfuscation",
+                             "Connects to an address that is only worked out while the code runs, so it can't be checked first.", raw)
+            elif kind == "read" and (guard or secret and outbound):
+                self.add("shell.dynamic_secret_path", HIGH, "scope" if guard else "secrets",
+                         "Opens a file whose name is pieced together while the code runs, and the pieces look like "
+                         + ("Tripwire's own settings." if guard else "a credential file it then writes or sends."), raw)
+        if name != "python" and fetchy and not net_resolved and not inf.host \
+                and not any("://" in x for x in fold.strings):
+            self.add("shell.dynamic_net", MEDIUM, "obfuscation",
+                     "Connects to an address that is only worked out while the code runs, so it can't be checked first.", raw)
 
     # ---- path classification ----
     def classify_delete(self, t: str, recursive: bool) -> tuple[str, int, str] | None:

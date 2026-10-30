@@ -496,7 +496,15 @@ def main() -> int:
     ap.add_argument("--judge", action="store_true", help="use the local isolated judge for ASK verdicts (needs Ollama)")
     ap.add_argument("--attack", default="important_instructions", choices=list(ATTACKS), help="AgentDojo attack text")
     ap.add_argument("--no-markers", action="store_true", help="switch off the injection-phrase detector for this run")
+    ap.add_argument("--autonomy", choices=["strict", "balanced", "autonomous"],
+                    help="autonomy level for every engine in this run (default balanced; results/autonomy.md compares all three)")
     a = ap.parse_args()
+    if a.autonomy:
+        import os
+        os.environ["TRIPWIRE_AUTONOMY"] = a.autonomy  # Engine() reads it when no level is passed
+        if a.autonomy != "balanced":  # the default files stay the default level's; other levels get their own folder
+            global RESULTS
+            RESULTS = RESULTS / f"autonomy_{a.autonomy}"
     judge = None
     if a.judge:
         from tripwire.judge import make_judge
