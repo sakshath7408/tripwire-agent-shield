@@ -175,9 +175,9 @@ def pair(c, base: str) -> None:
     Without it every dashboard state is the "not connected" page and the audit checks nothing real."""
     from tripwire import auth
 
-    tok = auth.read_token()
+    tok = auth.read_admin()  # the dashboard cookie is derived from the admin key
     if not tok:
-        print("  warning: no token; set TRIPWIRE_HOME to the daemon's home or the dashboard shows 'Not connected'")
+        print("  warning: no admin key; set TRIPWIRE_HOME to the daemon's home or the dashboard shows 'Not connected'")
         return
     host = base.split("//", 1)[1].split(":")[0].split("/")[0]
     c.add_cookies([{"name": auth.COOKIE, "value": auth.dash_key(tok), "domain": host, "path": "/"}])

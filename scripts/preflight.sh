@@ -27,13 +27,12 @@ if curl -fs -m 2 "$URL/healthz" >/dev/null 2>&1; then
   case "$CMD" in *tripwire*) ok "port $PORT is held by Tripwire (pid $PID)";;
     *) bad "port $PORT answers but is not Tripwire: $CMD" "scripts/stage.sh $PORT";; esac
   # The daemon's mutating API needs its token; stage.sh and the demo read it from the same place.
-  TOK="${TRIPWIRE_TOKEN:-$(cat "${TRIPWIRE_HOME:-$HOME/.tripwire}/token" 2>/dev/null)}"
-  if [ -z "$TOK" ]; then bad "no token at ${TRIPWIRE_HOME:-$HOME/.tripwire}/token" "scripts/stage.sh $PORT (and use the same TRIPWIRE_HOME as the daemon)"
-  elif [ "$(curl -s -m 2 -X POST -H "X-Tripwire-Token: $TOK" -H "Content-Type: application/json" -d '{"decision":"allow"}' \
-         "$URL/v1/verdicts/preflight-token-check/resolve" -o /dev/null -w '%{http_code}')" = "401" ]; then
-    bad "the daemon rejects this token (it was started with a different TRIPWIRE_HOME)" "scripts/stage.sh $PORT"
-  else ok "token accepted by the daemon"; fi
-  LEVEL="$(curl -fs -m 2 -H "X-Tripwire-Token: $TOK" "$URL/v1/settings" 2>/dev/null | sed -n 's/.*"autonomy": *"\([a-z]*\)".*/\1/p')"
+  ADM="$(cat "${TRIPWIRE_HOME:-$HOME/.tripwire}/admin.key" 2>/dev/null)"
+  if [ -z "$ADM" ]; then bad "no admin key at ${TRIPWIRE_HOME:-$HOME/.tripwire}/admin.key" "scripts/stage.sh $PORT (and use the same TRIPWIRE_HOME as the daemon)"
+  elif [ "$(curl -s -m 2 -H "X-Tripwire-Admin: $ADM" "$URL/v1/settings" -o /dev/null -w '%{http_code}')" != "200" ]; then
+    bad "the daemon rejects this admin key (it was started with a different TRIPWIRE_HOME)" "scripts/stage.sh $PORT"
+  else ok "admin key accepted by the daemon"; fi
+  LEVEL="$(curl -fs -m 2 -H "X-Tripwire-Admin: $ADM" "$URL/v1/settings" 2>/dev/null | sed -n 's/.*"autonomy": *"\([a-z]*\)".*/\1/p')"
   if [ "$LEVEL" = "balanced" ]; then ok "autonomy: balanced (the level demo/SCRIPT.md is written for)"
   else warn "autonomy is '${LEVEL:-unknown}', the script expects balanced (scripts/stage.sh sets it)"; fi
 elif lsof -ti tcp:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then

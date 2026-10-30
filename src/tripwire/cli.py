@@ -193,9 +193,14 @@ def _serve(args) -> int:
     engine = Engine(judge=judge, autonomy=args.autonomy)
     engine.set_guard_port(args.port)  # agent calls aimed at this port are attacks on the guard
     app = create_app(engine)
-    # The dashboard pairs with a one-time code (single use, 10 minutes); `tripwire open` mints a fresh one.
-    print(f"Tripwire is running. Dashboard (one-time link): http://127.0.0.1:{args.port}/#pair={app.state.new_pair()}")
-    print(f"Later, or in another browser: tripwire open{'' if args.port == default_port() else f' --port {args.port}'}")
+    # The dashboard pairs with a one-time code (single use, 10 minutes). It is printed only to a real terminal:
+    # redirected into a log file (restart_daemon.sh), a live link would sit where an agent can read it.
+    later = f"tripwire open{'' if args.port == default_port() else f' --port {args.port}'}"
+    if sys.stdout.isatty():
+        print(f"Tripwire is running. Dashboard (one-time link): http://127.0.0.1:{args.port}/#pair={app.state.new_pair()}")
+        print(f"Later, or in another browser: {later}")
+    else:
+        print(f"Tripwire is running on http://127.0.0.1:{args.port}. To open the dashboard, run `{later}` in your terminal.")
     if args.port != DEFAULT_PORT:
         print(f"Agents look for port {DEFAULT_PORT} by default. Point them here with TRIPWIRE_PORT={args.port}, "
               f"or `tripwire install claude --port {args.port}`.")
@@ -209,8 +214,12 @@ def _serve(args) -> int:
     return 0
 
 
+CONFIRM_WORD = "pair"
+
+
 def _open(port: int, print_only: bool) -> int:
-    """Ask the running daemon for a one-time pairing code (with the token from ~/.tripwire) and open the dashboard."""
+    """Mint a one-time pairing code with the admin key and open the dashboard. Only from your own terminal: an agent
+    runs commands without one, and a pairing code makes its holder the dashboard."""
     import json
     import urllib.error
     import urllib.request
@@ -218,17 +227,28 @@ def _open(port: int, print_only: bool) -> int:
 
     from . import auth
     base = f"http://127.0.0.1:{port}"
-    tok = auth.read_token()
-    if not tok:
-        print(f"No token at {auth.token_path()}. Start the daemon first: tripwire serve")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("`tripwire open` only works in your own terminal (it needs you to type a confirmation word), so an AI "
+              "agent can't pair itself as the dashboard. Run it yourself in a terminal window.")
+        return 1
+    admin = auth.read_admin()
+    if not admin:
+        print(f"No admin key at {auth.admin_path()}. Start the daemon first: tripwire serve")
         return 1
     try:
-        req = urllib.request.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={auth.HEADER: tok})
+        answer = input(f"Type '{CONFIRM_WORD}' to make a one-time dashboard link (anything else cancels): ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() != CONFIRM_WORD:
+        print("Cancelled. No link was made.")
+        return 1
+    try:
+        req = urllib.request.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={auth.ADMIN_HEADER: admin})
         code = json.loads(urllib.request.urlopen(req, timeout=5).read())["code"]
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            print(f"The Tripwire on {base} does not accept the token in {auth.token_path()}. It was started with a "
-                  "different TRIPWIRE_HOME (or its token changed). Run `tripwire open` with the same TRIPWIRE_HOME "
+        if e.code in (401, 403):
+            print(f"The Tripwire on {base} does not accept the admin key in {auth.admin_path()}. It was started with a "
+                  "different TRIPWIRE_HOME (or its key changed). Run `tripwire open` with the same TRIPWIRE_HOME "
                   "as `tripwire serve`, or restart the daemon.")
         else:
             print(f"Tripwire on {base} answered HTTP {e.code}. Is that port really Tripwire?")

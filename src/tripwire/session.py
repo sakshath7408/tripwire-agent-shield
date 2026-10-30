@@ -71,6 +71,8 @@ class Session:
         your words, except that it can't vouch for any value those hidden instructions supplied."""
         if profile:
             self.profile = profile
+        if prompt.strip() and self.task.endswith(prompt.strip()):
+            prompt = ""  # the same prompt sent twice (a retried hook) is one prompt, not two
         self.task = (self.task + "\n" + prompt).strip()
         self.taint.add_trusted(prompt, exclude_injected=not verified)
         if cwd:
@@ -162,10 +164,27 @@ def session_from_dict(d: dict) -> Session:
     return s
 
 
+MAX_TOMBSTONES = 5000
+
+
 class SessionStore:
     def __init__(self) -> None:
         self._s: dict[str, Session] = {}
         self.changes = 0  # bumped on every access; the daemon saves a snapshot when it moves
+        # Session id -> the hidden instructions it saw. A reset or eviction forgets the session but never that:
+        # a session that comes back under the same id starts out knowing it was attacked (review 3: a reset wiped
+        # the injection memory, then the attacker's blocked send was allowed).
+        self.tombstones: dict[str, list[TaintSource]] = {}
+
+    def _bury(self, s: Session) -> None:
+        if s.taint.injection_seen:
+            self.tombstones[s.id] = list(s.taint.injection_seen[-5:])
+            while len(self.tombstones) > MAX_TOMBSTONES:
+                self.tombstones.pop(next(iter(self.tombstones)))
+
+    def was_injected(self, sid: str) -> bool:
+        s = self._s.get(sid)
+        return bool(s and s.taint.injection_seen) or sid in self.tombstones
 
     def get(self, sid: str, cwd: str | None = None) -> Session:
         s = self._s.get(sid)
@@ -173,6 +192,8 @@ class SessionStore:
             if len(self._s) >= MAX_SESSIONS:
                 self._evict()
             s = self._s[sid] = Session(id=sid, cwd=cwd)
+            if sid in self.tombstones:
+                s.taint.injection_seen = list(self.tombstones[sid])
         elif cwd and not s.cwd:
             s.cwd = cwd
         s.last_seen = time.time()
@@ -183,6 +204,7 @@ class SessionStore:
         """Forget the least recently used sessions, keeping any that saw hidden instructions while we can."""
         order = sorted(self._s.values(), key=lambda x: (bool(x.taint.injection_seen), x.last_seen))
         for s in order[: max(1, len(order) // 10)]:
+            self._bury(s)
             self._s.pop(s.id, None)
 
     def all(self) -> list[Session]:
@@ -191,6 +213,8 @@ class SessionStore:
     def reset(self, keep_injected: bool = False) -> int:
         """Forget sessions. keep_injected: keep the ones that saw hidden instructions. Returns how many were kept."""
         self.changes += 1
+        for s in self._s.values():
+            self._bury(s)
         if not keep_injected:
             self._s.clear()
             return 0
@@ -202,7 +226,9 @@ class SessionStore:
         """Write every recent session to `path` (0600, atomic). Returns how many were saved."""
         now = time.time()
         rows = [session_to_dict(s) for s in list(self._s.values()) if now - s.last_seen < KEEP_FOR_S]
-        data = json.dumps({"version": SNAPSHOT_VERSION, "saved": now, "sessions": rows}, separators=(",", ":"))
+        graves = {k: [_src(x) for x in v] for k, v in list(self.tombstones.items())}
+        data = json.dumps({"version": SNAPSHOT_VERSION, "saved": now, "sessions": rows, "tombstones": graves},
+                          separators=(",", ":"))
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -221,6 +247,8 @@ class SessionStore:
             data = json.loads(raw)
             now = time.time()
             n = 0
+            for k, v in (data.get("tombstones") or {}).items():
+                self.tombstones.setdefault(k, [_unsrc(x) for x in v])
             for d in data.get("sessions") or []:
                 if now - float(d.get("last_seen") or 0) < KEEP_FOR_S and d.get("id") not in self._s:
                     self._s[d["id"]] = session_from_dict(d)

@@ -79,9 +79,9 @@ def guide(p: Page, eng: str) -> None:
 def dashboard(browser, eng: str, base: str) -> None:
     from tripwire import auth  # the cookie a paired browser holds: derived from the install token
 
-    tok = auth.read_token()
+    tok = auth.read_admin()  # the cookie is derived from the admin key, never from the hook token
     if not tok:
-        print("  skip dashboard: no token (set TRIPWIRE_HOME to the daemon's home)")
+        print("  skip dashboard: no admin key (set TRIPWIRE_HOME to the daemon's home)")
         return
     host = base.split("//", 1)[1].split(":")[0]
     c = browser.new_context(viewport={"width": 1280, "height": 800})

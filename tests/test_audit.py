@@ -19,7 +19,7 @@ from tripwire.server import create_app
 
 
 def local_client(app):
-    return TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Token": app.state.token})
+    return TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Token": app.state.token, "X-Tripwire-Admin": app.state.admin})
 
 
 def fill(a: A.Audit, n: int, **kw) -> None:
@@ -241,7 +241,7 @@ def test_write_failure_degrades_and_recovers(tmp_path, caplog):
 @pytest.fixture
 def client(tmp_path):
     app = create_app(Engine(), audit_path=tmp_path / "audit.db")
-    with TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Token": app.state.token}) as c:
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Token": app.state.token, "X-Tripwire-Admin": app.state.admin}) as c:
         c.audit = app.state.audit
         yield c
 
@@ -257,9 +257,9 @@ def test_resolutions_are_appended_not_rewritten(client):
     verdict_row = rows[2]
     assert verdict_row["decision"] == "ask"  # the original decision is never rewritten
     assert rows[3]["ref"] == v["id"] and rows[3]["decision"] == "block"
-    assert json.loads(rows[3]["json"])["by"] == "api-token"  # the real actor: a token holder, not a dashboard click
+    assert json.loads(rows[3]["json"])["by"] == "admin"  # the real credential: the admin key, not a dashboard click
     listed = client.get("/v1/audit").json()
-    assert listed[0]["id"] == v["id"] and listed[0]["decision"] == "block" and listed[0]["resolved_by"] == "api-token"
+    assert listed[0]["id"] == v["id"] and listed[0]["decision"] == "block" and listed[0]["resolved_by"] == "admin"
     assert client.get("/v1/audit/verify").json()["ok"]
 
 

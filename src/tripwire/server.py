@@ -13,14 +13,14 @@ GET  /v1/events     server-sent events (task | observe | verdict | resolved)
 POST /v1/pair {"code"}  swap a one-time pairing code for the dashboard cookie   POST /v1/pair/new  mint a code (token)
 GET  /              dashboard
 
-Every /v1 endpoint, reads included, needs the per-install token (header X-Tripwire-Token) or the dashboard cookie,
-except /v1/pair, which takes a one-time code. /healthz, / and /static are open. Every request must name
-127.0.0.1/localhost as its Host (stops DNS rebinding). See auth.py.
+Credentials (see auth.py): the hook token (X-Tripwire-Token) may only POST /v1/task, /v1/observe and /v1/evaluate.
+Everything else, reads included, needs the admin secret (X-Tripwire-Admin, used by `tripwire open` and your own
+scripts) or the paired dashboard's cookie. /v1/pair takes a one-time code; /healthz, / and /static are open. Every
+request must name 127.0.0.1/localhost as its Host (stops DNS rebinding).
 
-Who did it: the audit log records "dashboard" for the cookie and "api-token" for the header. Anything that would
-widen what the agent may do (autonomy, learned rules, clearing a session that saw hidden instructions) is
-dashboard-only once hidden instructions have been seen, and a task sent with the token after hidden instructions
-can't vouch for values that came from them.
+Who did it: the audit log records the credential used: "hook-token", "admin" or "dashboard". A session that saw
+hidden instructions can't be re-tasked by anyone over the API, and a reset never forgets that it saw them. Loosening
+autonomy while a live session has seen hidden instructions is dashboard-only.
 """
 
 from __future__ import annotations
@@ -69,15 +69,18 @@ class Settings(BaseModel):
 
 
 MUTATING = {"POST", "PUT", "DELETE", "PATCH"}
+# All the agent hook's token may do.
+HOOK_ENDPOINTS = {("POST", "/v1/task"), ("POST", "/v1/observe"), ("POST", "/v1/evaluate")}
 
 
 def create_app(engine: Engine | None = None, audit_path: Path | None = None, home: Path | None = None,
-               token: str | None = None) -> FastAPI:
+               token: str | None = None, admin: str | None = None) -> FastAPI:
     engine = engine or Engine()
     home = Path(home) if home else (Path(audit_path).parent if audit_path else
                                     Path(os.environ.get("TRIPWIRE_HOME") or Path.home() / ".tripwire"))
     audit = auditlib.Audit(audit_path or home / "audit.db")
     token = token or auth.load_or_create(home)
+    admin = admin or auth.load_or_create_admin(home)
     # The level you chose last time, unless whoever built the engine (serve --autonomy, a test) already chose one.
     saved = autolib.load_settings(home).get("autonomy")
     if not engine.autonomy_explicit and saved in autolib.LEVELS:
@@ -112,12 +115,16 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     threading.Thread(target=saver, name="tripwire-sessions", daemon=True).start()
     app_trace = audit.register
     recent: deque[Verdict] = deque(maxlen=500)
+    # A restart brings sessions back with their last verdicts, so the dashboard's feed matches the task it shows.
+    for v in sorted((v for x in engine.sessions.all() for v in x.history), key=lambda v: v.ts)[-500:]:
+        recent.append(v)
     pending: dict[str, asyncio.Future] = {}
     deadlines: dict[str, float] = {}
     queues: set[asyncio.Queue] = set()
     started = time.time()
-    dash = auth.dash_key(token)
+    dash = auth.dash_key(admin)
     pair_codes: dict[str, float] = {}
+    last_pair = {"ts": 0.0}
 
     def new_pair() -> str:
         now = time.time()
@@ -144,6 +151,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     app.state.engine = engine
     app.state.audit = audit
     app.state.token = token
+    app.state.admin = admin
     app.state.home = home
     app.state.new_pair = new_pair
     app.state.dash_key = dash
@@ -162,21 +170,32 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         request.state.actor = None
         if path.startswith("/v1/") and path != "/v1/pair":
             sent = request.headers.get(auth.HEADER)
+            sent_admin = request.headers.get(auth.ADMIN_HEADER)
             cookie = request.cookies.get(auth.COOKIE)
             # A mutating cookie request must also look same-origin (SameSite=Strict already keeps other sites out).
             browser_ok = auth.same(cookie, dash) and (request.method not in MUTATING or origin is not None or
                                                       request.headers.get("sec-fetch-site") == "same-origin")
-            if auth.same(sent, token):
-                request.state.actor = "api-token"
+            if auth.same(sent_admin, admin):
+                request.state.actor = "admin"
             elif browser_ok:
                 request.state.actor = "dashboard"
+            elif auth.same(sent, token):
+                if (request.method, path) not in HOOK_ENDPOINTS:
+                    return JSONResponse({"detail": "The agent hook's token can only send tasks, tool outputs and "
+                                                   "actions to check. This needs the dashboard (run `tripwire open` in "
+                                                   "your terminal) or the admin key."}, 403)
+                request.state.actor = "hook-token"
             else:
-                return JSONResponse({"detail": "Not connected. Run `tripwire open` to pair this browser; "
-                                               "clients send the token from ~/.tripwire/token."}, 401)
+                return JSONResponse({"detail": "Not connected. Run `tripwire open` in your terminal to pair this "
+                                               "browser; agent hooks send the token from ~/.tripwire/token."}, 401)
         return await call_next(request)
 
     def actor(request: Request) -> str:
-        return getattr(request.state, "actor", None) or "api-token"
+        return getattr(request.state, "actor", None) or "hook-token"
+
+    def soon_after_pair() -> bool:
+        """A privileged change within 2 s of a pairing looks scripted, not like a person clicking."""
+        return time.time() - last_pair["ts"] < 2.0
 
     def any_injected() -> bool:
         return any(s.taint.injection_seen for s in engine.sessions.all())
@@ -189,14 +208,21 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
                                 403)
         resp = JSONResponse({"ok": True})
         resp.set_cookie(auth.COOKIE, dash, httponly=True, samesite="strict", path="/")
-        record("pair", body={"by": "dashboard", "note": "a browser was paired with a one-time code"})
+        last_pair["ts"] = time.time()
+        record("pair", body={"by": "dashboard", "minted_by": minted_by.pop(body.code, "admin"),
+                             "note": "a browser was paired with a one-time code"})
         return resp
+
+    minted_by: dict[str, str] = {}
 
     @app.post("/v1/pair/new")
     def pair_new(request: Request) -> dict:
-        if actor(request) != "api-token":
-            raise HTTPException(403, "Pairing codes are minted from the terminal (`tripwire open`).")
+        by = actor(request)
+        if by != "admin":
+            raise HTTPException(403, "Pairing codes are minted from your terminal (`tripwire open`).")
         code = new_pair()
+        minted_by[code] = by
+        record("pair_code", body={"by": by, "note": "a one-time pairing code was minted"})
         return {"code": code, "expires_in": auth.PAIR_TTL}
 
     def who(x: Action | Observation | TaskSpec) -> tuple[str, str | None, str]:
@@ -216,14 +242,17 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     @app.post("/v1/task")
     def task(spec: TaskSpec, request: Request) -> dict:
         by = actor(request)
-        s = engine.sessions._s.get(spec.session_id)
-        after_injection = bool(s and s.taint.injection_seen)
-        # Sent with the token after hidden instructions: recorded, but it can't vouch for the attacker's values.
-        engine.set_task(spec, verified=by == "dashboard" or not after_injection)
         agent, parent, trace = who(spec)
+        if engine.sessions.was_injected(spec.session_id):
+            # Re-tasking a session after hidden instructions is how a hijacked agent would vouch for the attacker's
+            # address. Nobody gets to do it over the API; a new task starts a new session.
+            record("task", session=spec.session_id, agent=agent, parent=parent, trace=trace,
+                   body={"prompt": redact(spec.prompt[:2000]), "by": by, "refused": "hidden instructions were seen"})
+            raise HTTPException(403, "Hidden instructions were seen in this session, so its task can't be changed any "
+                                     "more. Start a new session for a new task.")
+        engine.set_task(spec)
         record("task", session=spec.session_id, agent=agent, parent=parent, trace=trace,
-               body={"prompt": redact(spec.prompt[:2000]), "profile": spec.profile, "cwd": spec.cwd, "by": by,
-                     "after_injection": after_injection})
+               body={"prompt": redact(spec.prompt[:2000]), "profile": spec.profile, "cwd": spec.cwd, "by": by})
         return {"ok": True}
 
     @app.post("/v1/observe")
@@ -324,7 +353,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     def put_settings(body: Settings, request: Request) -> dict:
         by = actor(request)
         before = engine.autonomy
-        if by != "dashboard" and body.autonomy != before and any_injected():
+        looser = autolib.LEVELS.index(body.autonomy) > autolib.LEVELS.index(before) if before in autolib.LEVELS else True
+        if by != "dashboard" and looser and any_injected():
             # The attack this stops: an agent that got hold of the token switches Tripwire to autonomous.
             raise HTTPException(403, "Hidden instructions were seen in a live session, so the autonomy level can "
                                      "only be changed from the dashboard.")
@@ -333,7 +363,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         data["autonomy"] = engine.autonomy
         autolib.save_settings(home, data)
         if before != engine.autonomy:
-            record("settings", body={"autonomy": engine.autonomy, "was": before, "by": by})
+            record("settings", body={"autonomy": engine.autonomy, "was": before, "by": by,
+                                     "seconds_after_pairing": round(time.time() - last_pair["ts"], 2) if soon_after_pair() else None})
         return {"autonomy": engine.autonomy}
 
     @app.get("/v1/rules")
@@ -362,6 +393,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         cats = Counter(f.category for v in recent if v.decision != Decision.ALLOW for f in v.findings)
         return {"total": len(recent), "allow": c["allow"], "ask": c["ask"], "block": c["block"],
                 "categories": dict(cats.most_common(8)), "sessions": len(engine.sessions.all()),
+                # True while any live session has seen hidden instructions: the banner must not say "All clear".
+                "hidden_instructions_seen": any_injected(),
                 "pending": [{"id": k, "deadline": deadlines.get(k)} for k in pending], "uptime_s": round(time.time() - started),
                 "judge": engine.judge is not None, "autonomy": engine.autonomy,
                 "auto": sum(v.auto for v in recent),
@@ -371,6 +404,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     def sessions() -> list[dict]:
         return [{"id": s.id, "cwd": s.cwd, "task": s.task, "profile": s.profile,
                  "injection_seen": len(s.taint.injection_seen),
+                 # The UI must never say "All clear" for a session with this set.
+                 "hidden_instructions_seen": bool(s.taint.injection_seen),
                  "injections": [{"tool": i.tool, "source": i.where, "snippet": i.snippet} for i in s.taint.injection_seen[-5:]],
                  "secrets_read": s.secrets_read, "actions": len(s.history)} for s in engine.sessions.all()]
 
@@ -380,11 +415,13 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         for fut in pending.values():  # never leave a held agent hanging: settle as block
             if not fut.done():
                 fut.set_result(Decision.BLOCK)
-        # A token reset keeps every session that saw hidden instructions, so wiping a session's memory of an
-        # attack (then rewriting its task) needs a human at the dashboard.
-        kept = engine.sessions.reset(keep_injected=by != "dashboard")
+        # Only a person (dashboard) or the admin key can reset. Sessions go, but every session that saw hidden
+        # instructions leaves a tombstone: if its id comes back, it starts out knowing it was attacked.
+        kept = engine.sessions.reset()
         recent.clear()
-        record("reset", body={"note": "live view cleared; the audit log keeps everything", "by": by, "kept": kept})
+        record("reset", body={"note": "live view cleared; the audit log keeps everything", "by": by, "kept": kept,
+                              "remembered_attacks": len(engine.sessions.tombstones),
+                              "seconds_after_pairing": round(time.time() - last_pair["ts"], 2) if soon_after_pair() else None})
         broadcast("reset", {})
         return {"ok": True, "kept": kept}
 

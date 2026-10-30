@@ -45,6 +45,7 @@ def daemon(tmp_path_factory):
         time.sleep(0.02)
     url = f"http://127.0.0.1:{port}"
     os.environ["TRIPWIRE_TEST_TOKEN"] = app.state.token
+    os.environ["TRIPWIRE_TEST_ADMIN"] = app.state.admin
     yield url
     server.should_exit = True
     t.join(5)
@@ -355,7 +356,7 @@ def test_proxy_profile_is_sent(env, tmp_path):
         px.tools()
         assert not px.call("read_file", path="notes.txt").get("isError")
         import httpx
-        sess = {s["id"]: s for s in httpx.get(env + "/v1/sessions", headers={"X-Tripwire-Token": os.environ["TRIPWIRE_TEST_TOKEN"]}).json()}
+        sess = {s["id"]: s for s in httpx.get(env + "/v1/sessions", headers={"X-Tripwire-Admin": os.environ["TRIPWIRE_TEST_ADMIN"]}).json()}
         assert "mcp-prof" in sess
     finally:
         px.close()
@@ -413,7 +414,7 @@ def test_pins_rug_pull_new_tool_and_poison(env, tmp_path):
     assert px.call("read_file", path="notes.txt")["isError"]
     px.close()
     import httpx
-    assert any(o for o in httpx.get(env + "/v1/sessions", headers={"X-Tripwire-Token": os.environ["TRIPWIRE_TEST_TOKEN"]}).json() if o["id"] == "mcp-pin-poison")
+    assert any(o for o in httpx.get(env + "/v1/sessions", headers={"X-Tripwire-Admin": os.environ["TRIPWIRE_TEST_ADMIN"]}).json() if o["id"] == "mcp-pin-poison")
 
 
 def test_proxy_drops_bad_json_and_survives(env, tmp_path):

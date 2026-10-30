@@ -242,7 +242,8 @@ class RemoteGuard:
 
     def resolve(self, vid: str, decision: str) -> None:
         try:
-            self._post(f"/v1/verdicts/{vid}/resolve", {"decision": decision})
+            # Answering an ASK is the human's job: the simulated human uses the admin key, never the hook token.
+            self.http.post(f"/v1/verdicts/{vid}/resolve", json={"decision": decision}, headers=auth.admin_headers())
         except Exception:
             pass
 

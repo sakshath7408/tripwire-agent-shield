@@ -309,8 +309,8 @@ def main() -> int:
                                       record_video_size={"width": W, "height": H})
             ctx.add_init_script(CURSOR_JS)
             # Pair the recording browser the way `tripwire open` does: a one-time code swapped for the cookie.
-            tok = (Path(home) / ".tripwire" / "token").read_text().strip()
-            req = urllib.request.Request(f"{url}/v1/pair/new", data=b"", method="POST", headers={"X-Tripwire-Token": tok})
+            adm = (Path(home) / ".tripwire" / "admin.key").read_text().strip()
+            req = urllib.request.Request(f"{url}/v1/pair/new", data=b"", method="POST", headers={"X-Tripwire-Admin": adm})
             code = json.loads(urllib.request.urlopen(req, timeout=5).read())["code"]
             page = ctx.new_page()
             page.request.post(f"{url}/v1/pair", data={"code": code}, headers={"Origin": url})

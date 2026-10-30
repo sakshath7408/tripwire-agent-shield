@@ -48,7 +48,8 @@ TASK = "Fix the typo in README and run the tests"
 
 def post(base: str, path: str, body: dict, timeout: float = 90) -> dict:
     req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
-                                 headers={"content-type": "application/json", **auth.headers()})
+                                 headers={"content-type": "application/json", **auth.headers(),
+                                          **(auth.admin_headers() if path == "/v1/reset" else {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read() or b"{}")
 
@@ -63,7 +64,11 @@ def main() -> int:
     p.add_argument("--session", default="demo")
     a = p.parse_args()
     base = f"http://127.0.0.1:{a.port}"
-    sid = a.session
+    # Fresh ids each run: a reset never forgets that a session saw hidden instructions, so a reused id would start
+    # out "attacked" and refuse its new task.
+    import uuid
+    run = uuid.uuid4().hex[:4]
+    sid = f"{a.session}-{run}"
 
     def pause(s: float) -> None:
         if not a.fast:
@@ -106,7 +111,7 @@ def main() -> int:
         act("Bash", {"command": "git diff --stat"})
 
         if a.second_session:
-            sid = "ops-bot"
+            sid = f"ops-bot-{run}"
             post(base, "/v1/task", {"session_id": sid, "prompt": "Summarise yesterday's error logs", "cwd": "/srv/app"})
             act("Read", {"file_path": "/srv/app/logs/error.log"})
             act("WebFetch", {"url": "https://status.example.com/api"})
