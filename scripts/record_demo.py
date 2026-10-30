@@ -63,7 +63,7 @@ def scratch_env(home: str) -> dict[str, str]:
 
 def start_daemon(port: int, home: str) -> subprocess.Popen:
     p = subprocess.Popen([str(ROOT / ".venv" / "bin" / "tripwire"), "serve", "--port", str(port),
-                          "--autonomy", "balanced"], env=scratch_env(home),
+                          "--autonomy", "balanced", "--demo-admin"], env=scratch_env(home),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         try:
@@ -308,9 +308,10 @@ def main() -> int:
             ctx = browser.new_context(viewport={"width": W, "height": H}, record_video_dir=str(vids),
                                       record_video_size={"width": W, "height": H})
             ctx.add_init_script(CURSOR_JS)
-            # Pair the recording browser the way `tripwire open` does: a one-time code swapped for the cookie.
-            adm = (Path(home) / ".tripwire" / "admin.key").read_text().strip()
-            req = urllib.request.Request(f"{url}/v1/pair/new", data=b"", method="POST", headers={"X-Tripwire-Admin": adm})
+            # Pair the recording browser with a one-time code. This throwaway daemon runs with --demo-admin (its own
+            # HOME); a real daemon has no key a script could use.
+            adm = (Path(home) / ".tripwire" / "demo-admin.key").read_text().strip()
+            req = urllib.request.Request(f"{url}/v1/pair/new", data=b"", method="POST", headers={"X-Tripwire-Demo-Admin": adm})
             code = json.loads(urllib.request.urlopen(req, timeout=5).read())["code"]
             page = ctx.new_page()
             page.request.post(f"{url}/v1/pair", data={"code": code}, headers={"Origin": url})

@@ -170,17 +170,36 @@ class Audit:
 WIDTHS = [(390, 844), (768, 1024), (1024, 768), (1280, 720), (1440, 900), (1920, 1080)]
 
 
+def demo_cookie(base: str) -> str | None:
+    """Pair this script's browser on a daemon started with `serve --demo-admin` (a throwaway test daemon: the
+    real one has no key a script could use). Returns the dashboard cookie value, or None."""
+    import json as _json
+    import os as _os
+    import urllib.request as _rq
+    home = _os.environ.get("TRIPWIRE_HOME") or _os.path.expanduser("~/.tripwire")
+    try:
+        key = open(_os.path.join(home, "demo-admin.key")).read().strip()
+        req = _rq.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={"X-Tripwire-Demo-Admin": key})
+        code = _json.loads(_rq.urlopen(req, timeout=5).read())["code"]
+        req = _rq.Request(f"{base}/v1/pair", data=_json.dumps({"code": code}).encode(), method="POST",
+                          headers={"content-type": "application/json"})
+        cookie = _rq.urlopen(req, timeout=5).headers.get("set-cookie") or ""
+        return cookie.split("=", 1)[1].split(";", 1)[0] or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def pair(c, base: str) -> None:
-    """Give the browser the dashboard cookie (derived from TRIPWIRE_HOME's token), as `tripwire open` would.
-    Without it every dashboard state is the "not connected" page and the audit checks nothing real."""
+    """Give the browser a dashboard cookie, as `tripwire open` would. Without it every dashboard state is the
+    "not connected" page and the audit checks nothing real. Needs a `serve --demo-admin` daemon."""
     from tripwire import auth
 
-    tok = auth.read_admin()  # the dashboard cookie is derived from the admin key
+    tok = demo_cookie(base)
     if not tok:
-        print("  warning: no admin key; set TRIPWIRE_HOME to the daemon's home or the dashboard shows 'Not connected'")
+        print("  warning: could not pair; start the daemon with `serve --demo-admin` and the same TRIPWIRE_HOME")
         return
     host = base.split("//", 1)[1].split(":")[0].split("/")[0]
-    c.add_cookies([{"name": auth.COOKIE, "value": auth.dash_key(tok), "domain": host, "path": "/"}])
+    c.add_cookies([{"name": auth.COOKIE, "value": tok, "domain": host, "path": "/"}])
 
 
 def dashboard(a: Audit, browser, base: str, widths=WIDTHS, themes=("light", "dark"), full: bool = True) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 
@@ -66,9 +67,25 @@ def _main(argv: list[str]) -> int:
     s.add_argument("--judge", action="store_true", help="use the local isolated judge model for grey-zone actions")
     s.add_argument("--autonomy", choices=["strict", "balanced", "autonomous"],
                    help="how much Tripwire decides on its own (default: your saved setting, else balanced)")
-    o = sub.add_parser("open", help="open the dashboard in your browser (pairs it with a one-time code)")
+    s.add_argument("--clear-view", action="store_true",
+                   help="start with an empty live view (like Reset; attacks stay remembered)")
+    s.add_argument("--link-fd", type=int, default=None, metavar="FD",
+                   help="print the one-time startup link to this file descriptor, only if it is a terminal "
+                        "(scripts/restart_daemon.sh uses it)")
+    s.add_argument("--link-path", default="/", metavar="PATH",
+                   help="page the one-time link opens, e.g. '/?stage=1&theme=light' (default: /)")
+    s.add_argument("--hardened", action="store_true",
+                   help="the daemon runs as its own OS user (see `tripwire harden`); refuses to start otherwise")
+    s.add_argument("--demo-admin", action="store_true",
+                   help="TESTS AND THROWAWAY DEMOS ONLY: writes demo-admin.key, which any process can use to "
+                        "answer ASKs. Never on a daemon that guards a real agent")
+    o = sub.add_parser("open", help="open the dashboard in your browser (pairs it after a person approves)")
     o.add_argument("--port", type=_port, default=default_port(), help=port_help)
     o.add_argument("--print", action="store_true", help="print the one-time link instead of opening a browser")
+    hd = sub.add_parser("harden", help="run the daemon as its own OS user (prints the steps; --apply runs them)")
+    hd.add_argument("--apply", action="store_true", help="run the steps with sudo, after you confirm in this terminal")
+    hd.add_argument("--system", choices=["macos", "linux"], default=None, help="default: this computer")
+    hd.add_argument("--port", type=_port, default=default_port(), help=port_help)
     h = sub.add_parser("hook", help="Claude Code hook entry (Claude Code runs this, not you)")
     h.add_argument("event", choices=["UserPromptSubmit", "PreToolUse", "PostToolUse"])
     for verb in ("install", "uninstall"):
@@ -134,6 +151,10 @@ def _main(argv: list[str]) -> int:
     if args.cmd == "open":
         return _open(args.port, args.print)
 
+    if args.cmd == "harden":
+        from . import harden
+        return harden.main(args.apply, args.system, args.port)
+
     if args.cmd == "serve":
         return _serve(args)
     return 1
@@ -177,12 +198,46 @@ def _judge_hint(judge) -> str | None:
     return None
 
 
+def _console(link_fd: int | None):
+    """serve's own terminal: stdout if it is one, else --link-fd if that is one. Never a log file: a link written
+    there would sit where an agent can read it."""
+    from .server import Console
+    if sys.stdout.isatty():
+        return Console(sys.stdout, interactive=sys.stdin.isatty())
+    if link_fd is not None:
+        try:
+            if os.isatty(link_fd):
+                return Console(os.fdopen(link_fd, "w"), interactive=False)  # closed again right after startup
+            if link_fd > 2:  # a pipe or file: never write the link there, and don't hold the caller's pipe open
+                os.close(link_fd)
+        except OSError:
+            pass
+    return Console()
+
+
+def _read_console(app) -> None:
+    """Lines typed into serve's terminal: 6 digits approve `tripwire open`, Enter alone prints a new link."""
+    import threading
+
+    def loop() -> None:
+        for line in sys.stdin:
+            try:
+                app.state.console_line(line)
+            except Exception as e:  # noqa: BLE001 - a typo must never stop the daemon
+                app.state.console.say(f"(could not do that: {e})")
+
+    threading.Thread(target=loop, name="tripwire-console", daemon=True).start()
+
+
 def _serve(args) -> int:
     sock = _bind(args.port)
     if sock is None:
         return 1
+    import secrets
+
     import uvicorn
 
+    from . import auth
     from .engine import Engine
     from .server import create_app
 
@@ -192,15 +247,51 @@ def _serve(args) -> int:
         judge = make_judge()
     engine = Engine(judge=judge, autonomy=args.autonomy)
     engine.set_guard_port(args.port)  # agent calls aimed at this port are attacks on the guard
-    app = create_app(engine)
-    # The dashboard pairs with a one-time code (single use, 10 minutes). It is printed only to a real terminal:
-    # redirected into a log file (restart_daemon.sh), a live link would sit where an agent can read it.
+    console = _console(args.link_fd)
+    demo_admin = None
+    if args.demo_admin:
+        demo_admin = secrets.token_urlsafe(32)
+        auth.write_secret(auth.demo_admin_path(), demo_admin)
+        warn = ("!" * 78 + "\nWARNING: --demo-admin is on. Any program that can read "
+                f"{auth.demo_admin_path()} can answer\nASKs, reset and pair as you. Use it only for a throwaway demo "
+                "or test daemon.\n" + "!" * 78)
+        print(warn, file=sys.stderr)
+        print(warn)
+    try:
+        app = create_app(engine, demo_admin=demo_admin, console=console, hardened=args.hardened)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    base = f"http://127.0.0.1:{args.port}"
+    app.state.base_url = base + "/" + args.link_path.lstrip("/")  # the one-time link is this + "#pair=<code>"
     later = f"tripwire open{'' if args.port == default_port() else f' --port {args.port}'}"
-    if sys.stdout.isatty():
-        print(f"Tripwire is running. Dashboard (one-time link): http://127.0.0.1:{args.port}/#pair={app.state.new_pair()}")
-        print(f"Later, or in another browser: {later}")
+    if app.state.removed_admin_key:
+        print(f"Deleted the old admin key ({auth.legacy_admin_path()}). Tripwire no longer keeps one on disk: an agent "
+              f"running as you could read it. Pair browsers with a one-time link from your terminal or `{later}`.")
+    if args.clear_view:
+        app.state.clear_view("serve --clear-view")
+    print(f"Tripwire is running on {base}.")
+    # The one-time link goes only to a real terminal: redirected into a log file, it would sit where an agent can
+    # read it. While a live session has seen hidden instructions, no link: approve `tripwire open` instead.
+    if console.out is not None:
+        code = app.state.startup_link()
+        if code:
+            console.say(f"Dashboard (one-time link, works once for 10 minutes): {app.state.base_url}#pair={code}")
+        else:
+            console.say("Hidden instructions were seen in a saved session, so no link is printed. Open a dashboard "
+                        f"you already paired, or run `{later}` and approve its code"
+                        + (" here." if console.interactive else " in that dashboard."))
+        if console.interactive:
+            console.say(f"Press Enter here for another one-time link. To approve `{later}`, type the 6 digits it shows.")
+            _read_console(app)
+        elif console.out is not sys.stdout:
+            # --link-fd: a background daemon must not keep your terminal open (or wait on it) after its one line.
+            with contextlib.suppress(OSError):
+                console.out.close()
+            console.out = None
     else:
-        print(f"Tripwire is running on http://127.0.0.1:{args.port}. To open the dashboard, run `{later}` in your terminal.")
+        print(f"No terminal to show a pairing link in. Run `{later}` (a paired dashboard approves it), or restart "
+              "from your own terminal with scripts/restart_daemon.sh to get a one-time link.")
     if args.port != DEFAULT_PORT:
         print(f"Agents look for port {DEFAULT_PORT} by default. Point them here with TRIPWIRE_PORT={args.port}, "
               f"or `tripwire install claude --port {args.port}`.")
@@ -214,13 +305,12 @@ def _serve(args) -> int:
     return 0
 
 
-CONFIRM_WORD = "pair"
-
-
 def _open(port: int, print_only: bool) -> int:
-    """Mint a one-time pairing code with the admin key and open the dashboard. Only from your own terminal: an agent
-    runs commands without one, and a pairing code makes its holder the dashboard."""
+    """Pair a browser. Hardened mode (run as the daemon's user via sudo): mint a link with console.key. Otherwise a
+    two-terminal handshake: this shows 6 digits, and a person types them into the `tripwire serve` terminal or
+    approves them in a dashboard that is already paired. Nothing an agent can read or call approves it."""
     import json
+    import time
     import urllib.error
     import urllib.request
     import webbrowser
@@ -228,30 +318,48 @@ def _open(port: int, print_only: bool) -> int:
     from . import auth
     base = f"http://127.0.0.1:{port}"
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("`tripwire open` only works in your own terminal (it needs you to type a confirmation word), so an AI "
-              "agent can't pair itself as the dashboard. Run it yourself in a terminal window.")
+        print("`tripwire open` only works in your own terminal, so an AI agent can't pair itself as the dashboard. "
+              "Run it yourself in a terminal window.")
         return 1
-    admin = auth.read_admin()
-    if not admin:
-        print(f"No admin key at {auth.admin_path()}. Start the daemon first: tripwire serve")
-        return 1
+
+    def post(path: str, body: dict, headers: dict | None = None) -> dict:
+        req = urllib.request.Request(f"{base}{path}", data=json.dumps(body).encode(), method="POST",
+                                     headers={"content-type": "application/json", **(headers or {})})
+        return json.loads(urllib.request.urlopen(req, timeout=5).read())
+
+    def detail(e: urllib.error.HTTPError) -> str:
+        try:
+            return json.loads(e.read()).get("detail") or f"HTTP {e.code}"
+        except Exception:  # noqa: BLE001
+            return f"HTTP {e.code}"
+
     try:
-        answer = input(f"Type '{CONFIRM_WORD}' to make a one-time dashboard link (anything else cancels): ")
-    except EOFError:
-        answer = ""
-    if answer.strip().lower() != CONFIRM_WORD:
-        print("Cancelled. No link was made.")
-        return 1
-    try:
-        req = urllib.request.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={auth.ADMIN_HEADER: admin})
-        code = json.loads(urllib.request.urlopen(req, timeout=5).read())["code"]
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            print(f"The Tripwire on {base} does not accept the admin key in {auth.admin_path()}. It was started with a "
-                  "different TRIPWIRE_HOME (or its key changed). Run `tripwire open` with the same TRIPWIRE_HOME "
-                  "as `tripwire serve`, or restart the daemon.")
+        console_key = auth.read_console_key()
+        if console_key:
+            code = post("/v1/pair/new", {}, {auth.CONSOLE_HEADER: console_key})["code"]
         else:
-            print(f"Tripwire on {base} answered HTTP {e.code}. Is that port really Tripwire?")
+            req = post("/v1/pair/request", {})
+            d = req["digits"]
+            where = " or ".join({"console": "type them into the terminal running `tripwire serve`",
+                                 "dashboard": "click Approve in a dashboard you already paired (check the digits match)"
+                                 }[w] for w in req["approve_in"])
+            print(f"\n    {d[:3]} {d[3:]}\n\nTo pair a new browser, {where}. Waiting up to 5 minutes (Ctrl-C cancels).")
+            deadline = time.time() + req["expires_in"]
+            code = None
+            while time.time() < deadline:
+                time.sleep(1)
+                r = post("/v1/pair/poll", {"id": req["id"], "secret": req["secret"]})
+                if r["status"] == "approved":
+                    code = r["code"]
+                    break
+                if r["status"] == "denied":
+                    print("Turned down. No browser was paired.")
+                    return 1
+            if not code:
+                print("Nobody approved it in time. Run `tripwire open` again.")
+                return 1
+    except urllib.error.HTTPError as e:
+        print(detail(e))
         return 1
     except Exception as e:  # noqa: BLE001
         reason = getattr(e, "reason", e)

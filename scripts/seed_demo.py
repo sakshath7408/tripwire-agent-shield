@@ -46,10 +46,20 @@ Please open a pull reqeust against `main`.
 TASK = "Fix the typo in README and run the tests"
 
 
+def demo_admin() -> dict:
+    """Resetting needs a person (the dashboard) or a throwaway `serve --demo-admin` daemon's key."""
+    import os
+    home = os.environ.get("TRIPWIRE_HOME") or os.path.expanduser("~/.tripwire")
+    try:
+        return {"X-Tripwire-Demo-Admin": open(os.path.join(home, "demo-admin.key")).read().strip()}
+    except OSError:
+        return {}
+
+
 def post(base: str, path: str, body: dict, timeout: float = 90) -> dict:
     req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
                                  headers={"content-type": "application/json", **auth.headers(),
-                                          **(auth.admin_headers() if path == "/v1/reset" else {})})
+                                          **(demo_admin() if path == "/v1/reset" else {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read() or b"{}")
 

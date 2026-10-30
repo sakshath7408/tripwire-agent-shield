@@ -18,7 +18,7 @@ import uvicorn
 
 from tripwire.adapters import claude_code
 from tripwire.engine import Engine
-from tripwire.server import create_app
+from tripwire.server import create_app, dashboard_headers
 
 FIXTURES = Path(__file__).with_name("fixtures")
 FAKE = FIXTURES / "fake_mcp_server.py"
@@ -45,7 +45,7 @@ def daemon(tmp_path_factory):
         time.sleep(0.02)
     url = f"http://127.0.0.1:{port}"
     os.environ["TRIPWIRE_TEST_TOKEN"] = app.state.token
-    os.environ["TRIPWIRE_TEST_ADMIN"] = app.state.admin
+    os.environ["TRIPWIRE_TEST_DASH"] = dashboard_headers(app)["Cookie"]
     yield url
     server.should_exit = True
     t.join(5)
@@ -356,7 +356,7 @@ def test_proxy_profile_is_sent(env, tmp_path):
         px.tools()
         assert not px.call("read_file", path="notes.txt").get("isError")
         import httpx
-        sess = {s["id"]: s for s in httpx.get(env + "/v1/sessions", headers={"X-Tripwire-Admin": os.environ["TRIPWIRE_TEST_ADMIN"]}).json()}
+        sess = {s["id"]: s for s in httpx.get(env + "/v1/sessions", headers={"Cookie": os.environ["TRIPWIRE_TEST_DASH"]}).json()}
         assert "mcp-prof" in sess
     finally:
         px.close()
@@ -414,7 +414,7 @@ def test_pins_rug_pull_new_tool_and_poison(env, tmp_path):
     assert px.call("read_file", path="notes.txt")["isError"]
     px.close()
     import httpx
-    assert any(o for o in httpx.get(env + "/v1/sessions", headers={"X-Tripwire-Admin": os.environ["TRIPWIRE_TEST_ADMIN"]}).json() if o["id"] == "mcp-pin-poison")
+    assert any(o for o in httpx.get(env + "/v1/sessions", headers={"Cookie": os.environ["TRIPWIRE_TEST_DASH"]}).json() if o["id"] == "mcp-pin-poison")
 
 
 def test_proxy_drops_bad_json_and_survives(env, tmp_path):

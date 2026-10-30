@@ -4,7 +4,9 @@ Sits between an MCP client (Claude Desktop, Claude Code, any agent) and an MCP s
 speaks newline-delimited JSON-RPC over stdio. Everything is relayed untouched except:
 
   client -> server  tools/call    evaluated by the daemon first (wait=120, so an ASK is held
-                                  for a human on the dashboard). Anything but allow is answered
+                                  for a person: only a click in the paired dashboard answers it,
+                                  never the hook token the agent can read; unanswered, it ends as
+                                  a block). Anything but allow is answered
                                   by the proxy itself with an isError tool result; the server
                                   never sees the call.
   server -> client  tools/list    tool metadata pinned and signed (see pins.py); changed, new

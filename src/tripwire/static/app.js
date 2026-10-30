@@ -161,7 +161,7 @@
     if (v.auto || v.resolved_by === "rule" || v.rule_id) return v.rule_id ? "Learned rule" : "Decided on its own";
     if (v.resolved_by === "timeout") return "No answer in time, so blocked";
     // Answered with the install token: the terminal prompt, a script, never this page. Say so in plain words.
-    if (v.resolved_by === "api-token" || v.resolved_by === "hook-token" || v.resolved_by === "admin") return v.decision === "allow" ? "Approved outside this page" : "Blocked outside this page";
+    if (v.resolved_by === "api-token" || v.resolved_by === "hook-token" || v.resolved_by === "admin" || v.resolved_by === "demo-admin") return v.decision === "allow" ? "Approved outside this page" : "Blocked outside this page";
     if (v.resolved_by) return (v.decision === "allow" ? "Approved by " : "Blocked by ") + v.resolved_by;
     if (judgeDecided(v)) return "Local judge agreed";
     return "";
@@ -757,7 +757,7 @@
       : "No decisions yet.";
     el.auditCount.textContent = all.length || "";
     el.auditRows.innerHTML = all.map((v) => {
-      const who = v.resolved_by === "human" ? `<span class="who-human">You</span>` : v.resolved_by === "timeout" ? `<span class="who-timeout">Timed out</span>` : v.resolved_by === "api-token" || v.resolved_by === "hook-token" || v.resolved_by === "admin" ? `<span title="Answered from a terminal or a script with Tripwire's key, not on this page">Terminal</span>` : v.resolved_by ? esc(v.resolved_by.charAt(0).toUpperCase() + v.resolved_by.slice(1)) : isPending(v) ? `<span class="who-wait">Waiting</span>` : judgeDecided(v) ? "Tripwire + judge" : "Tripwire";
+      const who = v.resolved_by === "human" ? `<span class="who-human">You</span>` : v.resolved_by === "timeout" ? `<span class="who-timeout">Timed out</span>` : v.resolved_by === "api-token" || v.resolved_by === "hook-token" || v.resolved_by === "admin" || v.resolved_by === "demo-admin" ? `<span title="Answered from a terminal or a script with Tripwire's key, not on this page">Terminal</span>` : v.resolved_by ? esc(v.resolved_by.charAt(0).toUpperCase() + v.resolved_by.slice(1)) : isPending(v) ? `<span class="who-wait">Waiting</span>` : judgeDecided(v) ? "Tripwire + judge" : "Tripwire";
       const ag = agentOf(v);
       return `<tr data-id="${v.id}" tabindex="0"><td>${fmtTime(v.ts)}</td><td class="sid" title="${esc(v.action.session_id)}">${esc(sessionParts(v.action.session_id).name)}</td><td class="agent-cell">${ag ? agentChip(v) : `<span class="main-agent">main</span>`}</td><td class="tool">${esc(toolLabel(v.action.tool))}</td>
         <td><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span></td><td>${badge(v.decision)}</td><td><span class="why" title="${esc(cleanSummary(v))}">${esc(cleanSummary(v))}</span></td><td>${who}</td>
@@ -1369,10 +1369,28 @@
     on("rule", () => loadRules(0));
     on("settings", (d) => { if (S.settings && d && d.autonomy) { S.settings.autonomy = d.autonomy; paintSettings(); } });
     on("ping", () => setConn("live"));
+    on("pair_request", askPair);
   }
 
+  // `tripwire open` in a terminal asks to pair a new browser. A paired dashboard can approve it, after the person
+  // checks the 6 digits match the ones their own terminal shows (an agent's request shows different digits).
+  const pairAsked = new Set();
+  function askPair(d) {
+    if (!d || !d.id || !/^\d{6}$/.test(d.digits || "") || pairAsked.has(d.id)) return;
+    pairAsked.add(d.id);
+    setTimeout(() => {
+      const ok = window.confirm(`A terminal ran "tripwire open" and asks to connect a new browser to Tripwire.\n\n` +
+        `Its code: ${d.digits.slice(0, 3)} ${d.digits.slice(3)}\n\nApprove only if you ran it and this matches the code in your terminal. ` +
+        `Otherwise press Cancel.`);
+      api(`/v1/pair/requests/${encodeURIComponent(d.id)}`, { method: "POST", body: JSON.stringify({ decision: ok ? "allow" : "block" }) })
+        .then(() => toast(ok ? "Approved. The new browser opens from your terminal." : "Turned down. No browser was paired."))
+        .catch((e) => toast(e.message, 6000));
+    }, 50);
+  }
+  function checkPairRequests() { api("/v1/pair/requests").then((rs) => rs.forEach(askPair)).catch(() => {}); }
+
   function start() {
-    return pairFromHash().then(() => loadAll()).then(connect).catch((e) => {
+    return pairFromHash().then(() => loadAll()).then(() => { checkPairRequests(); connect(); }).catch((e) => {
       if (e && e.status === 401) setConn("unpaired"); // no SSE retry loop: pairing needs a link from `tripwire open`
       else { setConn("down"); connect(); }
     });

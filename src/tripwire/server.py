@@ -10,17 +10,22 @@ GET  /v1/verdicts   recent verdicts      GET /v1/stats   counts
 GET  /v1/audit      audited verdicts (?agent= ?trace= ?session_id=; ?format=tree for agent trees)
 GET  /v1/audit/events  raw chained records    GET /v1/audit/verify  walk the hash chain
 GET  /v1/events     server-sent events (task | observe | verdict | resolved)
-POST /v1/pair {"code"}  swap a one-time pairing code for the dashboard cookie   POST /v1/pair/new  mint a code (token)
+POST /v1/pair {"code"}  swap a one-time pairing code for the dashboard cookie
+POST /v1/pair/request   `tripwire open` asks to pair; a person approves it (serve's terminal or a paired dashboard)
+POST /v1/pair/poll      `tripwire open` collects its code once approved
+GET  /v1/pair/requests  POST /v1/pair/requests/{id} {"decision"}   pending requests, for a paired dashboard
+POST /v1/pair/new       mint a code: hardened console key or a --demo-admin daemon only
 GET  /              dashboard
 
 Credentials (see auth.py): the hook token (X-Tripwire-Token) may only POST /v1/task, /v1/observe and /v1/evaluate.
-Everything else, reads included, needs the admin secret (X-Tripwire-Admin, used by `tripwire open` and your own
-scripts) or the paired dashboard's cookie. /v1/pair takes a one-time code; /healthz, / and /static are open. Every
+Everything else, reads included, needs the paired dashboard's cookie. No credential the agent can read on disk
+answers an ASK, changes settings or pairs a browser: there is no admin key file, and the daemon stores only digests
+of dashboard cookies. /v1/pair*, /healthz, / and /static need no credential (pairing still needs a person). Every
 request must name 127.0.0.1/localhost as its Host (stops DNS rebinding).
 
-Who did it: the audit log records the credential used: "hook-token", "admin" or "dashboard". A session that saw
-hidden instructions can't be re-tasked by anyone over the API, and a reset never forgets that it saw them. Loosening
-autonomy while a live session has seen hidden instructions is dashboard-only.
+Who did it: the audit log records the credential used: "hook-token", "dashboard", "console" or "demo-admin". A
+session that saw hidden instructions keeps that memory through resets and restarts; while any live session has seen
+them, nobody can loosen autonomy and a new browser needs a person to approve it through `tripwire open`.
 """
 
 from __future__ import annotations
@@ -68,19 +73,74 @@ class Settings(BaseModel):
     autonomy: Literal["strict", "balanced", "autonomous"]
 
 
+class PairPoll(BaseModel):
+    id: str
+    secret: str
+
+
+class PairDecision(BaseModel):
+    decision: Literal["allow", "block"]
+
+
+class Console:
+    """The daemon's own terminal, if it has one. `out` is written to only when it is a real terminal (never a log);
+    `interactive` means a person can type into it (serve in the foreground)."""
+
+    def __init__(self, out=None, interactive: bool = False) -> None:
+        self.out, self.interactive = out, interactive and out is not None
+
+    def say(self, text: str) -> None:
+        if self.out is None:
+            return
+        try:
+            self.out.write(text + "\n")
+            self.out.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def dashboard_headers(app) -> dict[str, str]:
+    """In-process only (tests, in-process tools): pair a browser directly and return its request headers. Nothing
+    over HTTP reaches this; an agent that imports it builds its own app, not your daemon's."""
+    return {"Cookie": f"{auth.COOKIE}={app.state.pair_browser()}", "Sec-Fetch-Site": "same-origin"}
+
+
 MUTATING = {"POST", "PUT", "DELETE", "PATCH"}
 # All the agent hook's token may do.
 HOOK_ENDPOINTS = {("POST", "/v1/task"), ("POST", "/v1/observe"), ("POST", "/v1/evaluate")}
+# Open to anyone local: they only ask; a person decides.
+PAIR_OPEN = {"/v1/pair", "/v1/pair/request", "/v1/pair/poll"}
+MAX_PAIR_REQUESTS = 3
 
 
 def create_app(engine: Engine | None = None, audit_path: Path | None = None, home: Path | None = None,
-               token: str | None = None, admin: str | None = None) -> FastAPI:
+               token: str | None = None, demo_admin: str | None = None, console: Console | None = None,
+               hardened: bool = False) -> FastAPI:
     engine = engine or Engine()
     home = Path(home) if home else (Path(audit_path).parent if audit_path else
                                     Path(os.environ.get("TRIPWIRE_HOME") or Path.home() / ".tripwire"))
     audit = auditlib.Audit(audit_path or home / "audit.db")
     token = token or auth.load_or_create(home)
-    admin = admin or auth.load_or_create_admin(home)
+    # Migration: earlier versions kept an admin key the agent could read. It must not outlive this version.
+    removed_admin = auth.remove_legacy_admin(home)
+    if removed_admin:
+        log.warning("deleted %s: Tripwire no longer keeps an admin key on disk. Pair browsers with `tripwire open`.",
+                    auth.legacy_admin_path(home))
+    if not demo_admin:
+        with contextlib.suppress(FileNotFoundError):
+            auth.demo_admin_path(home).unlink()
+    console_key = None
+    if hardened:
+        problem = auth.hardened_problem(home)
+        if problem:
+            raise RuntimeError(f"Hardened mode refused: {problem}")
+        console_key = auth.new_pair_code()
+        auth.write_secret(auth.console_key_path(home), console_key)
+    else:
+        with contextlib.suppress(FileNotFoundError):
+            auth.console_key_path(home).unlink()
+    console = console or Console()
+    dashboards = auth.DashboardStore(home / "dashboards.json")
     # The level you chose last time, unless whoever built the engine (serve --autonomy, a test) already chose one.
     saved = autolib.load_settings(home).get("autonomy")
     if not engine.autonomy_explicit and saved in autolib.LEVELS:
@@ -122,16 +182,18 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     deadlines: dict[str, float] = {}
     queues: set[asyncio.Queue] = set()
     started = time.time()
-    dash = auth.dash_key(admin)
-    pair_codes: dict[str, float] = {}
+    pair_codes: dict[str, tuple[float, str]] = {}  # code -> (expiry, how it was minted)
+    pair_requests: dict[str, dict] = {}  # `tripwire open` requests waiting for a person
+    pair_lock = threading.Lock()  # the console thread and the event loop both touch the pairing state
     last_pair = {"ts": 0.0}
 
-    def new_pair() -> str:
+    def new_pair(origin: str = "console") -> str:
         now = time.time()
-        for k in [k for k, exp in pair_codes.items() if exp < now]:
-            pair_codes.pop(k, None)
-        code = auth.new_pair_code()
-        pair_codes[code] = now + auth.PAIR_TTL
+        with pair_lock:
+            for k in [k for k, (exp, _) in pair_codes.items() if exp < now]:
+                pair_codes.pop(k, None)
+            code = auth.new_pair_code()
+            pair_codes[code] = (now + auth.PAIR_TTL, origin)
         return code
 
     def broadcast(kind: str, data: dict) -> None:
@@ -151,10 +213,13 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     app.state.engine = engine
     app.state.audit = audit
     app.state.token = token
-    app.state.admin = admin
+    app.state.demo_admin = demo_admin
     app.state.home = home
     app.state.new_pair = new_pair
-    app.state.dash_key = dash
+    app.state.pair_browser = dashboards.add
+    app.state.dashboards = dashboards
+    app.state.console = console
+    app.state.removed_admin_key = removed_admin
     app.state.save_sessions = save_sessions
     app.state.restored_sessions = restored
 
@@ -168,22 +233,25 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
             return JSONResponse({"detail": "Requests from other websites are refused."}, 403)
         path = request.url.path
         request.state.actor = None
-        if path.startswith("/v1/") and path != "/v1/pair":
+        if path.startswith("/v1/") and path not in PAIR_OPEN:
             sent = request.headers.get(auth.HEADER)
-            sent_admin = request.headers.get(auth.ADMIN_HEADER)
             cookie = request.cookies.get(auth.COOKIE)
             # A mutating cookie request must also look same-origin (SameSite=Strict already keeps other sites out).
-            browser_ok = auth.same(cookie, dash) and (request.method not in MUTATING or origin is not None or
-                                                      request.headers.get("sec-fetch-site") == "same-origin")
-            if auth.same(sent_admin, admin):
-                request.state.actor = "admin"
+            browser_ok = dashboards.check(cookie) and (request.method not in MUTATING or origin is not None or
+                                                       request.headers.get("sec-fetch-site") == "same-origin")
+            if demo_admin and auth.same(request.headers.get(auth.DEMO_HEADER), demo_admin):
+                request.state.actor = "demo-admin"
+            elif console_key and auth.same(request.headers.get(auth.CONSOLE_HEADER), console_key):
+                if (request.method, path) != ("POST", "/v1/pair/new"):
+                    return JSONResponse({"detail": "The console key only mints pairing links. Use the dashboard."}, 403)
+                request.state.actor = "console"
             elif browser_ok:
                 request.state.actor = "dashboard"
             elif auth.same(sent, token):
                 if (request.method, path) not in HOOK_ENDPOINTS:
                     return JSONResponse({"detail": "The agent hook's token can only send tasks, tool outputs and "
-                                                   "actions to check. This needs the dashboard (run `tripwire open` in "
-                                                   "your terminal) or the admin key."}, 403)
+                                                   "actions to check. This needs the paired dashboard: run "
+                                                   "`tripwire open` in your terminal."}, 403)
                 request.state.actor = "hook-token"
             else:
                 return JSONResponse({"detail": "Not connected. Run `tripwire open` in your terminal to pair this "
@@ -200,30 +268,146 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     def any_injected() -> bool:
         return any(s.taint.injection_seen for s in engine.sessions.all())
 
+    INJECTED_PAIR = ("Hidden instructions were seen in a live session, so a new browser needs a person's OK: run "
+                     "`tripwire open` and approve its code in the `tripwire serve` terminal or a paired dashboard.")
+
     @app.post("/v1/pair")
     def pair(body: Pair) -> JSONResponse:
-        exp = pair_codes.pop(body.code, None) if isinstance(body.code, str) else None
-        if exp is None or exp < time.time():
+        with pair_lock:
+            entry = pair_codes.pop(body.code, None) if isinstance(body.code, str) else None
+        if entry is None or entry[0] < time.time():
             return JSONResponse({"detail": "That pairing code is used up or expired. Run `tripwire open` for a new one."},
                                 403)
+        origin = entry[1]
+        if origin not in ("handshake", "console") and any_injected():
+            # A link minted before the attack (or by a demo daemon) can't add a browser after it.
+            return JSONResponse({"detail": INJECTED_PAIR}, 403)
         resp = JSONResponse({"ok": True})
-        resp.set_cookie(auth.COOKIE, dash, httponly=True, samesite="strict", path="/")
+        resp.set_cookie(auth.COOKIE, dashboards.add(), httponly=True, samesite="strict", path="/",
+                        max_age=auth.COOKIE_DAYS * 86400)
         last_pair["ts"] = time.time()
-        record("pair", body={"by": "dashboard", "minted_by": minted_by.pop(body.code, "admin"),
+        record("pair", body={"by": "dashboard", "minted_by": origin,
                              "note": "a browser was paired with a one-time code"})
         return resp
-
-    minted_by: dict[str, str] = {}
 
     @app.post("/v1/pair/new")
     def pair_new(request: Request) -> dict:
         by = actor(request)
-        if by != "admin":
-            raise HTTPException(403, "Pairing codes are minted from your terminal (`tripwire open`).")
-        code = new_pair()
-        minted_by[code] = by
+        if by not in ("console", "demo-admin"):
+            raise HTTPException(403, "Pairing links come from a person: run `tripwire open` in your terminal.")
+        if by == "demo-admin" and any_injected():
+            raise HTTPException(403, INJECTED_PAIR)
+        code = new_pair(by)
         record("pair_code", body={"by": by, "note": "a one-time pairing code was minted"})
         return {"code": code, "expires_in": auth.PAIR_TTL}
+
+    def pending_requests() -> list[dict]:
+        now = time.time()
+        with pair_lock:
+            for k in [k for k, r in pair_requests.items() if r["expires"] < now]:
+                pair_requests.pop(k, None)
+            return [r for r in pair_requests.values() if r["status"] == "pending"]
+
+    def approvers() -> list[str]:
+        out = []
+        if console.interactive:
+            out.append("console")
+        if dashboards.count():
+            out.append("dashboard")
+        return out
+
+    def decide_request(rid: str, decision: str, by: str) -> bool:
+        with pair_lock:
+            r = pair_requests.get(rid)
+            if not r or r["status"] != "pending" or r["expires"] < time.time():
+                return False
+            r["status"] = "approved" if decision == "allow" else "denied"
+        record("pair_request", body={"op": r["status"], "by": by, "request": rid})
+        broadcast("pair_resolved", {"id": rid, "status": r["status"]})
+        return True
+
+    @app.post("/v1/pair/request")
+    def pair_request(request: Request) -> JSONResponse:
+        who_ = approvers()
+        if not who_:
+            return JSONResponse({"detail": "Nobody can approve a new browser right now: the daemon runs in the "
+                                           "background and no browser is paired. Restart it from your own terminal "
+                                           "(`scripts/restart_daemon.sh`, or `tripwire serve`): it prints a one-time "
+                                           "link there."}, 409)
+        pending_requests()
+        rid, secret, digits = auth.new_pair_code()[:12], auth.new_pair_code(), auth.new_digits()
+        with pair_lock:
+            while len(pair_requests) >= MAX_PAIR_REQUESTS:
+                pair_requests.pop(min(pair_requests, key=lambda k: pair_requests[k]["expires"]), None)
+            pair_requests[rid] = {"id": rid, "secret": secret, "digits": digits, "status": "pending",
+                                  "expires": time.time() + auth.REQUEST_TTL}
+        console.say("\n`tripwire open` is asking to pair a browser. If you ran it, type the 6 digits it shows, then "
+                    "press Enter here. If you didn't, ignore this.")
+        broadcast("pair_request", {"id": rid, "digits": digits})
+        record("pair_request", body={"op": "asked", "request": rid,
+                                     "by": "hook-token" if auth.same(request.headers.get(auth.HEADER), token) else "local"})
+        return JSONResponse({"id": rid, "secret": secret, "digits": digits, "approve_in": who_,
+                             "expires_in": auth.REQUEST_TTL})
+
+    @app.post("/v1/pair/poll")
+    def pair_poll(body: PairPoll) -> dict:
+        with pair_lock:
+            r = pair_requests.get(body.id)
+            if not r or not auth.same(body.secret, r["secret"]) or r["expires"] < time.time():
+                raise HTTPException(404, "That pairing request expired. Run `tripwire open` again.")
+            if r["status"] == "pending":
+                return {"status": "pending"}
+            pair_requests.pop(body.id, None)
+        if r["status"] == "denied":
+            return {"status": "denied"}
+        return {"status": "approved", "code": new_pair("handshake")}
+
+    @app.get("/v1/pair/requests")
+    def pair_requests_list(request: Request) -> list[dict]:
+        if actor(request) != "dashboard":
+            raise HTTPException(403, "Only a paired dashboard can see pairing requests.")
+        return [{"id": r["id"], "digits": r["digits"], "expires": r["expires"]} for r in pending_requests()]
+
+    @app.post("/v1/pair/requests/{rid}")
+    def pair_requests_decide(rid: str, body: PairDecision, request: Request) -> dict:
+        if actor(request) != "dashboard":
+            raise HTTPException(403, "Only a paired dashboard can approve a new browser.")
+        if not decide_request(rid, body.decision, "dashboard"):
+            raise HTTPException(404, "That pairing request is gone or expired.")
+        return {"ok": True}
+
+    def console_line(line: str) -> None:
+        """One line typed into serve's own terminal: 6 digits approve a `tripwire open` request; Enter alone prints
+        a fresh one-time link (not while hidden instructions are live)."""
+        text = line.strip().replace(" ", "")
+        if text.isdigit() and len(text) == 6:
+            match = [r for r in pending_requests() if auth.same(r["digits"], text)]
+            if match and decide_request(match[0]["id"], "allow", "console"):
+                console.say("Approved. The browser opens from the `tripwire open` terminal.")
+            else:
+                console.say("No waiting `tripwire open` has those digits. Run it again for a fresh code.")
+            return
+        if text:
+            console.say("Type the 6 digits `tripwire open` shows, or press Enter alone for a one-time link.")
+            return
+        if any_injected():
+            console.say(INJECTED_PAIR)
+            return
+        code = new_pair("console")
+        record("pair_code", body={"by": "console", "note": "a one-time pairing code was minted in serve's terminal"})
+        console.say(f"One-time dashboard link (works once, 10 minutes): {app.state.base_url}#pair={code}")
+
+    def startup_link() -> str | None:
+        """The link serve prints once at startup, to its own terminal. None while hidden instructions are live."""
+        if any_injected():
+            return None
+        record("pair_code", body={"by": "console", "note": "startup link printed to serve's terminal"})
+        return new_pair("console")
+
+    app.state.console_line = console_line
+    app.state.startup_link = startup_link
+    app.state.base_url = "http://127.0.0.1:7777/"
+    app.state.any_injected = lambda: any_injected()
 
     def who(x: Action | Observation | TaskSpec) -> tuple[str, str | None, str]:
         """(agent, parent, trace). With no agent given, the session is the agent, as before."""
@@ -320,6 +504,10 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     @app.post("/v1/verdicts/{vid}/resolve")
     def resolve(vid: str, body: Resolve, request: Request) -> dict:
         by = actor(request)
+        if by not in ("dashboard", "demo-admin"):
+            # An ASK is a question for a person. Only a click in the paired dashboard answers it (or the simulated
+            # human of a throwaway --demo-admin daemon).
+            raise HTTPException(403, "Only a click in the paired dashboard can answer this.")
         for v in recent:
             if v.id == vid:
                 break
@@ -355,10 +543,11 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         by = actor(request)
         before = engine.autonomy
         looser = autolib.LEVELS.index(body.autonomy) > autolib.LEVELS.index(before) if before in autolib.LEVELS else True
-        if by != "dashboard" and looser and any_injected():
-            # The attack this stops: an agent that got hold of the token switches Tripwire to autonomous.
-            raise HTTPException(403, "Hidden instructions were seen in a live session, so the autonomy level can "
-                                     "only be changed from the dashboard.")
+        if looser and any_injected():
+            # The attack this stops: a hijacked agent that got hold of any credential switches Tripwire to
+            # autonomous. Not even the dashboard loosens while an attack is live; reset the view first.
+            raise HTTPException(403, "Hidden instructions were seen in a live session, so Tripwire won't loosen "
+                                     "now. Reset the view first (the attack stays remembered), then change it.")
         engine.set_autonomy(body.autonomy)
         data = autolib.load_settings(home)
         data["autonomy"] = engine.autonomy
@@ -410,21 +599,26 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
                  "injections": [{"tool": i.tool, "source": i.where, "snippet": i.snippet} for i in s.taint.injection_seen[-5:]],
                  "secrets_read": s.secrets_read, "actions": len(s.history)} for s in engine.sessions.all()]
 
-    @app.post("/v1/reset")
-    def reset(request: Request) -> dict:
-        by = actor(request)
+    def clear_view(by: str) -> int:
         for fut in pending.values():  # never leave a held agent hanging: settle as block
             if not fut.done():
                 fut.set_result(Decision.BLOCK)
-        # Only a person (dashboard) or the admin key can reset. Sessions go, but every session that saw hidden
-        # instructions leaves a tombstone: if its id comes back, it starts out knowing it was attacked.
+        # Only a person (the paired dashboard, or `serve --clear-view` in their terminal) can reset. Sessions go,
+        # but every session that saw hidden instructions leaves a tombstone: if its id comes back, it starts out
+        # knowing it was attacked.
         kept = engine.sessions.reset()
         recent.clear()
         record("reset", body={"note": "live view cleared; the audit log keeps everything", "by": by, "kept": kept,
                               "remembered_attacks": len(engine.sessions.tombstones),
                               "seconds_after_pairing": round(time.time() - last_pair["ts"], 2) if soon_after_pair() else None})
         broadcast("reset", {})
-        return {"ok": True, "kept": kept}
+        return kept
+
+    app.state.clear_view = clear_view
+
+    @app.post("/v1/reset")
+    def reset(request: Request) -> dict:
+        return {"ok": True, "kept": clear_view(actor(request))}
 
     @app.get("/v1/events")
     async def events(request: Request):
@@ -470,7 +664,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     def healthz() -> dict:
         # "ok" means the daemon is deciding (adapters and scripts poll this). Audit health is separate,
         # so a broken disk shows up as audit "degraded" without making every agent fail closed.
-        return {"ok": True, "audit": audit.health(),
+        return {"ok": True, "audit": audit.health(), "demo_admin": bool(demo_admin), "hardened": bool(hardened),
                 "sessions": {"live": len(engine.sessions.all()), "restored": restored, "save_error": saved_at["error"]}}
 
     if STATIC.exists():

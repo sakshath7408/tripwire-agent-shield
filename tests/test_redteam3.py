@@ -18,7 +18,7 @@ from tripwire.analyzers.shell import analyze_shell
 from tripwire.engine import Engine
 from tripwire.models import CRITICAL, HIGH, MEDIUM, Action, Decision, Observation, TaskSpec
 from tripwire.policy import Policy
-from tripwire.server import create_app
+from tripwire.server import create_app, dashboard_headers
 from tripwire.session import Session, SessionStore
 
 CWD = "/Users/u/proj"
@@ -155,19 +155,17 @@ def test_hook_token_cannot_take_over_the_daemon(tmp_path):
             c.cookies.set("tripwire_dash", hmac.new(app.state.token.encode(), label, "sha256").hexdigest())
             assert c.get("/v1/sessions", headers={"Origin": "http://127.0.0.1"}).status_code == 403
     assert app.state.engine.autonomy == "balanced"
-    admin = TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Admin": app.state.admin})
+    admin = TestClient(app, base_url="http://127.0.0.1", headers=dashboard_headers(app))
     app.state.audit.flush(5)
     ev_ = admin.get("/v1/audit/events").json()
     assert {json.loads(x["json"]).get("by") for x in ev_ if x["kind"] == "task"} == {"hook-token"}
     assert not [x for x in ev_ if x["kind"] in ("pair", "settings", "reset")]
 
 
-def test_admin_secret_is_separate_and_private(tmp_path):
+def test_no_admin_secret_on_disk(tmp_path):
+    """Review 4 replaced review 3's admin.key: no file in TRIPWIRE_HOME grants admin (tests/test_guard4.py)."""
     app = _app(tmp_path)
-    key = tmp_path / "admin.key"
-    assert key.exists() and (key.stat().st_mode & 0o777) == 0o600
-    assert app.state.admin != app.state.token and key.read_text().strip() == app.state.admin
-    # The hook never reads it: the adapter module only knows the token file.
+    assert not (tmp_path / "admin.key").exists() and not hasattr(app.state, "admin")
     import inspect
 
     from tripwire.adapters import claude_code
@@ -369,7 +367,7 @@ def test_api_exposes_hidden_instructions_flag(tmp_path):
         c.post("/v1/task", json={"session_id": "g7", "prompt": "Fix the failing test", "cwd": CWD})
         c.post("/v1/observe", json={"session_id": "g7", "tool": "Read", "output": README_INJ})
         c.post("/v1/task", json={"session_id": "ok", "prompt": "Fix the failing test", "cwd": CWD})
-    admin = TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Admin": app.state.admin})
+    admin = TestClient(app, base_url="http://127.0.0.1", headers=dashboard_headers(app))
     rows = {r["id"]: r for r in admin.get("/v1/sessions").json()}
     assert rows["g7"]["hidden_instructions_seen"] is True and rows["ok"]["hidden_instructions_seen"] is False
     assert admin.get("/v1/stats").json()["hidden_instructions_seen"] is True
@@ -538,7 +536,7 @@ def test_restart_restores_the_feed(tmp_path):
         c.post("/v1/evaluate", json={"session_id": "r1", "tool": "Bash", "args": {"command": "pytest -q"}})
     app.state.save_sessions()
     app2 = create_app(Engine(policy=Policy.load()), home=tmp_path)
-    admin = TestClient(app2, base_url="http://127.0.0.1", headers={"X-Tripwire-Admin": app2.state.admin})
+    admin = TestClient(app2, base_url="http://127.0.0.1", headers=dashboard_headers(app2))
     assert [v["action"]["session_id"] for v in admin.get("/v1/verdicts").json()] == ["r1"]
 
 

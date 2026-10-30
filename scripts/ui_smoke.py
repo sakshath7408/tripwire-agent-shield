@@ -76,16 +76,35 @@ def guide(p: Page, eng: str) -> None:
     check(step(p) == "closed", f"{eng}: Escape closes the guide")
 
 
-def dashboard(browser, eng: str, base: str) -> None:
-    from tripwire import auth  # the cookie a paired browser holds: derived from the install token
+def demo_cookie(base: str) -> str | None:
+    """Pair this script's browser on a daemon started with `serve --demo-admin` (a throwaway test daemon: the
+    real one has no key a script could use). Returns the dashboard cookie value, or None."""
+    import json as _json
+    import os as _os
+    import urllib.request as _rq
+    home = _os.environ.get("TRIPWIRE_HOME") or _os.path.expanduser("~/.tripwire")
+    try:
+        key = open(_os.path.join(home, "demo-admin.key")).read().strip()
+        req = _rq.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={"X-Tripwire-Demo-Admin": key})
+        code = _json.loads(_rq.urlopen(req, timeout=5).read())["code"]
+        req = _rq.Request(f"{base}/v1/pair", data=_json.dumps({"code": code}).encode(), method="POST",
+                          headers={"content-type": "application/json"})
+        cookie = _rq.urlopen(req, timeout=5).headers.get("set-cookie") or ""
+        return cookie.split("=", 1)[1].split(";", 1)[0] or None
+    except Exception:  # noqa: BLE001
+        return None
 
-    tok = auth.read_admin()  # the cookie is derived from the admin key, never from the hook token
+
+def dashboard(browser, eng: str, base: str) -> None:
+    from tripwire import auth
+
+    tok = demo_cookie(base)
     if not tok:
-        print("  skip dashboard: no admin key (set TRIPWIRE_HOME to the daemon's home)")
+        print("  skip dashboard: start the daemon with `serve --demo-admin` and the same TRIPWIRE_HOME to pair")
         return
     host = base.split("//", 1)[1].split(":")[0]
     c = browser.new_context(viewport={"width": 1280, "height": 800})
-    c.add_cookies([{"name": auth.COOKIE, "value": auth.dash_key(tok), "domain": host, "path": "/"}])
+    c.add_cookies([{"name": auth.COOKIE, "value": tok, "domain": host, "path": "/"}])
     p = c.new_page()
     log = errors(p)
     p.goto(base + "/")

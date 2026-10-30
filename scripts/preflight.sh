@@ -26,15 +26,15 @@ if curl -fs -m 2 "$URL/healthz" >/dev/null 2>&1; then
   CMD="$(ps -o command= -p "$PID" 2>/dev/null)"
   case "$CMD" in *tripwire*) ok "port $PORT is held by Tripwire (pid $PID)";;
     *) bad "port $PORT answers but is not Tripwire: $CMD" "scripts/stage.sh $PORT";; esac
-  # The daemon's mutating API needs its token; stage.sh and the demo read it from the same place.
-  ADM="$(cat "${TRIPWIRE_HOME:-$HOME/.tripwire}/admin.key" 2>/dev/null)"
-  if [ -z "$ADM" ]; then bad "no admin key at ${TRIPWIRE_HOME:-$HOME/.tripwire}/admin.key" "scripts/stage.sh $PORT (and use the same TRIPWIRE_HOME as the daemon)"
-  elif [ "$(curl -s -m 2 -H "X-Tripwire-Admin: $ADM" "$URL/v1/settings" -o /dev/null -w '%{http_code}')" != "200" ]; then
-    bad "the daemon rejects this admin key (it was started with a different TRIPWIRE_HOME)" "scripts/stage.sh $PORT"
-  else ok "admin key accepted by the daemon"; fi
-  LEVEL="$(curl -fs -m 2 -H "X-Tripwire-Admin: $ADM" "$URL/v1/settings" 2>/dev/null | sed -n 's/.*"autonomy": *"\([a-z]*\)".*/\1/p')"
-  if [ "$LEVEL" = "balanced" ]; then ok "autonomy: balanced (the level demo/SCRIPT.md is written for)"
-  else warn "autonomy is '${LEVEL:-unknown}', the script expects balanced (scripts/stage.sh sets it)"; fi
+  # No admin key on disk any more: only the paired dashboard can change the daemon. A stale key means an old daemon.
+  if [ -f "${TRIPWIRE_HOME:-$HOME/.tripwire}/admin.key" ]; then
+    bad "an old admin key is still on disk (an agent could read it)" "scripts/stage.sh $PORT (the new daemon deletes it)"
+  else ok "no admin key on disk"; fi
+  if curl -fs -m 2 "$URL/healthz" 2>/dev/null | grep -q '"demo_admin": *true'; then
+    bad "the daemon runs with --demo-admin (anyone can answer its ASKs)" "scripts/stage.sh $PORT"
+  else ok "no demo admin key"; fi
+  case "$CMD" in *"--autonomy balanced"*) ok "autonomy: balanced (the level demo/SCRIPT.md is written for)";;
+    *) warn "the daemon was not started with --autonomy balanced (scripts/stage.sh pins it)";; esac
 elif lsof -ti tcp:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   bad "port $PORT is busy and not answering /healthz" "lsof -i :$PORT, then scripts/stage.sh $PORT"
 else
