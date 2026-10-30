@@ -50,7 +50,7 @@ simulated environment. It must:
 ## Judging criteria (brochure)
 - [x] 1. **Security problem and threat relevance.** Real, current, clearly defined. The threat model names what is at risk and who the attacker is. Proof: `demo/THREAT_MODEL.md`
 - [x] 2. **Verified cybersecurity effectiveness.** Show the attack succeeding before the fix and failing after it. Proof: Act 1 vs Act 2 in `demo/run_demo.py` (all 5 pass in `scripts/preflight.sh`), `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `bench/results/summary.md`, live at https://tripwire-agent-shield.vercel.app (checked: no guard 3 items stolen, guarded 0)
-- [x] 3. **Technical implementation.** Sound, complete, well engineered. Proof: `docs/ARCHITECTURE.md`, `uv run pytest -q` (506 passed, 3 xfailed)
+- [x] 3. **Technical implementation.** Sound, complete, well engineered. Proof: `docs/ARCHITECTURE.md`, `uv run pytest -q` (653 passed incl. 3 live local-model tests, 2 xfailed)
 - [x] 4. **Innovation and originality.** A fresh approach, not a re-skinned tutorial. Proof: provenance at the tool boundary (`taint.py`), signed MCP pins, shell AST, tamper-evident cross-agent audit chain
 - [x] 5. **UI/UX.** Security people will actually use: clear, intuitive, low friction. Proof: `src/tripwire/static/`, checked by eye 31 Oct at 1280x720 and phone, light and dark
 - [x] 6. **Safety, privacy and responsible engineering.** Tested within scope, data handled responsibly, rules of engagement followed. Proof: binds 127.0.0.1, args redacted before storage (`secrets.redact`), synthetic data only, `never-touch-tripwire` rule, `tests/test_redteam.py`
@@ -68,7 +68,7 @@ simulated environment. It must:
 
 ## Release checklist (run before submission)
 - [x] every box above ticked, each with a file or demo step that proves it (see README requirement table). Checked 31 Oct
-- [x] `uv run pytest -q` all green. 506 passed, 3 xfailed
+- [x] `uv run pytest -q` all green. 653 passed incl. 3 live local-model tests, 2 xfailed
 - [x] `uv run python bench/run_all.py` rerun, numbers copied into README and the pitch deck. Run 30 Oct 21:31; README, pitch slide 5, `bench/README.md` match `bench/results/summary.md`
 - [x] all 5 demo scenarios pass both acts (`demo/run_demo.py --scenario all --offline --delay 0 --approve auto`). Also all green in `scripts/preflight.sh 7796` on a scratch daemon
 - [x] dashboard checked by eye at 1280x720 and phone, light and dark. Scratch daemon, after two guarded runs
