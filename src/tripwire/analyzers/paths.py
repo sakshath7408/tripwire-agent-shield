@@ -23,7 +23,7 @@ SECRET_PATHS = re.compile(
 PERSISTENCE_PATHS = re.compile(
     r"(^|/)(\.bashrc|\.zshrc|\.bash_profile|\.profile|\.zprofile|\.ssh/authorized_keys|\.ssh/config|"
     r"Library/LaunchAgents/|Library/LaunchDaemons/|/etc/cron|/var/spool/cron|crontab|/etc/systemd/|"
-    r"\.config/autostart/|\.git/hooks/|\.claude/settings[\w.-]{0,40}\.json|\.tripwire/|\.vscode/settings\.json|\.cursor/)",
+    r"\.config/autostart/|\.git/hooks/|Start Menu/Programs/Startup/|\w{0,20}PowerShell/[\w.]{0,40}profile\.ps1$|\.claude/settings[\w.-]{0,40}\.json|\.tripwire/|\.vscode/settings\.json|\.cursor/)",
     re.I,
 )
 
@@ -43,7 +43,14 @@ SECRET_SAMPLES = (".env", ".env.local", ".env.production", "id_rsa", "id_ed25519
                   ".npmrc", ".pypirc", ".netrc", ".git-credentials", "secrets.yaml", "secrets.json", "server.pem", "server.key")
 
 
+def _slashes(path: str) -> str:
+    """Windows paths (C:\\Users\\bob\\.ssh\\id_rsa) are judged like POSIX ones. A backslash is almost never part of
+    a real file name, so reading it as a separator only ever makes the check stricter."""
+    return path.replace("\\", "/") if "\\" in path else path
+
+
 def is_secret(path: str) -> bool:
+    path = _slashes(path)
     if path.endswith((".env.example", ".env.sample", ".env.template", ".pub", "/known_hosts")):
         return False  # public keys and templates hold nothing secret
     if SECRET_PATHS.search(path):
@@ -60,7 +67,7 @@ def is_secret(path: str) -> bool:
 
 
 def is_persistence(path: str) -> bool:
-    return bool(PERSISTENCE_PATHS.search(path))
+    return bool(PERSISTENCE_PATHS.search(_slashes(path)))
 
 
 def is_system(path: str) -> bool:

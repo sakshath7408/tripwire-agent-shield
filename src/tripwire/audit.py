@@ -237,7 +237,10 @@ class Audit:
                        (seq, prev, sign(self.key, f"{seq}:{prev}")))
             db.execute("commit")
         except BaseException:
-            db.execute("rollback")
+            try:
+                db.execute("rollback")
+            except sqlite3.Error:
+                pass  # SQLite already rolled back (disk full, I/O error); keep the real error, not this one
             raise
         self.write_ms.append((time.perf_counter() - t0) * 1000)
 

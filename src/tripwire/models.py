@@ -2,12 +2,42 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def scrub(v: Any, depth: int = 0) -> Any:
+    """Replace lone UTF-16 surrogates ("\\udc80", which JSON allows and a non-UTF-8 byte in tool output turns into)
+    with U+FFFD. Left in, they crashed the verdict's JSON encoding and the daemon answered HTTP 500.
+    Deep values are left alone; the engine already treats very deep args as uncheckable."""
+    if isinstance(v, str):
+        try:
+            v.encode("utf-8")
+            return v
+        except UnicodeEncodeError:
+            return _SURROGATE.sub("\ufffd", v)
+    if depth > 64:
+        return v
+    if isinstance(v, dict):
+        return {scrub(k, depth + 1): scrub(x, depth + 1) for k, x in v.items()}
+    if isinstance(v, list):
+        return [scrub(x, depth + 1) for x in v]
+    return v
+
+
+class _Clean(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def _scrub(cls, data: Any) -> Any:
+        return scrub(data)
 
 
 class Decision(str, Enum):
@@ -35,7 +65,7 @@ class Capability(str, Enum):
 INFO, LOW, MEDIUM, HIGH, CRITICAL = 0, 20, 50, 80, 100
 
 
-class Action(BaseModel):
+class Action(_Clean):
     """One tool call an agent wants to make."""
 
     session_id: str = "default"
@@ -80,7 +110,7 @@ class Verdict(BaseModel):
     rule_id: str | None = None  # the learned rule that decided it, if any
 
 
-class Observation(BaseModel):
+class Observation(_Clean):
     """Output a tool returned. Everything here is untrusted data, never instructions."""
 
     session_id: str = "default"
@@ -91,7 +121,7 @@ class Observation(BaseModel):
     parent: str | None = None
 
 
-class TaskSpec(BaseModel):
+class TaskSpec(_Clean):
     """What the human actually asked for. The only trusted text in a session."""
 
     session_id: str = "default"
