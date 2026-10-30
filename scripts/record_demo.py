@@ -5,9 +5,11 @@
 It starts its own daemon on a scratch port with a throwaway HOME (your real ~/.tripwire/audit.db is never
 touched), then:
   1. runs Act 1 (injected-doc, no guard) and captures the terminal and the attacker's inbox as they happen
-  2. records the dashboard in presenter mode (1280x720) while Act 2 runs for injected-doc with dashboard
-     approvals (Block on the SSH key, Allow on .env; the exfil email is blocked anyway), then beyond-permission
-     (Allow on saving the summary, the wire transfer and the command are blocked on their own)
+  2. records the dashboard in presenter mode (1280x720, balanced autonomy) while Act 2 runs for injected-doc
+     (no questions: the six injected calls are blocked on their own, the typo fix and tests go through), then
+     beyond-permission (the wire transfer and the command are blocked by the role; the summary save waits for a
+     click on "Always allow this", which Tripwire allows once but refuses to learn because the inbox carried
+     hidden instructions)
   3. replays the captured terminal output, with its real timing, in an HTML terminal page and records that
 Outputs in docs/demo-video/: tripwire-demo.webm (dashboard), tripwire-terminal.webm (terminal story),
 tripwire-terminal.png (still), and .mp4 + tripwire-demo.gif when an ffmpeg binary is available (imageio-ffmpeg
@@ -52,9 +54,16 @@ window.addEventListener('DOMContentLoaded', () => {
 
 
 # ---- daemon -----------------------------------------------------------------------------------------
+def scratch_env(home: str) -> dict[str, str]:
+    """HOME and TRIPWIRE_HOME both point into the throwaway folder, so a TRIPWIRE_HOME or TRIPWIRE_TOKEN set in
+    your shell can never point the recording at your real audit log, token or learned rules."""
+    env = {k: v for k, v in os.environ.items() if k not in ("TRIPWIRE_TOKEN", "TRIPWIRE_AUTONOMY")}
+    return {**env, "HOME": home, "TRIPWIRE_HOME": str(Path(home) / ".tripwire")}
+
+
 def start_daemon(port: int, home: str) -> subprocess.Popen:
-    env = {**os.environ, "HOME": home}
-    p = subprocess.Popen([str(ROOT / ".venv" / "bin" / "tripwire"), "serve", "--port", str(port)], env=env,
+    p = subprocess.Popen([str(ROOT / ".venv" / "bin" / "tripwire"), "serve", "--port", str(port),
+                          "--autonomy", "balanced"], env=scratch_env(home),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
         try:
@@ -78,7 +87,7 @@ class Capture:
     def run(self, cmd: list[str]) -> threading.Thread:
         def go() -> None:
             master, slave = pty.openpty()
-            env = {**os.environ, "COLUMNS": "120", "HOME": os.environ.get("TW_DEMO_HOME", os.environ["HOME"])}
+            env = {**scratch_env(os.environ["TW_DEMO_HOME"]), "COLUMNS": "120"}
             proc = subprocess.Popen(cmd, cwd=ROOT, stdout=slave, stderr=slave, stdin=subprocess.DEVNULL, env=env)
             os.close(slave)
             last_inbox = None
@@ -123,11 +132,12 @@ def point_and_click(page, target, pause: float = 0.9) -> None:
     loc.click()
 
 
-def decide(summary: str) -> str:
+def decide(summary: str) -> tuple[str, str | None]:
+    """(decision, remember). In balanced mode the only card in the recording is the summary save."""
     s = summary.lower()
-    if "ssh" in s or "id_rsa" in s:
-        return "block"
-    return "allow"  # .env read and the user's own summary file
+    if "ssh" in s or "id_rsa" in s or ".env" in s:
+        return "block", None
+    return "allow", "always"  # the user's own summary file: show "Always allow this" and Tripwire's answer
 
 
 def drive_dashboard(page, th: threading.Thread, log: list[str], read_pause: float) -> None:
@@ -142,10 +152,17 @@ def drive_dashboard(page, th: threading.Thread, log: list[str], read_pause: floa
             if not vid or vid in handled:
                 continue
             handled.add(vid)
-            choice = decide(summary)
-            log.append(f"{choice.upper():5} {summary}")
+            choice, remember = decide(summary)
+            log.append(f"{choice.upper():5}{' (' + remember + ')' if remember else ''} {summary}")
             page.wait_for_timeout(int(read_pause * 1000))  # let the viewer read the card
-            point_and_click(page, f'.q-item [data-resolve="{choice}"][data-id="{vid}"]')
+            sel = f'.q-item [data-resolve="{choice}"][data-id="{vid}"]'
+            if remember and page.locator(f'{sel}[data-remember="{remember}"]').count():
+                sel += f'[data-remember="{remember}"]'
+            elif remember:
+                log.append("  (no remember button on the card; plain Allow)")
+            point_and_click(page, sel)
+            if remember:
+                page.wait_for_timeout(4500)  # the toast says whether Tripwire learned it
         page.wait_for_timeout(150)
 
 
@@ -292,7 +309,7 @@ def main() -> int:
                                       record_video_size={"width": W, "height": H})
             ctx.add_init_script(CURSOR_JS)
             page = ctx.new_page()
-            page.goto(f"{url}/?stage=1&theme=light")
+            page.goto(f"{url}/?stage=1&theme=light&notour")
             page.wait_for_selector("#timeline", state="attached")
             page.wait_for_timeout(2500)
             act2 = Capture(time.monotonic())
@@ -327,8 +344,8 @@ def main() -> int:
             # 3. Terminal story video, replayed from the real captured output
             events = build_events([
                 ("Act 1: no guard. The README carries hidden instructions.", act1, 0),
-                ("Act 2: same agent, every call checked by Tripwire first.", act2, 0),
-                ("Beyond permission: inbox assistant told to wire $4,900.", act3, 0),
+                ("Act 2: same agent with Tripwire. No questions asked: every injected call blocked.", act2, 0),
+                ("Beyond permission: inbox assistant told to wire $4,900. It asks once: the summary save.", act3, 0),
             ])
             page_html = Path(vids) / "terminal.html"
             page_html.write_text(TERM_PAGE.replace("__EVENTS__", json.dumps(events)))
@@ -343,7 +360,7 @@ def main() -> int:
             term = OUT / "tripwire-terminal.webm"
             shutil.move(tvideo.path(), term)
             still = browser.new_page(viewport={"width": W, "height": H})
-            only2 = build_events([("Act 2: same agent, every call checked by Tripwire first.", act2, 0)], max_gap=0)
+            only2 = build_events([("Act 2: same agent with Tripwire. No questions asked: every injected call blocked.", act2, 0)], max_gap=0)
             only2 = [e for e in only2 if e["k"] != "c"]
             for e in only2:
                 e["t"] = 0
