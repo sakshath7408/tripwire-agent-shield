@@ -20,7 +20,7 @@ capabilities: {}
 profiles:
   coding-assistant:
     description: Edits code in the project folder and runs dev commands.
-    allow: ["cap:read", "cap:write", "cap:exec", "cap:fetch"]
+    allow: ["cap:read", "cap:write", "cap:exec", "cap:fetch", "cap:agent"]
     ask: ["cap:delete", "cap:send"]
     deny: ["cap:money"]
   inbox-assistant:

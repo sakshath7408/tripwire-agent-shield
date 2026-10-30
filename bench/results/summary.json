@@ -9,8 +9,8 @@
   "attack_pairs": 609,
   "attack_stopped": 96.2,
   "attack_stopped_by_block": 92.1,
-  "median_latency_ms": 0.044,
-  "p95_latency_ms": 0.127,
+  "median_latency_ms": 0.232,
+  "p95_latency_ms": 0.602,
   "evaluations": 2409
  },
  "shell": {
@@ -39,5 +39,5 @@
    }
   }
  },
- "shell_median_latency_ms": 0.197
+ "shell_median_latency_ms": 0.646
 }
