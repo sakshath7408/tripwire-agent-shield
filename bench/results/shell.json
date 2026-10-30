@@ -243,7 +243,7 @@
    }
   }
  },
- "median_latency_ms": 0.646,
+ "median_latency_ms": 0.823,
  "rows": [
   {
    "kind": "malicious",

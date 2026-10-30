@@ -93,12 +93,14 @@ When it asks to save the summary file, type `y`: "High-impact actions need my OK
 ## 3:45 Proof it is not just this demo (35 s)
 
 ```
-cat bench/results/summary.md
+cat bench/results/matrix.md
 ```
 
 "We replayed AgentDojo from ETH Zurich: 4 suites, 609 attack runs, no LLM, fully reproducible.
-We stop 96 percent of the attacks, 92 percent with a hard block. We also wrongly stop about 4 percent of real tasks. We show both."
-Read only the AgentDojo row out loud. Point at the shell rows, don't read them.
+We stop 96 percent. 92 percent are hard blocks, the rest wait for a human.
+Part of that is a phrase list that knows AgentDojo's template. Switch it off and we still stop 80 percent.
+We also wrongly stop about 4 percent of real tasks. We show all of it."
+Read only the important_instructions on and OFF rows out loud. Point at the rest, don't read them.
 
 ## 4:20 Close (20 s)
 
@@ -106,6 +108,23 @@ Read only the AgentDojo row out loud. Point at the shell rows, don't read them.
 The deciding logic never reads the attacker's text as instructions, so it cannot be talked out of it."
 
 Stop at about 4:40. Take questions.
+
+## Hard questions: say these, word for word
+
+**"Turn off the phrase list. What's your number?"**
+"80 percent stopped, 45 percent hard-blocked, down from 96 and 92.
+The list knows AgentDojo's template, so we publish both numbers, and five other attack texts too.
+The 80 is provenance and the other checks with no phrase list. That's what a brand-new wording gets."
+(Proof on screen: `cat bench/results/matrix.md`. Rerun live: `uv run python bench/agentdojo_replay.py --no-markers`, about 40 s.)
+
+**"Your agent runs as me. Can't it just switch Tripwire off?"**
+"Not through Tripwire. Every change to the daemon needs a local token file, and any agent call aimed at
+the daemon or that file is blocked. But it runs as the same user, so it is defence in depth, not a sandbox.
+For real isolation, run the daemon as a separate OS user."
+
+**"Has a real model ever been hijacked and then stopped?"**
+"Not on stage. The small local models and real Claude Code refused these injections on their own.
+So the hijacked agent is scripted, and we say so. Tripwire's verdicts don't depend on the model saying no."
 
 ## Optional: real local model
 
@@ -168,7 +187,8 @@ Say, while it runs:
 Without Tripwire, my SSH key and .env go to the attacker and their script runs. Look: attacker received 3 items.
 Same agent with Tripwire: hidden instructions found, every off-task action stopped, the typo still fixed.
 Attacker received nothing.
-On AgentDojo, 609 attack runs, we stop 96 percent and wrongly stop about 4 percent of real tasks.
+On AgentDojo, 609 attack runs, we stop 96 percent, and 80 percent with our phrase list switched off.
+We wrongly stop about 4 percent of real tasks.
 It runs locally and fails closed."
 
 If even the terminal is dead: play `docs/demo-video/tripwire-demo.mp4` (dashboard, 1 min) or

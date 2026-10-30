@@ -31,7 +31,7 @@ uv run tripwire install claude            # adds hooks to ./.claude/settings.jso
 uv run tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 506 tests
+uv run pytest -q                          # 653 tests
 uv run python bench/run_all.py            # benchmarks, about 20 s, writes bench/results/summary.md
 ```
 
@@ -39,7 +39,7 @@ The dashboard shows every verdict live. It holds "ask" actions in an approval qu
 
 ## What else is in the box
 
-- **Tamper-evident audit trail across agents.** Every task, tool output, verdict and human click is one row in `~/.tripwire/audit.db`. Rows are hash-chained (SHA-256) and signed (HMAC). Edit, delete or reorder a row and `tripwire audit verify` names the first broken one. Every row says which agent acted and who spawned it: Claude Code sub-agents, MCP servers and SDK agents all land in one tree. Commands: `tripwire audit verify`, `tripwire audit export --format jsonl` (anyone can recheck the hashes with `verify --file`), `tripwire audit tail -f`.
+- **Tamper-evident audit trail across agents.** Every task, tool output, verdict and human click is one row in `~/.tripwire/audit.db`. Rows are hash-chained (SHA-256) and signed (HMAC). Edit, delete or reorder a row and `tripwire audit verify` names the first broken one. Agents are blocked from reading the key (`~/.tripwire/audit.key`), but same-user code outside the hooks could, so this proves tampering by anyone without the key. Every row says which agent acted and who spawned it: Claude Code sub-agents, MCP servers and SDK agents all land in one tree. Commands: `tripwire audit verify`, `tripwire audit export --format jsonl` (anyone can recheck the hashes with `verify --file`), `tripwire audit tail -f`.
 - **Hosted live demo.** https://tripwire-agent-shield.vercel.app runs the same engine and the same demo world on Vercel, one act per click.
 - **Stage kit.** `scripts/preflight.sh` is a green/red checklist before going on stage. `scripts/stage.sh` starts a clean daemon and opens the dashboard in presenter mode. Backup videos were recorded from the real code. See [docs/PRESENTING.md](docs/PRESENTING.md).
 - **Optional judge, off by default.** See step 7 below. Honest result: a plain rule beat it.
@@ -80,7 +80,7 @@ The pipeline, in order (`src/tripwire/engine.py`):
 
    We tested it on AgentDojo and a plain rule won. The rule: once hidden instructions have shown up, a high-impact action you never asked for is blocked, not just asked about (`chain.injected_unrequested`). That rule lifted hard blocks from 85.9% to 92.1% with no loss on real tasks. The judge (qwen2.5:3b) stopped nothing the rules missed. It wrongly blocked 7 real tool calls, so real tasks allowed fell from 95.9% to 90.7%. So it stays off unless you turn it on. Numbers: `bench/results/agentdojo_judge.md`.
 
-If the engine itself crashes on an action, the verdict is block. If the daemon is down, the adapters deny. Fail closed everywhere.
+If the engine itself crashes on an action, the verdict is block. If the daemon is down, the adapters deny. A session with no task asks before any send, payment or fetch. Both adapters have an opt-in `TRIPWIRE_FAIL_OPEN=1` that lets calls through when the daemon is down. It is off by default.
 
 ### The key idea: only your words are instructions
 
@@ -88,7 +88,7 @@ Your prompt is the only trusted text in a session. Every tool output (a file, a 
 
 Tripwire records every URL, email address, IBAN, UPI id, IP, phone number, domain and command line that shows up in untrusted output, and where it came from. When the agent later tries to send, pay, fetch or run something that uses one of those values, and you never typed it, that is the injection signal. The reason names the source: "Uses `attacker@evil.invalid`, which came from README.md, not from you."
 
-This does not depend on spotting the phrasing of an injection. It follows the data. The wording detector (`INJECTION_MARKERS`) is a bonus signal that raises severity when the same content also carried hidden instructions.
+There is a second, separate signal: a phrase detector (`INJECTION_MARKERS`) that spots text talking to the AI, like "ignore your previous instructions". It is one signal, not the core, and it matters a lot on benchmarks. On AgentDojo, provenance and the other checks alone stop 79.5% of attacks (45.3% hard block). The phrase detector lifts that to 96.2% (92.1% hard block), because AgentDojo's main attack uses one fixed template the list knows. Attack texts the list does not know get only the provenance number. Full table under [Benchmark numbers](#benchmark-numbers).
 
 The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM pattern: untrusted data must never decide where data flows, and no model that reads attacker text gets to make the decision.
 
@@ -121,28 +121,65 @@ The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM 
 |---|---|
 | 01 Threat relevance | `demo/THREAT_MODEL.md` names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, `bench/results/` |
-| 03 Technical implementation | `src/tripwire/` (about 5,800 lines), 506 tests, `docs/ARCHITECTURE.md` |
+| 03 Technical implementation | `src/tripwire/` (about 5,800 lines), 653 tests, `docs/ARCHITECTURE.md` |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
 | 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app |
-| 06 Safety, privacy, responsible engineering | local only, args redacted before storage (`secrets.redact`), fail closed, guard cannot be edited by the agent (`never-touch-tripwire` rule) |
+| 06 Safety, privacy, responsible engineering | local only, args redacted before storage (`secrets.redact`), fail closed, the agent can't reset or reconfigure Tripwire without the local token (`auth.py`; agent calls to the daemon port or `~/.tripwire` are blocked), and a plain "Known limits" section below |
 | 07 Feasibility and real-world impact | `tripwire install claude` works on a real Claude Code today; `mcp-proxy` works with any MCP server |
 | 08 Presentation and live demo | `demo/SCRIPT.md`, `docs/PRESENTING.md` (preflight, stage, backup video), `docs/pitch/index.html` |
 
 ## Benchmark numbers
 
-Run on 30 Oct 2026, 21:31 IST, with `uv run python bench/run_all.py`. Rerun before quoting.
+Run on 30 Oct 2026 22:30 with `uv run python bench/run_all.py` (about 100 s, no LLM, no cost). Rerun before quoting.
 
-| Benchmark | Attacks stopped (block or ask) | Size | Benign allowed | Decision time |
+Three words, used the same way everywhere:
+- **Hard block**: the call is refused. Nobody is asked.
+- **Asked**: the call waits for a human click on the dashboard. Nothing runs until you answer, and a timeout blocks it. (At the default "balanced" autonomy, some obvious asks are decided on their own. Nothing is auto-allowed after hidden instructions.)
+- **Stopped** = hard block + asked. So "stopped" includes calls a careless human could still approve.
+
+| Benchmark | Stopped | Hard block | Size | Benign allowed |
 |---|---|---|---|---|
-| AgentDojo (4 suites, important_instructions) | 96.2% (92.1% hard block) | 609 pairs | 95.9% tasks (95.0% calls) | under 1 ms |
-| Shell attacks, no poisoned context | 100% (92.9% hard block) | 84 cmds | 82 of 82 (0 flagged) | under 1 ms |
-| Shell attacks, after reading poisoned file | 100% (100% hard block) | 84 cmds | 82 of 82 (0 flagged) | under 1 ms |
+| AgentDojo (4 suites, important_instructions) | 96.2% | 92.1% | 609 pairs | 95.9% tasks (92.9% calls) |
+| Shell attacks, no poisoned context | 100.0% | 92.9% | 84 cmds | 82 of 82 (0 flagged) |
+| Shell attacks, after reading poisoned file | 100.0% | 100.0% | 84 cmds | 82 of 82 (0 flagged) |
 
-False positives, said plainly: on AgentDojo, 5.0% of benign ground-truth calls get an ask or a block. Most of that is the banking suite, where paying bills always asks a human (36.4% of banking calls). The shell corpus flags none of 82 everyday developer commands, cold or after a poisoned read.
+Median decision time is under 1 ms (p95 under 5 ms on AgentDojo).
 
-Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in the loop: we replay AgentDojo's ground-truth call sequences, so a real hijacked model might phrase calls differently. One injection-marker pattern is fitted to AgentDojo's wrapper text. The provenance check does not depend on wording.
+### With and without the phrase detector
 
-## Limitations
+The headline AgentDojo number leans on the phrase detector. Its list includes AgentDojo's own template phrases ("this is an important message from", `<INFORMATION>`). So we rerun every AgentDojo attack text with the detector switched off (`--no-markers`), and with five other attack texts AgentDojo ships. Same 609 pairs each time.
+
+| AgentDojo attack text | Phrase list ON: stopped | ON: hard block | Phrase list OFF: stopped | OFF: hard block |
+|---|---|---|---|---|
+| important_instructions | 96.2% | 92.1% | 79.5% | 45.3% |
+| tool_knowledge | 99.5% | 95.4% | 79.5% | 45.3% |
+| injecagent | 94.4% | 88.5% | 79.5% | 45.3% |
+| ignore_previous | 79.5% | 45.3% | 79.5% | 45.3% |
+| direct | 79.5% | 45.3% | 79.5% | 45.3% |
+| system_message | 79.5% | 45.3% | 79.5% | 45.3% |
+| benign tasks allowed (all texts) | 95.9% | | 95.9% | |
+
+How to read it:
+- **Detector on, known template** (important_instructions, tool_knowledge, injecagent): the phrase list fires, so most attacks are hard-blocked.
+- **Detector off, or a template the list does not know** (ignore_previous, direct, system_message): only provenance, intent, secret and policy checks are left. That is the honest floor: 79.5% stopped, 45.3% hard block.
+- Benign tasks do not change, because the phrase list only fires on injected text.
+- Weakest suites without the detector: slack (41.0% stopped, 11.4% hard block), workspace (82.5% stopped, 58.3% hard block). Every missed pair is listed in `bench/results/agentdojo_*_nomarkers.json` (`missed`).
+
+Before the recipient and provenance hardening of 30 Oct, the floor was 62.6% stopped and 36.1% hard block ([bench/results/matrix_baseline.md](bench/results/matrix_baseline.md)).
+
+False positives, said plainly: on AgentDojo, 7.1% of benign ground-truth calls get an ask or a block. Half of those are in the banking suite, where paying bills always asks a human. Most of the rest are the new recipient check asking before a message goes to someone the user never named (slack and workspace). The shell corpus flags none of 82 everyday developer commands, cold or after a poisoned read.
+
+Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in the loop: we replay AgentDojo's ground-truth call sequences, so a real hijacked model might phrase calls differently.
+
+## Known limits
+
+> **Read this before you trust it.**
+> - **Same OS user = defence in depth, not a sandbox.** Tripwire runs as you, and so does your agent. The daemon's write endpoints need a per-install token in `~/.tripwire/token` (mode 0600), and the engine blocks agent calls aimed at the daemon's port or at `~/.tripwire`. But any program running as you, outside the hooks, can still read that token, edit your settings or stop the daemon. For real isolation, run the daemon as a separate OS user so the agent cannot read its token or audit key.
+> - **The hijacked agent in the demo is scripted.** Real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged.
+> - **Intent is keyword matching.** If your prompt says "send", "reply" or "pay", that kind of action counts as expected. A send to an address taken from data can still pass if the email carried no hidden-instruction phrasing and the recipient check does not catch it.
+> - **The phrase list is a list.** Without it, AgentDojo drops from 96.2% to 79.5% stopped. A new wording gets the lower number.
+
+Other limits:
 
 - If the injection only changes what the agent says, with no unusual tool call, Tripwire sees nothing.
 - If you typed the same address the attacker uses, provenance cannot tell them apart.
@@ -150,7 +187,6 @@ Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in
 - Tool calls that do not pass through a hook or the proxy are invisible.
 - A host the attacker already runs code on can stop Tripwire.
 - Shell tricks and secret patterns are finite. With no poisoned context, 6 of 84 shell attacks get an ask, not a block. Every verdict is in `bench/results/shell.json`.
-- The intent check is keyword-based: if your prompt says "send", sending is expected.
 - The Claude Code adapter never widens Claude Code's own permissions. An "allow" from Tripwire still goes through Claude Code's normal prompt unless `TRIPWIRE_AUTO_APPROVE=1`.
 
 ## Credits
