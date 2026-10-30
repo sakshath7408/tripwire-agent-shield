@@ -34,3 +34,5 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - Report real benchmark numbers, including false positives.
 
 ## Lessons
+- Tool-name keyword patterns must anchor at a word start (`(?:^|_)`): plain "cat" matched "frobnicate" and turned an unknown tool into a harmless read, which broke fail-closed.
+- Subagents die on network drops (ECONNRESET) on hotspot. Resume them with SendMessage; their files stay on disk.
