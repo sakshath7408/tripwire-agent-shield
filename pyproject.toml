@@ -1,7 +1,7 @@
 [project]
 name = "tripwire"
 version = "0.1.0"
-description = "Add your description here"
+description = "A local guard between AI agents and their tools: blocks prompt-injected, destructive and data-stealing actions."
 readme = "README.md"
 authors = [
     { name = "Sakshath", email = "srikakulamsakshath@gmail.com" }

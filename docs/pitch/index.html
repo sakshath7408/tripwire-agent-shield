@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tripwire pitch</title>
+<style>
+  :root {
+    --bg: #eef1f5; --surface: #ffffff; --surface-2: #f6f8fa; --line: #dde2e9; --line-strong: #c6cdd7;
+    --ink: #141a23; --ink-2: #3c4655; --muted: #5a6577;
+    --accent: #3a55d0; --accent-soft: #e6ebfb;
+    --allow: #1b7a46; --allow-soft: #e3f3ea;
+    --ask: #a35a00; --ask-soft: #fdf0dc; --ask-line: #f0c27a;
+    --block: #c42b2b; --block-soft: #fbe6e5; --block-line: #efb1ae;
+    --trusted: #2a49c4; --trusted-soft: #eaeefc; --untrusted: #a35a00; --untrusted-soft: #fff6e6;
+    --sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
+  .stage { position: fixed; inset: 0; overflow: hidden; }
+  .deck { width: 1280px; height: 720px; position: absolute; left: 50%; top: 50%; margin: -360px 0 0 -640px; transform-origin: center center; }
+  .slide { position: absolute; inset: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+           padding: 60px 80px 84px; display: none; flex-direction: column; box-shadow: 0 1px 2px rgba(20,26,35,.06), 0 2px 8px rgba(20,26,35,.04); }
+  .slide.on { display: flex; }
+  .kicker { font-size: 18px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-size: 56px; line-height: 1.08; letter-spacing: -.02em; margin: 0 0 28px; font-weight: 700; max-width: 1000px; }
+  h2 { font-size: 46px; line-height: 1.1; letter-spacing: -.02em; margin: 0 0 30px; font-weight: 700; }
+  p, li { font-size: 26px; line-height: 1.4; color: var(--ink-2); margin: 0; }
+  .lead { font-size: 30px; color: var(--ink); }
+  .muted { color: var(--muted); }
+  code, .mono { font-family: var(--mono); }
+  .foot { position: absolute; left: 80px; right: 80px; bottom: 28px; display: flex; justify-content: space-between; font-size: 16px; color: var(--muted); }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; color: var(--ink); }
+  .brand svg { width: 18px; height: 18px; color: var(--accent); }
+  .grid { display: grid; gap: 24px; flex: 1; align-content: start; }
+  .cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  .card { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 24px 26px; }
+  .card h3 { font-size: 20px; margin: 0 0 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
+  .card p { font-size: 24px; color: var(--ink); }
+  .card.block { background: var(--block-soft); border-color: var(--block-line); }
+  .card.block h3 { color: var(--block); }
+  .card.ask { background: var(--ask-soft); border-color: var(--ask-line); }
+  .card.ask h3 { color: var(--ask); }
+  .card.allow { background: var(--allow-soft); border-color: #a9d8bd; }
+  .card.allow h3 { color: var(--allow); }
+  .card.trusted { background: var(--trusted-soft); border-color: #b9c6f5; }
+  .card.trusted h3 { color: var(--trusted); }
+  .card.untrusted { background: var(--untrusted-soft); border-color: var(--ask-line); }
+  .card.untrusted h3 { color: var(--untrusted); }
+  .pill { display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 18px; font-weight: 650; }
+  .pill.block { background: var(--block-soft); color: var(--block); }
+  .pill.allow { background: var(--allow-soft); color: var(--allow); }
+  .pill.ask { background: var(--ask-soft); color: var(--ask); }
+
+  /* slide 1 */
+  .s1 h1 { font-size: 64px; }
+  .s1 .lead { max-width: 900px; }
+
+  /* slide 2: quote */
+  .quote { background: var(--untrusted-soft); border: 1px solid var(--ask-line); border-radius: 10px; padding: 22px 28px; font-family: var(--mono); font-size: 22px; line-height: 1.45; color: var(--ink); max-width: 1100px; }
+  .quote .hid { color: var(--untrusted); }
+
+  /* slide 3: demo */
+  .steps { display: grid; grid-template-columns: 1fr 1fr; gap: 34px 40px; flex: 0 0 auto; margin-bottom: 40px; }
+  .step { display: flex; gap: 18px; align-items: flex-start; }
+  .num { width: 44px; height: 44px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 22px; display: grid; place-items: center; flex: none; }
+  .step p { font-size: 25px; }
+  .cmd { font-family: var(--mono); font-size: 21px; line-height: 1.6; background: var(--ink); color: #e8ecf2; border-radius: 10px; padding: 16px 22px; }
+  .cmd .c { color: #98a3b3; }
+
+  /* slide 4: diagram */
+  .diagram { flex: 0 0 auto; display: grid; grid-template-columns: 290px 64px 1fr 64px 270px; align-items: stretch; gap: 0; }
+  .zone { border-radius: 12px; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .zone h3 { margin: 0 0 4px; font-size: 18px; letter-spacing: .06em; text-transform: uppercase; font-weight: 650; }
+  .zone.red { background: var(--block-soft); border: 1px solid var(--block-line); }
+  .zone.red h3 { color: var(--block); }
+  .zone.green { background: var(--allow-soft); border: 1px solid #a9d8bd; }
+  .zone.green h3 { color: var(--allow); }
+  .zone.blue { background: var(--accent-soft); border: 1px solid #b9c6f5; }
+  .zone.blue h3 { color: var(--accent); }
+  .box { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 19px; line-height: 1.25; color: var(--ink); }
+  .box small { display: block; font-size: 15px; color: var(--muted); margin-top: 2px; }
+  .arrow { display: grid; place-items: center; color: var(--muted); font-size: 34px; }
+  .pipe { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .pipe .box { font-size: 18px; }
+  .arrow { position: relative; }
+  .arrow span { position: relative; background: var(--surface); padding: 6px 0; z-index: 1; }
+  .boundary::after { content: "trust boundary"; position: absolute; top: -30px; left: 50%; transform: translateX(-50%); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--block); white-space: nowrap; font-weight: 650; }
+  .boundary::before { content: ""; position: absolute; top: -8px; bottom: -8px; left: 50%; border-left: 2px dashed var(--block); }
+
+  /* slide 5: numbers */
+  .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-bottom: 26px; }
+  .stat { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 24px 26px; }
+  .stat .big { font-size: 64px; font-weight: 700; letter-spacing: -.03em; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .stat .big.good { color: var(--allow); }
+  .stat .lbl { font-size: 20px; color: var(--muted); margin-top: 10px; line-height: 1.3; }
+  table { border-collapse: collapse; width: 100%; font-size: 21px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--ink); }
+  th { font-size: 16px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
+  td.n { font-variant-numeric: tabular-nums; font-weight: 650; }
+
+  /* slide 7 */
+  .cmdline { font-family: var(--mono); font-size: 24px; background: var(--ink); color: #e8ecf2; border-radius: 10px; padding: 18px 22px; }
+  .cmdline .c { color: #98a3b3; }
+
+  .hint { position: fixed; right: 18px; bottom: 12px; font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="shield" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6l8-3z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8.5 12.5l2.5 2.5 4.5-5"/></symbol>
+</svg>
+<div class="stage"><div class="deck" id="deck">
+
+<!-- 1 The threat -->
+<section class="slide s1 on">
+  <p class="kicker">Tripwire</p>
+  <h1>Anyone who can put text in front of your agent can give it orders.</h1>
+  <div class="grid cols-3">
+    <div class="card block"><h3>Who attacks</h3><p>A README author. An email sender. A web page. An MCP tool description.</p></div>
+    <div class="card block"><h3>What they take</h3><p>SSH keys, .env files, money, your inbox, a shell on your laptop.</p></div>
+    <div class="card block"><h3>Why it works</h3><p>Agents run with allow-all and read untrusted content as instructions.</p></div>
+  </div>
+  <p class="lead" style="margin-top:36px">Tripwire checks every tool call before it runs.</p>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>PARALLAX 2026, Track 1 AgentShield</span></div>
+</section>
+
+<!-- 2 The idea -->
+<section class="slide">
+  <p class="kicker">The idea</p>
+  <h2>Only your words are instructions.</h2>
+  <div class="grid cols-2" style="flex:0 0 auto; margin-bottom:28px">
+    <div class="card trusted"><h3>Trusted</h3><p>Your prompt. The only text that counts as a command.</p></div>
+    <div class="card untrusted"><h3>Untrusted</h3><p>Every tool output. Files, pages, emails. Data, never orders.</p></div>
+  </div>
+  <p class="lead" style="margin-bottom:18px">If a send, pay, fetch or run uses a value that came from untrusted content and never from you, that is the attack.</p>
+  <div class="quote">Blocked: Uses <span class="hid">'attacker@evil.invalid'</span>, which came from the same content as hidden instructions <span class="hid">(README.md)</span>.</div>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Follows the data, not the wording. After CaMeL and the dual-LLM pattern.</span></div>
+</section>
+
+<!-- 3 Live demo -->
+<section class="slide">
+  <p class="kicker">Live demo</p>
+  <h2>Same agent. Same poisoned repo. Before and after.</h2>
+  <div class="steps">
+    <div class="step"><div class="num">1</div><p><b>No guard.</b> Fix a typo, run tests. The README hides orders. Keys land in the attacker's inbox.</p></div>
+    <div class="step"><div class="num">2</div><p><b>With Tripwire.</b> Hidden instructions found. POST and <span class="mono">curl | bash</span> blocked. Typo fixed, tests pass.</p></div>
+    <div class="step"><div class="num">3</div><p><b>You decide.</b> SSH key read waits for a click. Even if you allow it, mailing it out is blocked.</p></div>
+    <div class="step"><div class="num">4</div><p><b>Beyond permission.</b> Inbox assistant told to wire $4,900. It has no bank tool. Balance unchanged.</p></div>
+  </div>
+  <div class="cmd"><span class="c">$</span> uv run python demo/run_demo.py --scenario injected-doc --no-guard<br><span class="c">$</span> uv run python demo/run_demo.py --scenario injected-doc --guard-only</div>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Scripted stand-in for a hijacked model, or a local Ollama model. Real tools, synthetic data, real guard.</span></div>
+</section>
+
+<!-- 4 How it is built -->
+<section class="slide">
+  <p class="kicker">How it is built</p>
+  <h2 style="margin-bottom:36px">One daemon. Every tool call goes through it.</h2>
+  <div class="diagram">
+    <div class="zone red">
+      <h3>Untrusted</h3>
+      <div class="box">AI agent<small>Claude Code, any MCP client, SDK</small></div>
+      <div class="box">What it reads<small>files, web, email, tool descriptions</small></div>
+    </div>
+    <div class="arrow boundary"><span>&#8594;</span></div>
+    <div class="zone green">
+      <h3>Tripwire, 127.0.0.1 only</h3>
+      <div class="box">Adapters<small>Claude Code hooks, MCP proxy with signed pins, HTTP</small></div>
+      <div class="pipe">
+        <div class="box">1 classify tool</div>
+        <div class="box">2 permission profile</div>
+        <div class="box">3 shell AST</div>
+        <div class="box">4 secrets and paths</div>
+        <div class="box">5 provenance</div>
+        <div class="box">6 policy YAML</div>
+      </div>
+      <div class="box">Judge (optional)<small>sees your task and the action only, never tool output</small></div>
+    </div>
+    <div class="arrow"><span>&#8594;</span></div>
+    <div class="zone blue">
+      <h3>Verdict</h3>
+      <div class="box"><span class="pill allow">allow</span></div>
+      <div class="box"><span class="pill ask">ask</span><small>approval queue, timeout blocks</small></div>
+      <div class="box"><span class="pill block">block</span><small>with a one-line reason</small></div>
+      <div class="box">SQLite audit + live dashboard</div>
+    </div>
+  </div>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Deterministic first. 0.03 ms median. Fails closed on any error.</span></div>
+</section>
+
+<!-- 5 Proof -->
+<section class="slide">
+  <p class="kicker">Proof</p>
+  <h2>AgentDojo replay, 609 attacks, no LLM, reproducible.</h2>
+  <div class="nums">
+    <div class="stat"><div class="big good">96.2%</div><div class="lbl">attacks stopped<br>85.9% hard block, rest ask</div></div>
+    <div class="stat"><div class="big">95.9%</div><div class="lbl">benign tasks allowed<br>5.0% of calls ask or block</div></div>
+    <div class="stat"><div class="big good">0</div><div class="lbl">false positives on 82<br>everyday shell commands</div></div>
+  </div>
+  <table>
+    <tr><th>Benchmark</th><th>Stopped</th><th>Hard block</th><th>Benign allowed</th></tr>
+    <tr><td>AgentDojo, 4 suites, important_instructions</td><td class="n">96.2%</td><td class="n">85.9%</td><td class="n">95.9% tasks</td></tr>
+    <tr><td>84 shell attacks, no poisoned context</td><td class="n">88.1%</td><td class="n">79.8%</td><td class="n">100%</td></tr>
+    <tr><td>84 shell attacks, after reading poisoned file</td><td class="n">100%</td><td class="n">88.1%</td><td class="n">100%</td></tr>
+  </table>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Most false positives: banking suite, where paying always asks a human. Run 30 Oct 2026.</span></div>
+</section>
+
+<!-- 6 Responsible engineering -->
+<section class="slide">
+  <p class="kicker">Responsible engineering</p>
+  <h2>Built to be trusted, not just to demo.</h2>
+  <div class="grid cols-3">
+    <div class="card allow"><h3>Local only</h3><p>Binds to 127.0.0.1. No cloud, no telemetry, zero cost.</p></div>
+    <div class="card allow"><h3>Fail closed</h3><p>Daemon down, hook crash, engine bug: the call is denied.</p></div>
+    <div class="card allow"><h3>Agent can't disable it</h3><p>Writes to its config and hook settings are blocked by policy.</p></div>
+    <div class="card allow"><h3>Redaction</h3><p>Secrets are masked before any verdict is stored or shown.</p></div>
+    <div class="card allow"><h3>Synthetic data</h3><p>Fake keys, fake bank, attacker hosts on .invalid.</p></div>
+    <div class="card allow"><h3>Honest numbers</h3><p>False positives and misses are published in bench/results.</p></div>
+  </div>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>No component that reads attacker text makes a decision.</span></div>
+</section>
+
+<!-- 7 Who uses it -->
+<section class="slide">
+  <p class="kicker">Who uses it</p>
+  <h2>Anyone running an agent on their own machine. Today.</h2>
+  <div class="grid cols-2" style="flex:0 0 auto; margin-bottom:30px">
+    <div class="card"><h3>Claude Code</h3><p>One command installs three hooks. Every tool call checked.</p></div>
+    <div class="card"><h3>Any MCP agent</h3><p>Wrap any MCP server. Tools pinned and signed. Role profiles.</p></div>
+  </div>
+  <div class="cmdline"><span class="c">$</span> uv run tripwire install claude<br><span class="c">$</span> uv run tripwire mcp-proxy --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .</div>
+  <p class="lead" style="margin-top:30px">Open source. 320 tests. Built from scratch in 24 hours.</p>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>github: agent-shield &nbsp;|&nbsp; docs/ARCHITECTURE.md &nbsp;|&nbsp; demo/SCRIPT.md</span></div>
+</section>
+
+</div></div>
+<div class="hint" id="hint">1 / 7 &nbsp; arrows to move</div>
+<script>
+  const slides = [...document.querySelectorAll('.slide')];
+  let i = Math.max(0, Math.min(slides.length - 1, (parseInt(location.hash.slice(1)) || 1) - 1));
+  function show(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach((s, k) => s.classList.toggle('on', k === i));
+    document.getElementById('hint').textContent = `${i + 1} / ${slides.length}   arrows to move`;
+    history.replaceState(null, '', '#' + (i + 1));
+  }
+  function fit() {
+    const s = Math.min(innerWidth / 1280, innerHeight / 720) * 0.97;
+    document.getElementById('deck').style.transform = `scale(${s})`;
+  }
+  addEventListener('keydown', e => {
+    if (['ArrowRight', 'ArrowDown', ' ', 'PageDown', 'Enter'].includes(e.key)) { e.preventDefault(); show(i + 1); }
+    if (['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); show(i - 1); }
+    if (e.key === 'Home') show(0);
+    if (e.key === 'End') show(slides.length - 1);
+  });
+  addEventListener('click', e => { if (e.clientX > innerWidth / 2) show(i + 1); else show(i - 1); });
+  addEventListener('resize', fit);
+  fit(); show(i);
+</script>
+</body>
+</html>

@@ -46,7 +46,7 @@ Tripwire blocks are not executed. The attack counts as **stopped** if at least o
 - Utility "retained" means no BLOCK in the sequence. Sequences with an ASK are counted as retained but
   reported separately ("fully allowed" excludes them), since a human would have to click.
 
-### Tools classify.py gets wrong
+### Tools classify.py used to get wrong (fixed in the product since, kept for the record)
 
 | Tool | classify.py | Should be | Effect |
 |---|---|---|---|
