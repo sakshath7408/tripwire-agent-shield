@@ -149,7 +149,7 @@ def web(browser, eng: str, base: str, live: bool) -> None:
     p.wait_for_selector("#timeline .row", timeout=60000)
     p.click("#tab-live")
     p.wait_for_timeout(1500)
-    check(p.locator("#demo").is_hidden() and p.get_attribute("#tab-demo", "aria-selected") == "false",
+    check(p.locator("#demo-panel").is_hidden() and p.get_attribute("#tab-demo", "aria-selected") == "false",
           f"{eng}: Live mid-run leaves the Demo tab")
     check(p.locator("#timeline .row").count() == 0, f"{eng}: no demo rows left on Live")
     check("scenario=" not in p.url and "#demo" not in p.url, f"{eng}: leaving the Demo tab cleans the URL ({p.url})")
@@ -163,8 +163,15 @@ def web(browser, eng: str, base: str, live: bool) -> None:
     check("Allow on everything" in p.inner_text("#human-note"), f"{eng}: the page says the human allows everything")
     p.click("#run-on")
     p.wait_for_function(done, timeout=120000)
-    st, cmp = p.inner_text("#run-status"), p.inner_text("#compare")
-    check("Stopped on its own:" in st and "Hard floor" in cmp, f"{eng}: a hard-floor run shows the floor ({st[:80]!r})")
+    cmp = p.inner_text("#compare")
+    check("Hard floor" in cmp, f"{eng}: a hard-floor run adds the floor line to the comparison")
+    # The climax: "Stopped on its own: N of M" is a big line of its own after a hard-floor run, not buried in the status.
+    clx = p.locator("#climax")
+    big = p.inner_text("#climax-big") if clx.is_visible() else ""
+    size = lambda sel: p.evaluate(f"parseFloat(getComputedStyle(document.querySelector('{sel}')).fontSize)")
+    check(big.startswith("Stopped on its own:") and size("#climax-big") >= 1.3 * size("#run-status"),
+          f"{eng}: a hard-floor run shows 'Stopped on its own' big ({big!r})")
+    check("Allow on everything" in p.inner_text("#climax-sub"), f"{eng}: the climax says the human allowed everything")
     p.click("#floor-label")
     check(not p.is_checked("#hard-floor") and "sees only what you would" in p.inner_text("#human-note"),
           f"{eng}: switching it off brings back the careful human")
@@ -175,8 +182,12 @@ def web(browser, eng: str, base: str, live: bool) -> None:
     st = p.inner_text("#run-status")
     check("did not answer" in st and "token" not in st and "pattern" not in st, f"{eng}: failed run reads plainly ({st!r})")
     p.unroute("**/api/run*")
+    p.click("[data-scn=legit]")
+    check(clx.is_hidden(), f"{eng}: picking another scenario clears the climax")
     check(not log, f"{eng}: no console errors on the hosted page {log[:2]}")
     c.close()
+
+    demo_opens_at_top(browser, eng, base)
 
     custom(browser, eng, base)
 
@@ -185,11 +196,50 @@ def web(browser, eng: str, base: str, live: bool) -> None:
     p = c.new_page()
     p.goto(base + "/?scenario=legit")
     p.wait_for_timeout(1200)
-    check(p.locator("#demo").is_visible() and step(p) == "closed", f"{eng}: ?scenario= opens the demo without the guide")
+    check(p.locator("#demo-panel").is_visible() and step(p) == "closed", f"{eng}: ?scenario= opens the demo without the guide")
     if live:
         r = p.goto(base + "/pitch")
         check(r is not None and r.status == 404, f"{eng}: /pitch is not published")
     c.close()
+
+
+# Every way into the Demo tab. "#demo" once matched the panel's id, so the browser scrolled the feed to it and the
+# card opened with its first line under the sticky tabs (desktop) or the header off screen (phone).
+ENTRIES = ("/#demo", "/?scenario=injected-doc", "/?tab=demo", "/?scenario=injected-doc&floor=1", "click")
+WIDTHS = ((320, 640), (390, 844), (820, 1180), (1024, 768), (1280, 800), (1440, 900), (1920, 1080))
+AT_TOP = """() => {
+  const d = document.getElementById('demo-panel').getBoundingClientRect(), v = document.querySelector('.views').getBoundingClientRect();
+  const b = document.querySelector('.brief');
+  return { feed: document.querySelector('.feed').scrollTop, win: scrollY, below: d.top >= v.bottom - 1,
+           fits: d.top >= 0 && d.top < innerHeight / 2, band: b ? getComputedStyle(b).display : 'none' };
+}"""
+
+
+def demo_opens_at_top(browser, eng: str, base: str) -> None:
+    """The Demo tab opens with its card whole at the top, on every width and every way in, and the empty task/counts
+    band from the Live view is not shown above it."""
+    bad: list[str] = []
+    for w, h in WIDTHS:
+        c = browser.new_context(viewport={"width": w, "height": h})
+        p = c.new_page()
+        for entry in ENTRIES:
+            if entry == "click":
+                p.goto(base + "/")
+                p.wait_for_timeout(700)
+                if p.locator("#tour").is_visible():
+                    p.click("#tour-skip")
+                p.evaluate("document.querySelector('.feed').scrollTop = 99")  # entering must not keep an old scroll
+                p.click("#tab-demo")
+            else:
+                p.goto(base + entry)
+            p.wait_for_timeout(900)
+            r = p.evaluate(AT_TOP)
+            if r["feed"] or r["win"] or not r["below"] or not r["fits"]:
+                bad.append(f"{w} {entry} {r}")
+            if r["band"] != "none":
+                bad.append(f"{w} {entry}: task/counts band shown in the Demo tab")
+        c.close()
+    check(not bad, f"{eng}: the Demo card opens whole at the top on {len(WIDTHS)} widths x {len(ENTRIES)} ways in {bad[:3]}")
 
 
 # One attack per placement, typed the way a visitor would. The markup in it must stay text (window.__pwned stays unset).
@@ -224,7 +274,7 @@ def custom(browser, eng: str, base: str, widths=((1280, 800), (390, 844))) -> No
             inbox, task = p.inner_text("#oc-inbox-n"), p.inner_text("#oc-task-n")
             check(inbox.startswith("Empty") and task == "Done", f"{eng} {w} {place}: with Tripwire nothing gets out and the task is done ({inbox!r}, {task!r})")
             check(p.locator("#timeline .row").count() > 0, f"{eng} {w} {place}: the feed shows Tripwire's decisions")
-        check(p.evaluate("window.__pwned === undefined") and p.locator("#demo img[src=x]").count() == 0,
+        check(p.evaluate("window.__pwned === undefined") and p.locator("#demo-panel img[src=x]").count() == 0,
               f"{eng} {w}: the visitor's markup never runs")
         p.fill("#c-text", "The weather is nice today.")
         p.click("#run-off")

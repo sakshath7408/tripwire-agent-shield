@@ -146,6 +146,7 @@
 
   // ---- outcome cards -----------------------------------------------------------------------------------
   function idleOutcome() {
+    $("climax").hidden = true;
     setInbox([], "idle");
     setBank(12500, 12500, "idle");
     $("oc-task").dataset.state = "idle";
@@ -196,6 +197,18 @@
     const rest = s.attack_steps - s.stopped_alone;
     if (r.human === "all") return rest ? `${own} · the human allowed the other ${rest}` : own;
     return `${own} · with a careful human: ${s.stopped_alone + s.stopped_by_human} of ${s.attack_steps}`;
+  }
+  /** The climax of a guarded run: how many attack steps Tripwire stopped with no help, said big and calm. */
+  function setClimax(r) {
+    const s = r && r.score;
+    if (!s || !s.attack_steps) { $("climax").hidden = true; return; }
+    const got = r.attacker_items ? `The attacker got ${r.attacker_items} ${r.attacker_items === 1 ? "item" : "items"}.` : "The attacker got nothing.";
+    $("climax").dataset.state = r.attacker_items ? "bad" : s.stopped_alone < s.attack_steps ? "warn" : "good";
+    $("climax-big").textContent = `Stopped on its own: ${s.stopped_alone} of ${s.attack_steps} attack steps`;
+    $("climax-sub").textContent = r.human === "all"
+      ? `The simulated human clicked Allow on everything, so this is Tripwire alone. ${got}`
+      : `With the careful human answering: ${s.stopped_alone + s.stopped_by_human} of ${s.attack_steps}. ${got}`;
+    $("climax").hidden = false;
   }
   function paintCompare() {
     const c = last[current] || {};
@@ -288,6 +301,7 @@
     $("raw-log").innerHTML = "";
     $("raw-log").hidden = guarded;
     $("raw-note").hidden = guarded;
+    $("climax").hidden = true;
     setInbox([], "running");
     setBank(r.start_balance, r.start_balance, "running");
     $("oc-task").dataset.state = "running";
@@ -330,11 +344,11 @@
     setInbox(r.attacker_inbox, "done");
     setBank(r.balance, r.start_balance, "done");
     setTask(r);
+    if (guarded) setClimax(r);
     (last[scn] = last[scn] || {})[!guarded ? "off" : r.human === "all" ? "floor" : "on"] = r;
     const v = r.verdicts;
-    const sw = stopped(r);
     status(guarded
-      ? `Done. ${sw ? `${sw}. ` : ""}Tripwire made ${n} decisions: ${v.allow} allowed, ${v.ask} asked, ${v.block} blocked. Server time ${Math.round(r.server_ms)} ms.`
+      ? `Done. Tripwire made ${n} decisions: ${v.allow} allowed, ${v.ask} asked, ${v.block} blocked. Server time ${Math.round(r.server_ms)} ms.`
       : `Done. ${n} tool calls ran with nobody checking. ${r.attacker_items ? "The attacker got what they wanted." : "Nothing reached the attacker."}`);
     setRunning(false);
   };
@@ -350,8 +364,11 @@
     if (demoOn) return;
     $("tab-live").click(); // app.js shows the live panel (feed + detail); demoOn is still false, so this is not a "leave"
     demoOn = true;
+    // Open at the top of the card, whatever the Live feed was scrolled to.
+    const feed = document.querySelector(".feed");
+    if (feed) feed.scrollTop = 0;
     document.body.dataset.demo = "1";
-    $("demo").hidden = false;
+    $("demo-panel").hidden = false;
     $("tab-demo").setAttribute("aria-selected", "true");
     $("tab-live").setAttribute("aria-selected", "false");
     if (location.hash !== "#demo") history.replaceState(null, "", location.pathname + location.search + "#demo");
@@ -363,7 +380,7 @@
     demoOn = false;
     if (running) { runId++; setRunning(false); } // leaving mid-run stops it; it used to keep both tabs selected
     delete document.body.dataset.demo;
-    $("demo").hidden = true;
+    $("demo-panel").hidden = true;
     $("tab-demo").setAttribute("aria-selected", "false");
     // Drop #demo and ?scenario= too: either one would put a reload of the Live view back into the Demo tab.
     const u = new URL(location.href);

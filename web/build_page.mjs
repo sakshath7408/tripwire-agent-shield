@@ -25,7 +25,7 @@ const SYMBOLS = `<svg width="0" height="0" style="position:absolute" aria-hidden
     <symbol id="i-git" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
   </svg>
 `;
-const DEMO = `          <section class="demo" id="demo" aria-label="Live demo controls" hidden>
+const DEMO = `          <section class="demo" id="demo-panel" aria-label="Live demo controls" hidden>
       <div class="demo-run">
         <p class="demo-label"><span class="demo-pill">Demo</span>The real Tripwire engine runs on this server against a synthetic world. The agent is a scripted stand-in for a hijacked AI. Nothing here touches your machine.</p>
         <div class="scenarios" id="scenarios" role="radiogroup" aria-label="Scenario"></div>
@@ -50,6 +50,10 @@ const DEMO = `          <section class="demo" id="demo" aria-label="Live demo co
         <p class="human-note" id="human-note"></p>
       </div>
       <div class="outcome" id="outcome" aria-label="What happened">
+        <div class="climax" id="climax" data-state="good" role="status" hidden>
+          <svg aria-hidden="true"><use href="#i-shield"/></svg>
+          <div class="climax-text"><p class="climax-big" id="climax-big"></p><p class="climax-sub" id="climax-sub"></p></div>
+        </div>
         <div class="oc oc-inbox" id="oc-inbox" data-state="idle">
           <div class="oc-head"><svg aria-hidden="true"><use href="#i-mail"/></svg>Attacker's inbox</div>
           <div class="oc-big" id="oc-inbox-n">Empty</div>
@@ -93,7 +97,7 @@ const EMPTY = `          <div class="empty-main">
             <p class="empty-title">Pick a scenario and press Run</p>
             <p>Run it without Tripwire first and watch the attacker's inbox fill. Then run it with Tripwire. Every tool call shows up here as it happens.</p>
           </div>`;
-const TAB = `<button type="button" role="tab" id="tab-demo" aria-selected="false" aria-controls="demo" title="A scripted agent against a synthetic world, with and without Tripwire">Demo</button>`;
+const TAB = `<button type="button" role="tab" id="tab-demo" aria-selected="false" aria-controls="demo-panel" title="A scripted agent against a synthetic world, with and without Tripwire">Demo</button>`;
 
 // required: without these the demo cannot work
 edit("stylesheet", /(<link rel="stylesheet" href="\/static\/styles.css">)/, `@@ANCHOR@@\n  <link rel="stylesheet" href="/demo.css">`, true);
