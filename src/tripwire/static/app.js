@@ -1282,8 +1282,13 @@
     on("ping", () => setConn("live"));
   }
 
-  pairFromHash().then(() => loadAll()).then(connect).catch((e) => {
-    if (e && e.status === 401) setConn("unpaired"); // no SSE retry loop: pairing needs a new tab from `tripwire open`
-    else { setConn("down"); connect(); }
-  });
+  function start() {
+    return pairFromHash().then(() => loadAll()).then(connect).catch((e) => {
+      if (e && e.status === 401) setConn("unpaired"); // no SSE retry loop: pairing needs a new tab from `tripwire open`
+      else { setConn("down"); connect(); }
+    });
+  }
+  // A pairing link pasted into a tab that already shows the page only changes the hash: pair then, too.
+  window.addEventListener("hashchange", () => { if (/(?:^#|&)pair=/.test(location.hash)) { if (es) es.close(); start(); } });
+  start();
 })();

@@ -239,7 +239,7 @@
   <div class="grid cols-3">
     <div class="card allow"><h3>Local only</h3><p>Binds to 127.0.0.1, so other machines can't reach it. No cloud, no telemetry.</p></div>
     <div class="card allow"><h3>Fail closed</h3><p>Daemon down, hook crash, engine bug: the call is denied by default.</p></div>
-    <div class="card allow"><h3>Token-protected controls</h3><p>Reset, task and approvals need a local token (being hardened). Agent calls to the daemon or its files are blocked.</p></div>
+    <div class="card allow"><h3>Paired dashboard</h3><p>One-time code from <span class="mono">tripwire open</span>. Every API call needs the local token; agent calls to the daemon or its files are blocked.</p></div>
     <div class="card allow"><h3>Redaction</h3><p>Secrets are masked before any verdict is stored or shown.</p></div>
     <div class="card allow"><h3>Synthetic data</h3><p>Fake keys, fake bank, attacker hosts on .invalid.</p></div>
     <div class="card ask"><h3>Known limits</h3><p>Same OS user: defence in depth, not a sandbox. Demo agent is scripted. Intent is keywords.</p></div>
