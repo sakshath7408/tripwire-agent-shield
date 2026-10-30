@@ -11,11 +11,15 @@ Built from scratch in 24 hours for the PARALLAX hackathon (BMSCE IEEE Computer S
 ## 30-second quickstart
 
 ```bash
-git clone <this repo> && cd agent-shield
+git clone https://github.com/sakshath7408/tripwire-agent-shield && cd tripwire-agent-shield
 uv sync                                   # Python 3.12+, installs everything
 uv run tripwire serve                     # daemon; prints a one-time dashboard link
 uv run tripwire open                      # (later) open the dashboard, paired with a fresh one-time code
 ```
+
+Want `tripwire` on your PATH instead of `uv run tripwire`? From the repo folder: `uv tool install .` (or `pip install .` in any Python 3.12+ virtualenv).
+Another port: `tripwire serve --port 7800`, then `tripwire install claude --port 7800` so the hooks find it (or set `TRIPWIRE_PORT=7800` for everything).
+Sessions survive a daemon restart (`~/.tripwire/sessions.json`, mode 0600, secret values masked), so a restart does not make Tripwire forget hidden instructions it already saw.
 
 In a second terminal, watch an attack succeed with no guard, then fail with Tripwire:
 
@@ -28,11 +32,12 @@ uv run python demo/run_demo.py --scenario all --offline --delay 0 --approve auto
 Put it in front of a real agent:
 
 ```bash
-uv run tripwire install claude            # adds hooks to ./.claude/settings.json (--user for all projects)
+uv run tripwire install claude            # adds hooks to ./.claude/settings.json (--project DIR, --user for all projects)
+uv run tripwire uninstall claude          # takes them out again; an untouched settings file comes back byte for byte
 uv run tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 718 tests
+uv run pytest -q                          # 749 tests
 uv run python bench/run_all.py            # benchmarks, about 20 s, writes bench/results/summary.md
 ```
 
@@ -122,7 +127,7 @@ The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM 
 |---|---|
 | 01 Threat relevance | `demo/THREAT_MODEL.md` names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, `bench/results/` |
-| 03 Technical implementation | `src/tripwire/` (about 8,000 lines of Python), 718 tests, `docs/ARCHITECTURE.md` |
+| 03 Technical implementation | `src/tripwire/` (about 8,000 lines of Python), 749 tests, `docs/ARCHITECTURE.md` |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
 | 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app (Demo tab: `/#demo`) |
 | 06 Safety, privacy, responsible engineering | local only, args redacted before storage (`secrets.redact`), fail closed, every daemon endpoint (reads too) needs the local token or a dashboard paired with a one-time code from `tripwire open` (`auth.py`); agent calls to the daemon's port, to any local port it hides (`$P`, `$((7700+77))`), or to `~/.tripwire` through globs, variables or `find` are blocked; the audit log records the real actor (`dashboard` or `api-token`); and a plain "Known limits" section below |

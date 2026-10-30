@@ -158,7 +158,7 @@ def test_flatten_keeps_real_text_and_caps():
 
 # ---- installer ---------------------------------------------------------------
 
-def test_installer_merges_idempotent_and_uninstalls(tmp_path):
+def test_installer_merges_idempotent_and_uninstalls(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     settings = proj / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
@@ -172,6 +172,7 @@ def test_installer_merges_idempotent_and_uninstalls(tmp_path):
     }
     settings.write_text(json.dumps(existing))
     cmd = "/opt/venv/bin/tripwire"
+    monkeypatch.setenv("TRIPWIRE_HOME", str(tmp_path / "tw"))
     claude_code.install(project=str(proj), command=cmd)
     claude_code.install(project=str(proj), command=cmd)  # twice: still one copy
     data = json.loads(settings.read_text())
@@ -189,14 +190,58 @@ def test_installer_merges_idempotent_and_uninstalls(tmp_path):
     assert json.loads(settings.read_text()) == existing
 
 
-def test_installer_creates_fresh_settings(tmp_path):
+def test_installer_creates_fresh_settings(tmp_path, monkeypatch):
+    monkeypatch.delenv("TRIPWIRE_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     path = claude_code.install(project=str(tmp_path))
     data = json.loads(path.read_text())
     assert set(data["hooks"]) == {"UserPromptSubmit", "PreToolUse", "PostToolUse"}
     cmd = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert cmd.endswith(" hook PreToolUse") and Path(cmd.split()[0]).is_absolute()
     claude_code.uninstall(project=str(tmp_path))
-    assert json.loads(path.read_text()) == {}
+    # QA 31 Oct: uninstall left an `{}` settings.json (and a .claude folder) that install had created
+    assert not path.exists() and not path.parent.exists()
+
+
+def test_uninstall_restores_settings_byte_for_byte(tmp_path, monkeypatch):
+    """QA 31 Oct: uninstall rewrote the user's file with json.dumps(indent=2), so their formatting was lost."""
+    monkeypatch.setenv("TRIPWIRE_HOME", str(tmp_path / "tw"))
+    settings = tmp_path / "proj" / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    original = '{\n    "permissions": {"allow": ["Bash(ls:*)"]},   "model": "haiku"\n}\n'
+    settings.write_text(original)
+    claude_code.install(project=str(tmp_path / "proj"), command="/x/tripwire")
+    claude_code.install(project=str(tmp_path / "proj"), command="/x/tripwire")  # twice keeps the first original
+    assert "tripwire hook PreToolUse" in settings.read_text()
+    claude_code.uninstall(project=str(tmp_path / "proj"))
+    assert settings.read_text() == original
+    # If the user changed something else meanwhile, only our hooks are removed and their change stays.
+    claude_code.install(project=str(tmp_path / "proj"), command="/x/tripwire")
+    data = json.loads(settings.read_text())
+    data["model"] = "opus"
+    settings.write_text(json.dumps(data))
+    claude_code.uninstall(project=str(tmp_path / "proj"))
+    assert json.loads(settings.read_text()) == {"permissions": {"allow": ["Bash(ls:*)"]}, "model": "opus"}
+
+
+def test_install_saves_port_and_home_in_hook_command(tmp_path, monkeypatch):
+    """QA 31 Oct: `serve --port 7800` left the hooks calling 7777, so every tool call was denied as 'not running'."""
+    monkeypatch.setenv("TRIPWIRE_HOME", str(tmp_path / "my home"))
+    cmd = claude_code.hook_command(port=7800)
+    assert "TRIPWIRE_PORT=7800" in cmd and f"TRIPWIRE_HOME='{tmp_path / 'my home'}'" in cmd
+    path = claude_code.install(project=str(tmp_path / "p"), port=7800)
+    hooks = json.loads(path.read_text())["hooks"]
+    assert all("TRIPWIRE_PORT=7800" in g["hooks"][0]["command"] for g in (hooks[e][0] for e in hooks))
+    claude_code.uninstall(project=str(tmp_path / "p"))
+    assert not path.exists()
+
+
+def test_hook_base_url_follows_tripwire_port(monkeypatch):
+    monkeypatch.delenv("TRIPWIRE_URL", raising=False)
+    monkeypatch.setenv("TRIPWIRE_PORT", "7811")
+    assert claude_code.base_url() == "http://127.0.0.1:7811"
+    monkeypatch.setenv("TRIPWIRE_URL", "http://localhost:9/")
+    assert claude_code.base_url() == "http://localhost:9"
 
 
 # ---- MCP proxy ---------------------------------------------------------------

@@ -2,31 +2,72 @@
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
+
+DEFAULT_PORT = 7777
+
+
+def default_port() -> int:
+    """TRIPWIRE_PORT, else 7777. serve, open, install and the hooks all agree on it."""
+    try:
+        return int(os.environ.get("TRIPWIRE_PORT") or DEFAULT_PORT)
+    except ValueError:
+        return DEFAULT_PORT
+
+
+def _port(text: str) -> int:
+    import argparse
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{text}' is not a port number (use 1024 to 65535, e.g. 7777)") from None
+    if not 1 <= n <= 65535:
+        raise argparse.ArgumentTypeError(f"{n} is not a valid port (use 1024 to 65535, e.g. 7777)")
+    return n
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if len(argv) == 2 and argv[0] == "hook":  # hot path: runs on every Claude Code tool call
+    if len(argv) == 2 and argv[0] == "hook":  # hot path: runs on every Claude Code tool call (no argparse import)
         from .adapters.claude_code import hook_main
         return hook_main(argv[1])
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        return 130
+    except OSError as e:  # a missing or unwritable folder, a file where a folder should be: say so, no traceback
+        where = f" ({e.filename})" if e.filename else ""
+        print(f"Tripwire could not use a file or folder it needs: {e.strerror or e}{where}.\n"
+              f"Check that TRIPWIRE_HOME ({_home()}) is a folder you can write to.", file=sys.stderr)
+        return 2
+
+
+def _home() -> str:
+    from . import auth
+    return str(auth.home())
+
+
+def _main(argv: list[str]) -> int:
+    import argparse
 
     upstream: list[str] = []
     if argv[:1] == ["mcp-proxy"] and "--" in argv:  # everything after -- is the server command
         i = argv.index("--")
         argv, upstream = argv[:i], argv[i + 1:]
 
+    from . import __version__
     p = argparse.ArgumentParser(prog="tripwire", description="A guard between AI agents and their tools.")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p.add_argument("--version", action="version", version=f"tripwire {__version__}")
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
+    port_help = "daemon port (default: $TRIPWIRE_PORT, else 7777)"
     s = sub.add_parser("serve", help="run the local daemon and dashboard")
-    s.add_argument("--port", type=int, default=7777)
+    s.add_argument("--port", type=_port, default=default_port(), help=port_help)
     s.add_argument("--judge", action="store_true", help="use the local isolated judge model for grey-zone actions")
     s.add_argument("--autonomy", choices=["strict", "balanced", "autonomous"],
                    help="how much Tripwire decides on its own (default: your saved setting, else balanced)")
     o = sub.add_parser("open", help="open the dashboard in your browser (pairs it with a one-time code)")
-    o.add_argument("--port", type=int, default=int(os.environ.get("TRIPWIRE_PORT") or 7777))
+    o.add_argument("--port", type=_port, default=default_port(), help=port_help)
     o.add_argument("--print", action="store_true", help="print the one-time link instead of opening a browser")
     h = sub.add_parser("hook", help="Claude Code hook entry (Claude Code runs this, not you)")
     h.add_argument("event", choices=["UserPromptSubmit", "PreToolUse", "PostToolUse"])
@@ -36,6 +77,9 @@ def main(argv: list[str] | None = None) -> int:
         scope = i_.add_mutually_exclusive_group()
         scope.add_argument("--project", metavar="DIR", help="project folder (default: current folder)")
         scope.add_argument("--user", action="store_true", help="all projects (~/.claude/settings.json)")
+        if verb == "install":
+            i_.add_argument("--port", type=_port, default=None,
+                            help="daemon port the hooks talk to, if not 7777 (saved in the hook command)")
     m = sub.add_parser("mcp-proxy", help="guard an MCP stdio server: tripwire mcp-proxy --name NAME -- <cmd...>")
     m.add_argument("--name", default="mcp", help="server name; tools show up as mcp__NAME__tool")
     m.add_argument("--profile", default=None, help="permission profile from the policy YAML for this session")
@@ -57,12 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     args, rest = p.parse_known_args(argv)
 
     if args.cmd == "audit":
-        try:
-            return _audit(args)
-        except OSError as e:  # e.g. TRIPWIRE_HOME points at a file: say so plainly, no traceback
-            print(f"Tripwire could not open its audit folder: {e.strerror} ({e.filename}). "
-                  "Check TRIPWIRE_HOME points at a folder.", file=sys.stderr)
-            return 2
+        return _audit(args)
 
     if args.cmd == "hook":
         from .adapters.claude_code import hook_main
@@ -70,11 +109,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd in ("install", "uninstall"):
         from .adapters import claude_code
-        fn = claude_code.install if args.cmd == "install" else claude_code.uninstall
-        path = fn(project=args.project, user=args.user)
+        try:
+            if args.cmd == "install":
+                path = claude_code.install(project=args.project, user=args.user, port=args.port)
+            else:
+                path = claude_code.uninstall(project=args.project, user=args.user)
+        except ValueError as e:  # settings.json is not valid JSON: never overwrite it
+            print(f"Tripwire did not change anything: {e}", file=sys.stderr)
+            return 1
         print(f"Tripwire hooks {'installed in' if args.cmd == 'install' else 'removed from'} {path}")
         if args.cmd == "install":
-            print("Start the daemon with `tripwire serve`. While it is down, tool calls are blocked.")
+            port = args.port or default_port()
+            print(f"Start the daemon with `tripwire serve{'' if port == DEFAULT_PORT else f' --port {port}'}`. "
+                  "While it is down, tool calls are blocked.")
         return 0
 
     if args.cmd == "mcp-proxy":
@@ -88,29 +135,84 @@ def main(argv: list[str] | None = None) -> int:
         return _open(args.port, args.print)
 
     if args.cmd == "serve":
-        import uvicorn
-
-        from .engine import Engine
-        from .server import create_app
-
-        judge = None
-        if args.judge:
-            from .judge import make_judge
-            judge = make_judge()
-        engine = Engine(judge=judge, autonomy=args.autonomy)
-        engine.set_guard_port(args.port)  # agent calls aimed at this port are attacks on the guard
-        app = create_app(engine)
-        # The dashboard pairs with a one-time code (single use, 10 minutes); `tripwire open` mints a fresh one.
-        print(f"Tripwire is running. Dashboard (one-time link): http://127.0.0.1:{args.port}/#pair={app.state.new_pair()}")
-        print("Later, or in another browser: tripwire open", flush=True)
-        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
-        return 0
+        return _serve(args)
     return 1
+
+
+def _bind(port: int):
+    """Bind the port before saying anything, so a busy port is a plain message, not a link that leads nowhere."""
+    import errno
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError as e:
+        sock.close()
+        if e.errno == errno.EADDRINUSE:
+            print(f"Port {port} is already in use. Is Tripwire already running? Check with "
+                  f"`curl -s 127.0.0.1:{port}/healthz`, or pick another port: tripwire serve --port {port + 1}",
+                  file=sys.stderr)
+        elif e.errno == errno.EACCES:
+            print(f"Not allowed to use port {port}. Pick one above 1023, e.g. tripwire serve --port 7777", file=sys.stderr)
+        else:
+            print(f"Could not use port {port}: {e.strerror or e}.", file=sys.stderr)
+        return None
+    sock.listen(2048)
+    sock.set_inheritable(True)
+    return sock
+
+
+def _judge_hint(judge) -> str | None:
+    """One line if the judge model can't answer yet (asks then stay asks, which is safe but worth knowing)."""
+    import httpx
+    try:
+        tags = httpx.get(f"{judge.url}/api/tags", timeout=1.5).json()
+    except Exception:  # noqa: BLE001
+        return (f"Judge: Ollama is not answering at {judge.url}, so grey-zone calls stay with you until it is. "
+                f"Start it with `ollama serve`, then `ollama pull {judge.model}`.")
+    names = {m.get("name") for m in tags.get("models", []) if isinstance(m, dict)}
+    if judge.model not in names and f"{judge.model}:latest" not in names:
+        return f"Judge: model {judge.model} is not pulled yet. Run `ollama pull {judge.model}`."
+    return None
+
+
+def _serve(args) -> int:
+    sock = _bind(args.port)
+    if sock is None:
+        return 1
+    import uvicorn
+
+    from .engine import Engine
+    from .server import create_app
+
+    judge = None
+    if args.judge:
+        from .judge import make_judge
+        judge = make_judge()
+    engine = Engine(judge=judge, autonomy=args.autonomy)
+    engine.set_guard_port(args.port)  # agent calls aimed at this port are attacks on the guard
+    app = create_app(engine)
+    # The dashboard pairs with a one-time code (single use, 10 minutes); `tripwire open` mints a fresh one.
+    print(f"Tripwire is running. Dashboard (one-time link): http://127.0.0.1:{args.port}/#pair={app.state.new_pair()}")
+    print(f"Later, or in another browser: tripwire open{'' if args.port == default_port() else f' --port {args.port}'}")
+    if args.port != DEFAULT_PORT:
+        print(f"Agents look for port {DEFAULT_PORT} by default. Point them here with TRIPWIRE_PORT={args.port}, "
+              f"or `tripwire install claude --port {args.port}`.")
+    if judge is not None:
+        hint = _judge_hint(judge)
+        if hint:
+            print(hint)
+    sys.stdout.flush()
+    config = uvicorn.Config(app, log_level="warning")
+    uvicorn.Server(config).run(sockets=[sock])
+    return 0
 
 
 def _open(port: int, print_only: bool) -> int:
     """Ask the running daemon for a one-time pairing code (with the token from ~/.tripwire) and open the dashboard."""
     import json
+    import urllib.error
     import urllib.request
     import webbrowser
 
@@ -123,8 +225,18 @@ def _open(port: int, print_only: bool) -> int:
     try:
         req = urllib.request.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={auth.HEADER: tok})
         code = json.loads(urllib.request.urlopen(req, timeout=5).read())["code"]
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            print(f"The Tripwire on {base} does not accept the token in {auth.token_path()}. It was started with a "
+                  "different TRIPWIRE_HOME (or its token changed). Run `tripwire open` with the same TRIPWIRE_HOME "
+                  "as `tripwire serve`, or restart the daemon.")
+        else:
+            print(f"Tripwire on {base} answered HTTP {e.code}. Is that port really Tripwire?")
+        return 1
     except Exception as e:  # noqa: BLE001
-        print(f"Could not reach Tripwire on {base} ({e}). Is `tripwire serve` running on that port?")
+        reason = getattr(e, "reason", e)
+        print(f"Could not reach Tripwire on {base} ({reason}). Start it with `tripwire serve`"
+              + ("" if port == DEFAULT_PORT else f" --port {port}") + ", or pass the port it runs on: tripwire open --port N")
         return 1
     link = f"{base}/#pair={code}"
     if print_only or not webbrowser.open(link):
@@ -143,6 +255,16 @@ def _audit(args) -> int:
 
     db = Path(args.db).expanduser() if args.db else A.home() / "audit.db"
     key_path = Path(args.key).expanduser() if args.key else A.default_key_path(db)
+
+    if db.parent.exists() and not db.parent.is_dir():
+        import errno
+        raise NotADirectoryError(errno.ENOTDIR, "Not a folder", str(db.parent))
+    if args.file and not Path(args.file).expanduser().is_file():
+        print(f"No such export file: {args.file}")
+        return 1
+    if args.action == "verify" and not args.file and not db.exists():
+        print(f"No audit log yet at {db}. It starts when `tripwire serve` runs, so there is nothing to check.")
+        return 1
 
     if args.action == "verify":
         key = None

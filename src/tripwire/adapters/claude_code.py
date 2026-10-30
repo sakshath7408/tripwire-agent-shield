@@ -30,16 +30,12 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
+import socket
 import sys
-import urllib.error
-import urllib.request
-from pathlib import Path
 from typing import Any, TextIO
 
-from .. import auth
-
 DEFAULT_URL = "http://127.0.0.1:7777"
+TOKEN_HEADER = "X-Tripwire-Token"  # auth.HEADER; auth.py is not imported here to keep the hook fast
 TIMEOUT = 2.0
 MAX_OBSERVE = 200_000  # characters of tool output sent to the daemon
 NOT_RUNNING = "Tripwire is not running, so this tool call was blocked. Start it with `tripwire serve`."
@@ -50,8 +46,84 @@ class DaemonDown(Exception):
     pass
 
 
+class Refused(Exception):
+    """The daemon answered but refused (wrong token, bad request). Still a deny, with a plain reason."""
+
+
 def base_url() -> str:
-    return os.environ.get("TRIPWIRE_URL", DEFAULT_URL).rstrip("/")
+    """TRIPWIRE_URL, else 127.0.0.1 on TRIPWIRE_PORT, else port 7777. `tripwire install claude --port N` sets one."""
+    url = os.environ.get("TRIPWIRE_URL")
+    if url:
+        return url.rstrip("/")
+    port = os.environ.get("TRIPWIRE_PORT", "").strip()
+    return f"http://127.0.0.1:{port}" if port.isdigit() else DEFAULT_URL
+
+
+def _token() -> str | None:
+    """Same as auth.read_token(), without importing pathlib/secrets/hmac on every tool call."""
+    env = os.environ.get("TRIPWIRE_TOKEN")
+    if env:
+        return env.strip()
+    home = os.environ.get("TRIPWIRE_HOME") or os.path.join(os.path.expanduser("~"), ".tripwire")
+    try:
+        with open(os.path.join(home, "token")) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _refusal(status: int, path: str) -> str:
+    if status == 401:
+        return ("Tripwire refused this hook's token, so the call was blocked. The daemon was started with a different "
+                "TRIPWIRE_HOME, or its token changed. Restart `tripwire serve` with the same TRIPWIRE_HOME as the agent.")
+    return f"Tripwire's daemon answered HTTP {status} for {path}, so the call was blocked to be safe."
+
+
+def _http_post(url: str, body: bytes, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+    """A tiny HTTP/1.1 client over a plain socket. urllib.request costs ~100 ms of imports on every tool call,
+    and the daemon only ever listens on plain http on localhost."""
+    rest = url.split("://", 1)[1]
+    hostport, _, path = rest.partition("/")
+    if hostport.startswith("["):  # [::1]:7777
+        host, _, port = hostport[1:].partition("]")
+        port = port.lstrip(":")
+    else:
+        host, _, port = hostport.partition(":")
+    head = [f"POST /{path} HTTP/1.1", f"Host: {hostport}", "Connection: close", f"Content-Length: {len(body)}"]
+    head += [f"{k}: {v}" for k, v in headers.items()]
+    try:
+        with socket.create_connection((host, int(port or 80)), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(("\r\n".join(head) + "\r\n\r\n").encode("latin-1") + body)
+            chunks = []
+            while True:
+                b = sock.recv(65536)
+                if not b:
+                    break
+                chunks.append(b)
+    except (OSError, ValueError) as e:  # refused, timed out, reset, bad port
+        raise DaemonDown(str(e) or type(e).__name__) from e
+    raw = b"".join(chunks)
+    header, sep, payload = raw.partition(b"\r\n\r\n")
+    if not sep:
+        raise DaemonDown("no HTTP response")
+    lines = header.split(b"\r\n")
+    try:
+        status = int(lines[0].split()[1])
+    except (IndexError, ValueError):
+        raise DaemonDown("not an HTTP response") from None
+    hdrs = {k.strip().lower(): v.strip() for k, _, v in (ln.decode("latin-1").partition(":") for ln in lines[1:])}
+    if "chunked" in hdrs.get("transfer-encoding", "").lower():
+        out, rest_b = [], payload
+        while rest_b:
+            size_line, _, rest_b = rest_b.partition(b"\r\n")
+            n = int(size_line.split(b";")[0] or b"0", 16)
+            if n == 0:
+                break
+            out.append(rest_b[:n])
+            rest_b = rest_b[n + 2:]
+        payload = b"".join(out)
+    return status, payload
 
 
 def _truthy(name: str) -> bool:
@@ -59,15 +131,28 @@ def _truthy(name: str) -> bool:
 
 
 def post(path: str, body: dict, timeout: float = TIMEOUT) -> dict:
-    req = urllib.request.Request(base_url() + path, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json", **auth.headers()}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:  # daemon answered but refused: not "down", still an error
-        raise RuntimeError(f"Tripwire daemon returned HTTP {e.code} for {path}") from e
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        raise DaemonDown(str(e)) from e
+    url = base_url() + path
+    data = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    tok = _token()
+    if tok:
+        headers[TOKEN_HEADER] = tok
+    if url.startswith("http://"):
+        status, payload = _http_post(url, data, headers, timeout)
+    else:  # https or anything unusual: the standard library handles it
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                status, payload = r.status, r.read()
+        except urllib.error.HTTPError as e:
+            status, payload = e.code, b""
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            raise DaemonDown(str(e)) from e
+    if status >= 400:  # daemon answered but refused: not "down", still an error
+        raise Refused(_refusal(status, path))
+    return json.loads(payload or b"{}")
 
 
 def flatten(value: Any, limit: int = MAX_OBSERVE) -> str:
@@ -185,6 +270,11 @@ def run(event: str, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
             stderr.write("Tripwire is not running; TRIPWIRE_FAIL_OPEN=1 so the call goes through.\n")
             return 0
         code, out = 0, _pre_output("deny", NOT_RUNNING)
+    except Refused as e:
+        if not pre:
+            stderr.write(f"{e}\n")
+            return 0
+        code, out = 0, _pre_output("deny", str(e))
     except Exception as e:  # noqa: BLE001 - any failure must deny on PreToolUse
         if not pre:
             stderr.write(f"Tripwire hook error: {e}\n")
@@ -219,18 +309,31 @@ def hook_main(event: str) -> int:
 
 
 # ---- installer ---------------------------------------------------------------
+# Imports here are local: the hook path above must not pay for pathlib/shlex on every tool call.
 
-def hook_command() -> str:
+def hook_command(port: int | None = None) -> str:
     """Absolute command Claude Code should run. Prefer the venv's console script (fast, no
-    `uv run` sync step on every tool call); fall back to `python -m tripwire.cli`."""
+    `uv run` sync step on every tool call); fall back to `python -m tripwire.cli`.
+    A non-default port, and a TRIPWIRE_HOME set while installing, are saved in the command so the hooks
+    find the daemon and its token no matter how Claude Code was started."""
+    import shlex
+    from pathlib import Path
     exe = Path(sys.executable)
     script = exe.parent / "tripwire"
     if script.exists() and os.access(script, os.X_OK):
-        return shlex.quote(str(script))
-    return f"{shlex.quote(str(exe))} -m tripwire.cli"
+        cmd = shlex.quote(str(script))
+    else:
+        cmd = f"{shlex.quote(str(exe))} -m tripwire.cli"
+    env = []
+    if os.environ.get("TRIPWIRE_HOME"):
+        env.append(f"TRIPWIRE_HOME={shlex.quote(os.path.abspath(os.path.expanduser(os.environ['TRIPWIRE_HOME'])))}")
+    if port:
+        env.append(f"TRIPWIRE_PORT={int(port)}")
+    return " ".join([*env, cmd])
 
 
-def settings_path(project: str | None, user: bool) -> Path:
+def settings_path(project: str | None, user: bool):
+    from pathlib import Path
     if user:
         return Path.home() / ".claude" / "settings.json"
     return Path(project or os.getcwd()).expanduser().resolve() / ".claude" / "settings.json"
@@ -286,30 +389,78 @@ def merge(settings: dict, command: str) -> dict:
     return settings
 
 
-def _load(path: Path) -> dict:
+def _load(path) -> dict:
     if not path.exists() or not path.read_text().strip():
         return {}
-    data = json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+    except ValueError as e:
+        raise ValueError(f"{path} is not valid JSON ({e}). Fix it, then run this again.") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path} is not a JSON object")
     return data
 
 
-def _save(path: Path, data: dict) -> None:
+def _save(path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tripwire-tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n")
     os.replace(tmp, path)
 
 
-def install(project: str | None = None, user: bool = False, command: str | None = None) -> Path:
+def _backup_path(path):
+    """Where install keeps the settings file as it was, so uninstall can put it back byte for byte."""
+    import hashlib
+    from pathlib import Path
+    home = Path(os.environ.get("TRIPWIRE_HOME") or Path.home() / ".tripwire")
+    return home / "installs" / (hashlib.sha256(str(path).encode()).hexdigest()[:16] + ".json")
+
+
+def install(project: str | None = None, user: bool = False, command: str | None = None, port: int | None = None):
     path = settings_path(project, user)
-    _save(path, merge(_load(path), command or hook_command()))
+    existed = path.exists()
+    original = path.read_text() if existed else None
+    claude_dir_existed = path.parent.exists()
+    data = merge(_load(path), command or hook_command(port))
+    _save(path, data)
+    try:
+        bp = _backup_path(path)
+        prev = json.loads(bp.read_text()) if bp.exists() else None
+        if prev is None or prev.get("path") != str(path):
+            prev = {"path": str(path), "existed": existed, "text": original, "dir_existed": claude_dir_existed}
+        prev["installed"] = data  # what the file holds right after install; uninstall restores only if unchanged
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        bp.write_text(json.dumps(prev))
+    except (OSError, ValueError):
+        pass  # no backup: uninstall still removes exactly our hooks, just not the original formatting
     return path
 
 
-def uninstall(project: str | None = None, user: bool = False) -> Path:
+def uninstall(project: str | None = None, user: bool = False):
     path = settings_path(project, user)
-    if path.exists():
-        _save(path, _strip(_load(path)))
+    bp = _backup_path(path)
+    try:
+        backup = json.loads(bp.read_text()) if bp.exists() else None
+    except (OSError, ValueError):
+        backup = None
+    if not path.exists():
+        return path
+    current = _load(path)
+    if backup and backup.get("path") == str(path) and current == backup.get("installed"):
+        # Nothing else changed since install: put the file back exactly as it was (or remove what we created).
+        if backup.get("existed"):
+            path.write_text(backup.get("text") or "")
+        else:
+            path.unlink()
+            if not backup.get("dir_existed"):
+                try:
+                    path.parent.rmdir()  # only if empty
+                except OSError:
+                    pass
+    else:
+        _save(path, _strip(current))
+    try:
+        bp.unlink()
+    except OSError:
+        pass
     return path
