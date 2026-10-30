@@ -161,7 +161,7 @@
     if (v.auto || v.resolved_by === "rule" || v.rule_id) return v.rule_id ? "Learned rule" : "Decided on its own";
     if (v.resolved_by === "timeout") return "No answer in time, so blocked";
     // Answered with the install token: the terminal prompt, a script, never this page. Say so in plain words.
-    if (v.resolved_by === "api-token") return v.decision === "allow" ? "Approved outside this page" : "Blocked outside this page";
+    if (v.resolved_by === "api-token" || v.resolved_by === "hook-token" || v.resolved_by === "admin") return v.decision === "allow" ? "Approved outside this page" : "Blocked outside this page";
     if (v.resolved_by) return (v.decision === "allow" ? "Approved by " : "Blocked by ") + v.resolved_by;
     if (judgeDecided(v)) return "Local judge agreed";
     return "";
@@ -206,6 +206,16 @@
   const CAPDO = { read: "read a secret", write: "change files", exec: "run commands", fetch: "pull in outside content",
     send: "send data out", money: "move money", delete: "delete data", agent: "start another agent", credential: "change credentials", unknown: "use an unknown tool" };
 
+  /** Did this session (or, with no session, any session) read hidden instructions? Then it is never "All clear". */
+  function hiddenSeen(sess) {
+    if (!sess) return !!(S.stats && S.stats.hidden_instructions_seen);
+    return !!(sess.hidden_instructions_seen || sess.injection_seen > 0 || (sess.injections || []).length || S.injectSrc.has(sess.id));
+  }
+  function hiddenSource(sess) {
+    const inj = sess && sess.injections && sess.injections.length ? sess.injections[sess.injections.length - 1] : null;
+    return (inj && (inj.source || inj.tool)) || (sess && S.injectSrc.get(sess.id)) || "";
+  }
+
   /** One sentence a stranger can read from across the room. */
   function storyFor(sess, vs) {
     if (!vs.length) return null;
@@ -224,6 +234,11 @@
     const tried = [...new Set(asked.slice().reverse().map((v) => CAPDO[v.capability]).filter(Boolean))].slice(0, 3);
     const list = tried.length <= 1 ? tried.join("") : tried.slice(0, -1).join(", ") + " and " + tried[tried.length - 1];
     const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+    if (!stopped.length && !pending.length && hiddenSeen(sess)) {
+      // Nothing stopped yet, but the agent has read orders that weren't yours: amber, never "All clear".
+      const where = hiddenSource(sess);
+      return { warn: true, html: `<b>Hidden instructions found${where ? ` in <mark>${esc(where)}</mark>` : ""}.</b> Nothing blocked yet, watching closely.${allowed.length ? ` <span class="dim">${n(allowed.length, "action", "actions")} so far, all part of your task.</span>` : ""}` };
+    }
     if (!stopped.length && !pending.length) {
       return { good: true, html: `<b>All clear.</b> ${n(allowed.length, "action", "actions")} so far, every one part of what you asked.` };
     }
@@ -423,9 +438,10 @@
     if (list.length < 2) { el.sessions.innerHTML = ""; return; }
     el.sessions.innerHTML = list.map((s) => {
       const vs = S.order.map((id) => S.verdicts.get(id)).filter((v) => v.action.session_id === s.id);
-      const hot = vs.some(isPending) ? "ask" : vs.some((v) => v.decision === "block") ? "block" : "";
+      const hidden = hiddenSeen(S.sessions.find((x) => x.id === s.id) || s);
+      const hot = vs.some(isPending) ? "ask" : vs.some((v) => v.decision === "block") ? "block" : hidden ? "ask" : "";
       const p = sessionParts(s.id);
-      const state = hot === "ask" ? "waiting for you" : hot === "block" ? "has blocked actions" : "all clear";
+      const state = vs.some(isPending) ? "waiting for you" : hot === "block" ? "has blocked actions" : hidden ? "hidden instructions seen" : "all clear";
       return `<button type="button" data-sid="${esc(s.id)}" aria-pressed="${s.id === S.session}" title="${esc(s.id)}: ${state}" aria-label="Session ${esc(s.id)}, ${state}"><span class="dot" data-hot="${hot}" aria-hidden="true"></span>${esc(p.name)}${p.hash ? `<span class="sid-hash">${esc(p.hash)}</span>` : ""}</button>`;
     }).join("");
     revealSession();
@@ -477,7 +493,8 @@
     const story = storyFor(sess, vs);
     el.story.hidden = !story;
     if (story) {
-      el.story.classList.toggle("story-good", story.good);
+      el.story.classList.toggle("story-good", !!story.good);
+      el.story.classList.toggle("story-warn", !!story.warn);
       el.story.querySelector("use").setAttribute("href", story.good ? "#i-allow" : "#i-hidden");
       el.storyText.innerHTML = story.html;
     }
@@ -580,7 +597,7 @@
     el.detailBody.hidden = !v;
     if (!v) {
       const vs = viewVerdicts();
-      const clean = vs.length > 0 && vs.every((x) => x.decision === "allow");
+      const clean = vs.length > 0 && vs.every((x) => x.decision === "allow") && !hiddenSeen(S.sessions.find((x) => x.id === S.session));
       el.detailEmpty.innerHTML = clean
         ? `<div class="ok">${icon("allow")}All clear</div><p style="margin:0">Every action so far matched what you asked for. Pick one to see why.</p>`
         : `<p style="margin:0">Pick any action to see exactly why Tripwire decided what it did.</p>`;
@@ -736,7 +753,7 @@
       : "No decisions yet.";
     el.auditCount.textContent = all.length || "";
     el.auditRows.innerHTML = all.map((v) => {
-      const who = v.resolved_by === "human" ? `<span class="who-human">You</span>` : v.resolved_by === "timeout" ? `<span class="who-timeout">Timed out</span>` : v.resolved_by === "api-token" ? `<span title="Answered with the install token (a terminal or a script), not on this page">API token</span>` : v.resolved_by ? esc(v.resolved_by.charAt(0).toUpperCase() + v.resolved_by.slice(1)) : isPending(v) ? `<span class="who-wait">Waiting</span>` : judgeDecided(v) ? "Tripwire + judge" : "Tripwire";
+      const who = v.resolved_by === "human" ? `<span class="who-human">You</span>` : v.resolved_by === "timeout" ? `<span class="who-timeout">Timed out</span>` : v.resolved_by === "api-token" || v.resolved_by === "hook-token" || v.resolved_by === "admin" ? `<span title="Answered from a terminal or a script with Tripwire's key, not on this page">Terminal</span>` : v.resolved_by ? esc(v.resolved_by.charAt(0).toUpperCase() + v.resolved_by.slice(1)) : isPending(v) ? `<span class="who-wait">Waiting</span>` : judgeDecided(v) ? "Tripwire + judge" : "Tripwire";
       const ag = agentOf(v);
       return `<tr data-id="${v.id}" tabindex="0"><td>${fmtTime(v.ts)}</td><td class="sid" title="${esc(v.action.session_id)}">${esc(sessionParts(v.action.session_id).name)}</td><td class="agent-cell">${ag ? agentChip(v) : `<span class="main-agent">main</span>`}</td><td class="tool">${esc(toolLabel(v.action.tool))}</td>
         <td><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span></td><td>${badge(v.decision)}</td><td><span class="why" title="${esc(cleanSummary(v))}">${esc(cleanSummary(v))}</span></td><td>${who}</td>

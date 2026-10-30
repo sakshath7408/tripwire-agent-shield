@@ -439,6 +439,9 @@ b, strong { font-weight: 600; }
 .story-good { background: var(--allow-soft); color: var(--allow); box-shadow: var(--shadow), inset 0 0 0 1px color-mix(in srgb, var(--allow) 30%, transparent); }
 .story-good svg { color: var(--allow); }
 .story-good .dim { color: var(--allow); opacity: .75; }
+.story-warn { background: var(--ask-soft); color: var(--ask); box-shadow: var(--shadow), inset 0 0 0 1px var(--ask-line); }
+.story-warn svg { color: var(--ask); }
+.story-warn .dim { color: var(--ask); opacity: .8; }
 
 /* ---- work area ---------------------------------------------------------- */
 .work {
