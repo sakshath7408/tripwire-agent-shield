@@ -243,16 +243,17 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     def task(spec: TaskSpec, request: Request) -> dict:
         by = actor(request)
         agent, parent, trace = who(spec)
-        if engine.sessions.was_injected(spec.session_id):
-            # Re-tasking a session after hidden instructions is how a hijacked agent would vouch for the attacker's
-            # address. Nobody gets to do it over the API; a new task starts a new session.
-            record("task", session=spec.session_id, agent=agent, parent=parent, trace=trace,
-                   body={"prompt": redact(spec.prompt[:2000]), "by": by, "refused": "hidden instructions were seen"})
-            raise HTTPException(403, "Hidden instructions were seen in this session, so its task can't be changed any "
-                                     "more. Start a new session for a new task.")
-        engine.set_task(spec)
+        injected = engine.sessions.was_injected(spec.session_id)
+        if injected and spec.profile:
+            # A hijacked agent could try to swap in a looser role after the attack. Roles are fixed from then on.
+            spec = spec.model_copy(update={"profile": None})
+        # After hidden instructions, the user can keep working in the same session (refusing every new prompt made
+        # Claude Code unusable). But the new words are unverified: they can't vouch for any address, host or value
+        # the hidden instructions supplied, so re-tasking can't launder the attacker's target.
+        engine.set_task(spec, verified=not injected)
         record("task", session=spec.session_id, agent=agent, parent=parent, trace=trace,
-               body={"prompt": redact(spec.prompt[:2000]), "profile": spec.profile, "cwd": spec.cwd, "by": by})
+               body={"prompt": redact(spec.prompt[:2000]), "profile": spec.profile, "cwd": spec.cwd, "by": by,
+                     **({"unverified": "hidden instructions were seen"} if injected else {})})
         return {"ok": True}
 
     @app.post("/v1/observe")

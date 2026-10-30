@@ -181,7 +181,10 @@ class TaintStore:
         norm = _norm(canon(text))
         for kind, vals in indicators(text).items():
             if exclude_injected:
-                bad = {v for v in vals if (self.untrusted.get(v) or _domain_match(v, self.untrusted) or _NO_SRC).injected}
+                # After an attack, a new prompt vouches for no address, host or value at all. Matching only the values
+                # still in memory wasn't enough: after a reset the memory is empty and the attacker's address
+                # would be trusted again. A real follow-up to a new person just asks once.
+                bad = set(vals)
                 for v in bad:
                     norm = norm.replace(v, "[unverified]")
                 vals = vals - bad

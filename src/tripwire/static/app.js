@@ -666,7 +666,11 @@
     const t = toolLabel(v.action.tool);
     const words = { read: "read a file", write: "change a file", exec: "run a command", fetch: "fetch a web page", send: "send a message",
       money: "move money", delete: "delete something", agent: "start another agent", credential: "change credentials" };
-    return `${words[v.capability] || `use ${t}`}${words[v.capability] ? ` (${t})` : ""}`;
+    // Mail and chat readers are reads too, but "read a file" would be wrong for them.
+    const name = String(v.action.tool || "").toLowerCase();
+    const mailish = /(inbox|email|mail|message|channel|chat|slack|dm)/.test(name);
+    const word = v.capability === "read" && mailish ? "read your messages" : words[v.capability];
+    return `${word || `use ${t}`}${word ? ` (${t})` : ""}`;
   }
 
   /** Who acted, and who started them. Only for sub-agents and MCP servers; the main agent needs no label. */
