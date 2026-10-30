@@ -14,6 +14,7 @@ import shlex
 import time
 from typing import Any, Callable
 
+from . import autonomy as auto
 from .analyzers import paths
 from .analyzers.secrets import find_secrets, redact
 from .analyzers.shell import analyze_shell
@@ -41,6 +42,18 @@ PATHISH_KEY = re.compile(r"(?:^|_)(path|file|dir|folder|uri|glob|include|target|
 RECIPIENT_KEY = re.compile(r"^(to|cc|bcc|recipients?|emails?|email_address(es)?|address(es)?|participants?|attendees?|"
                            r"invitees?|users?|members?|phone|phone_number|number|iban|account|payee|beneficiary|channel|reply_to)$", re.I)
 # A picture or link inside a message body: the reader's mail app or chat loads it, sending the URL's data away.
+# The daemon's own API: an agent that can reach it can reset sessions, rewrite its task or approve its own ASKs.
+LOCAL_ADDR = (r"(?:localhost|127(?:\.\d{1,3}){1,3}|0\.0\.0\.0|0x7f[0-9a-f.x]{0,24}|2130706433|0177(?:\.\d{1,4}){0,3}|"
+              r"\[?(?:0{0,4}:){1,7}0{0,3}1\]?|\[?::ffff:127\.[\d.]{1,12}\]?|[\w.-]{1,64}\.localhost|host\.docker\.internal)")
+DAEMON_API = re.compile(r"/v1/(?:task|observe|evaluate|reset|verdicts|settings|rules|sessions)\b", re.I)
+GUARD_HOME = re.compile(r"(?:^|[\s/~\"'=:}])\.tripwire/", re.I)
+
+
+def _daemon_port_re(ports: set[int]) -> re.Pattern[str]:
+    alt = "|".join(str(p) for p in sorted(ports))
+    return re.compile(rf"{LOCAL_ADDR}\s{{0,3}}(?::|\s{{1,3}}|,\s{{0,3}}|\s{{0,3}}-p\s{{0,3}})\s{{0,3}}(?:{alt})\b", re.I)
+
+
 RENDER_EXFIL = re.compile(r"!\[[^\]\n]{0,200}\]\(\s{0,4}(https?://[^\s)]{1,2048})|<img\b[^>]{0,300}?\bsrc\s{0,4}=\s{0,4}[\"']?(https?://[^\s\"'>]{1,2048})", re.I)
 
 
@@ -128,11 +141,35 @@ def _first(args: dict[str, Any], keys: tuple[str, ...]) -> str | None:
 
 
 class Engine:
-    def __init__(self, policy: Policy | None = None, judge: Callable[[Session, Action, Verdict], dict] | None = None) -> None:
+    def __init__(self, policy: Policy | None = None, judge: Callable[[Session, Action, Verdict], dict] | None = None,
+                 autonomy: str | None = None, learned: auto.LearnedStore | None = None) -> None:
         self.sessions = SessionStore()
         self.policy = policy or Policy.load()
         self.judge = judge
         self.listeners: list[Callable[[str, dict], None]] = []
+        # strict | balanced | autonomous. None means "not chosen": balanced, or $TRIPWIRE_AUTONOMY.
+        self.autonomy_explicit = autonomy is not None
+        self.autonomy = auto.normalise_level(autonomy)
+        # Ports the daemon listens on. An agent action aimed at them is an attack on the guard itself.
+        self.guard_ports = {7777, int(os.environ.get("TRIPWIRE_PORT") or 7777)}
+        self._port_re = _daemon_port_re(self.guard_ports)
+        # Learned rules start empty in-process (benchmarks and tests stay reproducible); the daemon loads learned.yaml.
+        self.learned = learned or auto.LearnedStore()
+
+    def set_guard_port(self, port: int) -> None:
+        self.guard_ports.add(int(port))
+        self._port_re = _daemon_port_re(self.guard_ports)
+
+    def set_autonomy(self, level: str) -> str:
+        self.autonomy = auto.normalise_level(level)
+        self.autonomy_explicit = True
+        self._emit("settings", {"autonomy": self.autonomy})
+        return self.autonomy
+
+    def learn(self, v: Verdict, decision: Decision, scope: str) -> auto.LearnedRule:
+        """Remember a human's answer as a narrow rule. Raises autonomy.LearnRefused with a plain reason."""
+        s = self.sessions._s.get(v.action.session_id)
+        return self.learned.add(v, decision, scope, s)
 
     # ---- inputs -------------------------------------------------------------
     def set_task(self, spec: TaskSpec) -> None:
@@ -210,9 +247,28 @@ class Engine:
                                     message=override.reason or f"Policy rule '{override.id}' says {override.decision}."))
 
         v = Verdict(action=_redacted(action), capability=cap, decision=decision, risk=risk, findings=findings,
-                    summary=_summary(decision, findings, cap))
+                    summary=_summary(decision, findings, cap), autonomy=self.autonomy)
 
-        if self.judge and decision == Decision.ASK and not override:
+        # Autonomy: only ever turns an ASK into a decision; never touches a BLOCK or an explicit policy rule.
+        if decision == Decision.ASK and not override and self.autonomy != "strict":
+            res = None
+            rule = self.learned.match(action, cap, s.cwd)
+            if rule is not None:
+                res = auto.apply_learned(rule, s, cap, findings)
+            if res is None:
+                ctx = auto.Context()
+                if cap == Capability.EXEC and s.taint.injection_seen:
+                    src = s.taint.command_from_data(_command(action.args or {}, ""))
+                    ctx.command_src_injected = bool(src and src.injected)
+                res = auto.decide(self.autonomy, s, action, cap, findings, ctx)
+            if res is not None:
+                v.findings.append(res.finding)
+                v.decision, v.auto, v.rule_id = res.decision, True, res.rule_id
+                if res.decision == Decision.BLOCK:
+                    v.risk = max(v.risk, BLOCK_AT)
+                v.summary = res.finding.message
+
+        if self.judge and v.decision == Decision.ASK and not override:
             try:
                 j = self.judge(s, action, v)
                 v.judge = j
@@ -397,6 +453,14 @@ class Engine:
                              message="Changes a password, key or login setting." if s.intends(cap)
                              else "Tries to change a password or login setting you never asked about."))
 
+        f += self._guard_tamper(a, cap, s, blob, file_paths)
+
+        if not s.task and cap in HIGH_IMPACT and cap != Capability.CREDENTIAL:
+            # No trusted task means nothing to compare against: fail closed on anything that leaves a mark.
+            f.append(Finding(rule="intent.no_task", severity=ASK_AT, category="scope",
+                             message=f"No task from you was recorded for this session, so Tripwire can't tell "
+                                     f"whether you wanted it to {_verb(cap)}."))
+
         if cap in (Capability.SEND, Capability.MONEY, Capability.DELETE) and s.task and not s.intends(cap):
             sev = {Capability.MONEY: HIGH, Capability.DELETE: MEDIUM + 10, Capability.SEND: MEDIUM}[cap]
             f.append(Finding(rule=f"intent.unrequested_{cap.value}", severity=sev, category="scope",
@@ -413,6 +477,29 @@ class Engine:
                              message=f"Tripwire doesn't know what '{a.tool}' does, so it needs your OK."))
         return f
 
+    def _guard_tamper(self, a: Action, cap: Capability, s: Session, blob: str, file_paths: list[str]) -> list[Finding]:
+        """Anything aimed at Tripwire itself: its API on the daemon's port, or its files in ~/.tripwire."""
+        out: list[Finding] = []
+        if cap in (Capability.EXEC, Capability.FETCH, Capability.SEND, Capability.AGENT, Capability.UNKNOWN,
+                   Capability.MONEY, Capability.CREDENTIAL):
+            text = canon(blob[:MAX_ARGS_CHARS])
+            m = self._port_re.search(text)
+            if not m:
+                api = DAEMON_API.search(text)
+                if api and re.search(LOCAL_ADDR, text, re.I):
+                    m = api
+            if m:
+                out.append(Finding(rule="guard.tamper_api", severity=CRITICAL, category="scope", evidence=m.group(0)[:120],
+                                   message="Tries to talk to Tripwire's own control panel, the guard watching this agent."))
+        home = os.path.realpath(str(_guard_home()))
+        for p in file_paths if cap != Capability.EXEC else []:
+            full = os.path.realpath(paths.expand(p, s.cwd))
+            if full == home or full.startswith(home + os.sep) or GUARD_HOME.search(p):
+                out.append(Finding(rule="guard.tamper_files", severity=CRITICAL, category="scope", evidence=p[:160],
+                                   message="Touches Tripwire's own files (its key, token or audit log), which agents may not do."))
+                break
+        return out
+
     def _recipients(self, args: dict, cap: Capability, s: Session, injected: bool) -> list[Finding]:
         """Who the message goes to. You named the people; anyone else needs a reason."""
         # Payments already always need a human (impact.money), so this is about messages.
@@ -422,6 +509,7 @@ class Engine:
         if "iban" in found:  # long digit runs inside an IBAN are not phone numbers
             found["phone"] = {p for p in found.get("phone", ()) if not any(p in i for i in found["iban"])}
         out: list[Finding] = []
+        replying = s.asked_to_reply()
         for kind in ("email", "phone"):
             named = s.taint.trusted.get(kind)
             for v in sorted(found.get(kind, ())):
@@ -430,6 +518,10 @@ class Engine:
                 src = s.taint.untrusted.get(v)
                 if src and src.injected:
                     continue  # already reported as an attacker value
+                if replying and v in s.taint.senders and not s.taint.senders[v]:
+                    continue  # you asked to reply, and this person wrote one of the messages
+                if not named and s.intends(cap) and s.taint.listed.get(v) is False:
+                    continue  # you asked to send, and this address is directory data (a contact field, a list), not prose
                 if named and src:
                     out.append(Finding(rule=f"intent.other_{kind}", severity=HIGH + 5, category="injection", evidence=src.snippet,
                                        message=f"You named {sorted(named)[0]}, but this goes to {v}, taken from {src.where}."))
@@ -440,6 +532,32 @@ class Engine:
                     out.append(Finding(rule=f"intent.unknown_{kind}", severity=MEDIUM, category="injection",
                                        message=f"Goes to {v}, which neither you nor anything the agent read mentioned, "
                                                "after hidden instructions were found."))
+                else:
+                    # A new person you never named. Fine to ask; not fine to do silently (a polite email with no
+                    # "ignore previous instructions" can still ask the agent to mail data to a stranger).
+                    where = f", taken from {src.where}" if src else ""
+                    out.append(Finding(rule=f"intent.unnamed_{kind}", severity=MEDIUM, category="scope",
+                                       evidence=src.snippet if src else None,
+                                       message=f"Sends to {v}, someone you never named{where}."))
+        # Chat handles and channels (@mallory-ext, #ops): the same rule, with names instead of addresses.
+        for raw in _keyed(args, RECIPIENT_KEY):
+            for h in _handles(raw):
+                bare = h.lstrip("@#")
+                if s.taint.is_trusted_value(h) or s.taint.is_trusted_value(bare):
+                    continue
+                if s.intends(cap) and False in (s.taint.listed.get(h), s.taint.listed.get(bare)) and \
+                        True not in (s.taint.listed.get(h), s.taint.listed.get(bare)):
+                    continue  # a channel or user from a clean listing (get_channels, a message's sender field)
+                src = s.taint.untrusted.get(h) or s.taint.untrusted.get(bare) or _mentioned(s, h)
+                if src and src.injected:
+                    sev, cat = HIGH + 5, "injection"
+                    msg = f"Messages {h}, a name taken from hidden instructions in {src.where}."
+                else:
+                    sev, cat = MEDIUM, "scope"
+                    msg = f"Messages {h}, someone you never named" + (f", mentioned in {src.where}." if src else ".")
+                out.append(Finding(rule="intent.unnamed_handle", severity=sev, category=cat, message=msg,
+                                   evidence=src.snippet if src else None))
+                break
         return out
 
     # ---- events -------------------------------------------------------------
@@ -454,6 +572,38 @@ class Engine:
 ROUTINE = re.compile(
     r"^\s*(npm|pnpm|yarn|bun)\s+(test|run (test|lint|build|dev|typecheck)|install|ci)\b|^\s*(pytest|tox|make|cargo (test|build|check)|"
     r"go (test|build|vet)|python -m (pytest|unittest)|uv (run pytest|sync)|git (status|diff|log|show)|ls|pwd|tsc|eslint|ruff)\b")
+
+
+HANDLE = re.compile(r"^[@#]?[a-z0-9][\w.\-]{0,79}$", re.I)
+
+
+def _handles(raw: str) -> list[str]:
+    """Chat-style recipients in a recipient field: '@mallory-ext', '#eng', 'general', 'alice'.
+    Emails and phone numbers are handled separately."""
+    out = []
+    for part in re.split(r"[,;\s]+", raw.strip()[:2000])[:50]:
+        p = part.strip().lower()
+        if not p or "@" in p[1:] or re.fullmatch(r"\+?[\d\- ()]{7,}", p) or not HANDLE.match(p):
+            continue
+        out.append(p)
+    return out
+
+
+def _mentioned(s: Session, h: str):
+    """Where an untrusted output mentioned this handle, if anywhere (handles are not indicators)."""
+    needle = h.lstrip("@#")
+    if len(needle) < 3:
+        return None
+    pat = re.compile(rf"(?<![\w-]){re.escape(needle)}(?![\w-])", re.I)
+    for line, src in reversed(s.taint.untrusted_lines[-2000:]):
+        if needle in line and pat.search(line):
+            return src
+    return None
+
+
+def _guard_home():
+    from pathlib import Path
+    return Path(os.environ.get("TRIPWIRE_HOME") or Path.home() / ".tripwire")
 
 
 def _is_routine(cmd: str) -> bool:

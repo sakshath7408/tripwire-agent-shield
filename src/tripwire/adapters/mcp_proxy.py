@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 
+from .. import auth
 from .claude_code import base_url, flatten
 from .pins import Check, PinStore
 
@@ -102,7 +103,7 @@ class Proxy:
 
     async def post(self, path: str, body: dict, timeout: float = 3.0) -> dict:
         assert self.http
-        r = await self.http.post(self.url + path, json=body, timeout=timeout)
+        r = await self.http.post(self.url + path, json=body, timeout=timeout, headers=auth.headers())
         r.raise_for_status()
         return r.json()
 

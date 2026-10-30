@@ -143,7 +143,19 @@ Any exception anywhere in `evaluate()` produces a block verdict with `engine.err
 
 ## Daemon and storage
 
-`server.py`, FastAPI on uvicorn, bound to 127.0.0.1 only. No auth because nothing off the machine can reach it.
+`server.py`, FastAPI on uvicorn, bound to 127.0.0.1 only. The guarded agent runs on the same machine, so the API is
+protected from it too (`auth.py`):
+
+- Every POST/PUT/DELETE needs the per-install token from `~/.tripwire/token` (mode 0600, made on first `serve`), sent as
+  `X-Tripwire-Token`. The hook, MCP proxy, demo and seed script read the file (or `$TRIPWIRE_TOKEN`).
+- The dashboard gets the token as an HttpOnly, SameSite=Strict cookie, set only on a browser page load
+  (`Sec-Fetch-Dest: document`). The cookie only counts on a same-origin request.
+- Any request whose Host is not 127.0.0.1/localhost/[::1] gets 403 (DNS rebinding). A foreign `Origin` gets 403.
+- The engine blocks any agent action aimed at the daemon's port or API (`guard.tamper_api`, port from `serve --port`
+  or `TRIPWIRE_PORT`) or at `~/.tripwire` (`guard.tamper_files`). So the agent can neither call the API nor read the token.
+- A session with no recorded task asks before any high-impact action (`intent.no_task`) and blocks it after hidden
+  instructions. Before, a missing task skipped the intent checks.
+- Honest limit: code running as your user can read your files. For real isolation, run the daemon as its own OS user.
 
 - `POST /v1/evaluate?wait=N` holds an ASK up to N seconds (max 300) for a human answer; timeout resolves to block.
 - `POST /v1/verdicts/{id}/resolve` is what the dashboard buttons call.
@@ -152,6 +164,42 @@ Any exception anywhere in `evaluate()` produces a block verdict with `engine.err
 - Arguments are redacted with `secrets.redact` before they are stored or broadcast, so a leaked key in a blocked call does not end up in the audit log.
 
 The dashboard (`static/`, plain HTML and JS, no build step) shows a live feed per session, an approval queue with Allow and Block, an evidence panel that quotes the untrusted snippet a verdict was based on, and the audit log.
+
+## Autonomy: deciding without asking you
+
+`autonomy.py`. A setting, `GET/PUT /v1/settings {"autonomy": ...}`, saved in `~/.tripwire/settings.json`
+(`serve --autonomy` overrides it for one run; `$TRIPWIRE_AUTONOMY` sets the default for in-process engines).
+The layer runs after scoring. It only ever turns an ASK into ALLOW or BLOCK. It never touches a BLOCK, an explicit
+policy rule, or the hard floor (profile deny, secrets egress, injected targets, risky shell).
+
+- **strict.** Every ASK goes to you, which was the old behaviour.
+- **balanced** (the default). An ASK becomes ALLOW only when all of these hold:
+  - no hidden instructions were seen in the session;
+  - your task plainly asked for this kind of action;
+  - every message recipient was named by you, and outside values came from clean content;
+  - it isn't money, credentials, an unknown tool, or a delete outside the project;
+  - no shell finding is MEDIUM or higher;
+  - every ASK-level finding is one the level may waive (a role's "needs OK", or writing outside the project to a path you named).
+
+  After hidden instructions, an ASK the task never asked for becomes BLOCK. That covers a secret read you never
+  mentioned and a command copied from the poisoned content. Money you did ask for still asks.
+- **autonomous.** Like balanced, plus messages to people you named even when the task has no send verb, and reads of
+  your own non-secret files in your home folder. Money and credentials still ask. Nothing is auto-allowed after hidden
+  instructions.
+
+Every auto decision adds a finding in plain words, for example "Allowed on its own: you asked to message bob@acme.com
+and nothing suspicious was read." The verdict carries `autonomy`, `auto` and `rule_id`.
+
+**Learned rules.** `POST /v1/verdicts/{id}/resolve {"decision", "remember": "session"|"always"}` stores a narrow rule.
+It covers the same tool and capability, and the same normalised target: these recipients, this host, this folder, or this command shape
+(`git push origin *`; flags kept; pipes and `;` match only exactly). "always" rules live in `~/.tripwire/learned.yaml`, which agents cannot write.
+`GET /v1/rules` lists them in plain English and `DELETE /v1/rules/{id}` forgets one. Adds and deletes are `rule` rows in the audit chain.
+
+Tripwire never learns an ALLOW for money, credentials, unknown tools, deletes outside the project, or anything with an
+injection, exfiltration or secrets finding. A learned BLOCK is always fine. Learned rules only apply to ASKs, so they
+lose to the hard floor. A learned ALLOW also never applies after hidden instructions. Strict ignores learned rules.
+
+Measured in `bench/results/autonomy.md` (`bench/autonomy_bench.py`).
 
 ## Audit chain and cross-agent trail
 
@@ -171,6 +219,7 @@ The dashboard (`static/`, plain HTML and JS, no build step) shows a live feed pe
 
 - Talk the engine out of a decision. No component that reads untrusted text makes a decision.
 - Edit the guard through the agent. Writes to its config and the hook settings are blocked by policy.
+- Turn the guard off through its own API. Mutating calls need the token, and agent calls aimed at the daemon or `~/.tripwire` are blocked.
 - Wait for the guard to go down. Down means deny.
 - Swap a tool's description after approval. The pin changes, the tool is hidden.
 - Hide a payload in base64, hex, `$IFS`, homoglyphs or `bash -c`. The shell analyzer decodes and re-analyzes.

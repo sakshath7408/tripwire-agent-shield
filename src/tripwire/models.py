@@ -75,6 +75,9 @@ class Verdict(BaseModel):
     elapsed_ms: float = 0.0
     resolved_by: str | None = None  # "human" when a person approved/denied an ASK
     trace: str | None = None  # root agent of the agent tree this action belongs to (set by the daemon)
+    autonomy: str | None = None  # autonomy level in force when this was decided: strict | balanced | autonomous
+    auto: bool = False  # True when the autonomy layer or a learned rule decided it instead of asking you
+    rule_id: str | None = None  # the learned rule that decided it, if any
 
 
 class Observation(BaseModel):

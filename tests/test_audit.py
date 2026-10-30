@@ -18,6 +18,10 @@ from tripwire.engine import Engine
 from tripwire.server import create_app
 
 
+def local_client(app):
+    return TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Token": app.state.token})
+
+
 def fill(a: A.Audit, n: int, **kw) -> None:
     for i in range(n):
         a.append("verdict", ref=f"v{i}", id=f"v{i}", session="s", agent=kw.get("agent", "main"), trace="main",
@@ -237,7 +241,7 @@ def test_write_failure_degrades_and_recovers(tmp_path, caplog):
 @pytest.fixture
 def client(tmp_path):
     app = create_app(Engine(), audit_path=tmp_path / "audit.db")
-    with TestClient(app) as c:
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Token": app.state.token}) as c:
         c.audit = app.state.audit
         yield c
 
@@ -356,10 +360,10 @@ def test_sdk_agents_and_nested_spawns(client):
 
 def test_agent_tree_survives_restart(tmp_path):
     path = tmp_path / "audit.db"
-    with TestClient(create_app(Engine(), audit_path=path)) as c:
+    with local_client(create_app(Engine(), audit_path=path)) as c:
         c.post("/v1/evaluate", json={"session_id": "x", "tool": "Read", "args": {}, "agent": "boss"})
         c.post("/v1/evaluate", json={"session_id": "x", "tool": "Read", "args": {}, "agent": "worker", "parent": "boss"})
-    with TestClient(create_app(Engine(), audit_path=path)) as c:
+    with local_client(create_app(Engine(), audit_path=path)) as c:
         v = c.post("/v1/evaluate", json={"session_id": "x", "tool": "Read", "args": {}, "agent": "worker"}).json()
         assert v["trace"] == "boss"
         assert c.get("/v1/audit/verify").json()["ok"]

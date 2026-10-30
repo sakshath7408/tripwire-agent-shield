@@ -12,7 +12,8 @@ echo "${B}1. Restarting Tripwire on port $PORT${N}"
 scripts/restart_daemon.sh "$PORT" || { echo "${R}Daemon did not start. Run: lsof -i :$PORT  then try a different port: scripts/stage.sh 7778${N}"; exit 1; }
 
 echo "${B}2. Resetting the dashboard and the attacker's inbox${N}"
-curl -fs -X POST "$URL/v1/reset" >/dev/null || { echo "${R}Reset failed${N}"; exit 1; }
+TOKEN="$(cat "${TRIPWIRE_HOME:-$HOME/.tripwire}/token" 2>/dev/null)"
+curl -fs -X POST -H "X-Tripwire-Token: $TOKEN" "$URL/v1/reset" >/dev/null || { echo "${R}Reset failed${N}"; exit 1; }
 printf '[]' > demo/world/attacker_drop.json
 echo "   ${G}clean${N}"
 

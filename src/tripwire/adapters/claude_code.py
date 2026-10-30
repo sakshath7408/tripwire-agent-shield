@@ -37,6 +37,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, TextIO
 
+from .. import auth
+
 DEFAULT_URL = "http://127.0.0.1:7777"
 TIMEOUT = 2.0
 MAX_OBSERVE = 200_000  # characters of tool output sent to the daemon
@@ -58,7 +60,7 @@ def _truthy(name: str) -> bool:
 
 def post(path: str, body: dict, timeout: float = TIMEOUT) -> dict:
     req = urllib.request.Request(base_url() + path, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers={"Content-Type": "application/json", **auth.headers()}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read() or b"{}")

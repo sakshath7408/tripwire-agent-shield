@@ -22,6 +22,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("serve", help="run the local daemon and dashboard")
     s.add_argument("--port", type=int, default=7777)
     s.add_argument("--judge", action="store_true", help="use the local isolated judge model for grey-zone actions")
+    s.add_argument("--autonomy", choices=["strict", "balanced", "autonomous"],
+                   help="how much Tripwire decides on its own (default: your saved setting, else balanced)")
     h = sub.add_parser("hook", help="Claude Code hook entry (Claude Code runs this, not you)")
     h.add_argument("event", choices=["UserPromptSubmit", "PreToolUse", "PostToolUse"])
     for verb in ("install", "uninstall"):
@@ -88,7 +90,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.judge:
             from .judge import make_judge
             judge = make_judge()
-        uvicorn.run(create_app(Engine(judge=judge)), host="127.0.0.1", port=args.port, log_level="warning")
+        engine = Engine(judge=judge, autonomy=args.autonomy)
+        engine.set_guard_port(args.port)  # agent calls aimed at this port are attacks on the guard
+        uvicorn.run(create_app(engine), host="127.0.0.1", port=args.port, log_level="warning")
         return 0
     return 1
 

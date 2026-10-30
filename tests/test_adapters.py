@@ -44,6 +44,7 @@ def daemon(tmp_path_factory):
             break
         time.sleep(0.02)
     url = f"http://127.0.0.1:{port}"
+    os.environ["TRIPWIRE_TEST_TOKEN"] = app.state.token
     yield url
     server.should_exit = True
     t.join(5)
@@ -53,6 +54,7 @@ def daemon(tmp_path_factory):
 def env(daemon, monkeypatch, tmp_path):
     monkeypatch.setenv("TRIPWIRE_URL", daemon)
     monkeypatch.setenv("TRIPWIRE_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("TRIPWIRE_TOKEN", os.environ["TRIPWIRE_TEST_TOKEN"])
     for k in ("TRIPWIRE_FAIL_OPEN", "TRIPWIRE_AUTO_APPROVE", "TRIPWIRE_ASK_WAIT", "TRIPWIRE_TASK", "TRIPWIRE_SESSION"):
         monkeypatch.delenv(k, raising=False)
     return daemon

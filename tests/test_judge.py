@@ -27,7 +27,7 @@ class FakeChat:
 
 def setup(monkeypatch, fake, task="Summarise the files in this repo", output=None):
     monkeypatch.setattr(J, "_chat", fake)
-    e = Engine(judge=J.make_judge(warm=False))
+    e = Engine(judge=J.make_judge(warm=False), autonomy="strict")  # the judge only sees ASKs; strict keeps every ASK for it
     e.set_task(TaskSpec(session_id="s", prompt=task, cwd="/tmp/repo"))
     if output:
         e.observe(Observation(session_id="s", tool="Read", output=output))

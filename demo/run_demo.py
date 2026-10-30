@@ -210,7 +210,8 @@ class RemoteGuard:
 
     def __init__(self, url: str, session: str, wait: float = 0) -> None:
         import httpx
-        self.http = httpx.Client(base_url=url, timeout=max(10.0, wait + 5))
+        from tripwire import auth
+        self.http = httpx.Client(base_url=url, timeout=max(10.0, wait + 5), headers=auth.headers())
         self.session, self.wait = session, wait
 
     def _post(self, path: str, body: dict, **params: Any) -> dict:
