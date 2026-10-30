@@ -37,7 +37,9 @@ INJECTION_MARKERS = re.compile(
     r"(ignore (all |any )?(previous|prior|above) (instructions|prompts?)|disregard (the )?(previous|above)|"
     r"you (must|should) now|new instructions?:|system prompt|<\s*/?\s*(system|instructions?|important)\s*>|"
     r"as an ai (agent|assistant)|do not (tell|inform|mention to) the user|without (asking|telling) the user|"
-    r"assistant,? please|before (doing|completing) (anything|the task)|important!+)",
+    r"assistant,? please|before (doing|completing) (anything|the task)|important!+|<\s*/?\s*information\s*>|"
+    r"this is an important message from|before you can (solve|complete|finish) the task|"
+    r"please do the following first|after you do that,? you can (solve|complete))",
     re.I,
 )
 
@@ -61,6 +63,7 @@ def _norm(s: str) -> str:
 class TaintSource:
     tool: str
     snippet: str
+    injected: bool = False  # the output this came from also carried hidden instructions
 
 
 @dataclass
@@ -80,18 +83,18 @@ class TaintStore:
 
     def add_untrusted(self, tool: str, text: str) -> None:
         text = text[:MAX_OBSERVE]
+        m = INJECTION_MARKERS.search(text)
         for vals in indicators(text).values():
             for v in vals:
-                if v not in self.untrusted:
-                    self.untrusted[v] = TaintSource(tool, _snippet(text, v))
+                if v not in self.untrusted or (m and not self.untrusted[v].injected):
+                    self.untrusted[v] = TaintSource(tool, _snippet(text, v), injected=bool(m))
         for line in text.splitlines():
             n = _norm(line)
             if 8 <= len(n) <= 400:
-                self.untrusted_lines.append((n, TaintSource(tool, line.strip()[:160])))
+                self.untrusted_lines.append((n, TaintSource(tool, line.strip()[:160], injected=bool(m))))
         self.untrusted_lines = self.untrusted_lines[-5000:]
-        m = INJECTION_MARKERS.search(text)
         if m:
-            self.injection_seen.append(TaintSource(tool, _snippet(text, m.group(0))))
+            self.injection_seen.append(TaintSource(tool, _snippet(text, m.group(0)), injected=True))
 
     def is_trusted_value(self, value: str) -> bool:
         v = value.lower()

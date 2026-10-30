@@ -62,8 +62,20 @@ class Engine:
     def observe(self, obs: Observation) -> None:
         s = self.sessions.get(obs.session_id)
         s.taint.add_untrusted(obs.tool, obs.output)
+        # An output arriving from a tool with a pending secret read means the human let it run.
+        for vid, (tool, path) in list(s.pending_secrets.items()):
+            if tool == obs.tool:
+                s.secrets_read.append(path)
+                del s.pending_secrets[vid]
         self._emit("observe", {"session_id": obs.session_id, "tool": obs.tool, "bytes": len(obs.output),
                                "injection": bool(s.taint.injection_seen)})
+
+    def resolve(self, verdict_id: str, decision: Decision) -> None:
+        """A human (or a timeout) answered an ASK."""
+        for s in self.sessions.all():
+            hit = s.pending_secrets.pop(verdict_id, None)
+            if hit and decision == Decision.ALLOW:
+                s.secrets_read.append(hit[1])
 
     def evaluate(self, action: Action) -> Verdict:
         try:
@@ -111,8 +123,12 @@ class Engine:
                 v.judge = {"error": str(e)}
 
         v.elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-        if cap == Capability.READ and any(f.rule == "secrets.read" for f in findings) and v.decision != Decision.BLOCK:
-            s.secrets_read.append(_first(action.args, PATH_KEYS) or action.tool)
+        if any(f.rule == "secrets.read" for f in findings):
+            target = _first(action.args, PATH_KEYS) or action.tool
+            if v.decision == Decision.ALLOW:
+                s.secrets_read.append(target)
+            elif v.decision == Decision.ASK:  # not read yet: a denied read must not taint the rest of the session
+                s.pending_secrets[v.id] = (action.tool, target)
         s.history.append(v)
         self._emit("verdict", v.model_dump(mode="json"))
         return v
@@ -188,18 +204,38 @@ class Engine:
                 f.append(Finding(rule="secrets.egress", severity=CRITICAL, category="exfiltration",
                                  message=f"Sends secret material out ({', '.join(leaked)})."))
 
-        if cap in (Capability.SEND, Capability.MONEY, Capability.FETCH):
+        if cap in (Capability.SEND, Capability.MONEY, Capability.FETCH) or (cap == Capability.WRITE and not path):
             tainted = s.taint.tainted_values(blob)
             if tainted:
-                v, src = tainted[0]
-                sev = {Capability.MONEY: CRITICAL, Capability.SEND: HIGH + 5}.get(cap, MEDIUM if injected else LOW)
-                f.append(Finding(rule=f"taint.{cap.value}_target", severity=sev, category="injection",
-                                 message=f"Uses '{v}', which came from content the agent read ({src.tool}), not from you.",
-                                 evidence=src.snippet))
+                v, src = max(tainted, key=lambda t: t[1].injected)
+                if src.injected:
+                    # The value sat next to hidden instructions: it is attacker-chosen.
+                    sev = CRITICAL if cap == Capability.MONEY else HIGH + 5
+                    msg = f"Uses '{v}', which came from the same content as hidden instructions ({src.tool})."
+                elif cap == Capability.WRITE:
+                    sev = 0
+                elif cap == Capability.FETCH:
+                    sev = MEDIUM if injected else LOW
+                    msg = f"Visits '{v}', which came from content the agent read ({src.tool}), not from you."
+                elif s.intends(cap):
+                    # User asked for this kind of action and the value came from a clean document they pointed at.
+                    sev = MEDIUM if cap == Capability.MONEY else LOW
+                    msg = f"Uses '{v}' from {src.tool}. You asked for this, but check the details."
+                else:
+                    sev = CRITICAL if cap == Capability.MONEY else HIGH + 5
+                    msg = f"Uses '{v}', which came from content the agent read ({src.tool}), not from you."
+                if sev:
+                    f.append(Finding(rule=f"taint.{cap.value}_target", severity=sev, category="injection",
+                                     message=msg, evidence=src.snippet))
             if s.secrets_read and cap in (Capability.SEND, Capability.FETCH):
                 f.append(Finding(rule="chain.secret_then_egress", severity=HIGH + 10 if cap == Capability.SEND else HIGH,
                                  category="exfiltration",
                                  message=f"Sends data out after reading secrets ({', '.join(s.secrets_read[-2:])})."))
+
+        if cap == Capability.CREDENTIAL:
+            f.append(Finding(rule="impact.credential", severity=ASK_AT if s.intends(cap) else HIGH, category="secrets",
+                             message="Changes a password, key or login setting." if s.intends(cap)
+                             else "Tries to change a password or login setting you never asked about."))
 
         if cap in (Capability.SEND, Capability.MONEY, Capability.DELETE) and s.task and not s.intends(cap):
             sev = {Capability.MONEY: HIGH, Capability.DELETE: MEDIUM + 10, Capability.SEND: MEDIUM}[cap]
@@ -238,7 +274,8 @@ def _is_routine(cmd: str) -> bool:
 def _verb(cap: Capability) -> str:
     return {Capability.SEND: "send messages", Capability.MONEY: "move money", Capability.DELETE: "delete anything",
             Capability.EXEC: "run commands", Capability.WRITE: "change files", Capability.READ: "read files",
-            Capability.FETCH: "fetch outside content", Capability.AGENT: "start other agents"}.get(cap, "use this tool")
+            Capability.FETCH: "fetch outside content", Capability.AGENT: "start other agents",
+            Capability.CREDENTIAL: "change passwords or keys"}.get(cap, "use this tool")
 
 
 def _redacted(a: Action) -> Action:
@@ -249,6 +286,7 @@ def _summary(d: Decision, findings: list[Finding], cap: Capability) -> str:
     if not findings:
         return f"Looks like a normal {cap.value} action."
     core = [x for x in findings if x.rule != "taint.injection_context"] or findings
-    top = max(core, key=lambda x: x.severity)
+    # On a tie, the role rule reads clearest ("the inbox assistant may not move money").
+    top = max(core, key=lambda x: (x.severity, x.category == "permission"))
     lead = {Decision.BLOCK: "Blocked", Decision.ASK: "Needs your OK", Decision.ALLOW: "Allowed"}[d]
     return f"{lead}: {top.message}"

@@ -1,16 +1,16 @@
 {
  "agentdojo": {
   "user_tasks": 97,
-  "utility_retained": 86.6,
-  "benign_fully_allowed": 77.3,
+  "utility_retained": 95.9,
+  "benign_fully_allowed": 85.6,
   "benign_calls": 339,
-  "fp_rate_per_call": 8.0,
-  "fp_block_rate_per_call": 4.4,
+  "fp_rate_per_call": 5.0,
+  "fp_block_rate_per_call": 1.2,
   "attack_pairs": 609,
-  "attack_stopped": 83.7,
-  "attack_stopped_by_block": 75.2,
-  "median_latency_ms": 0.033,
-  "p95_latency_ms": 0.081,
+  "attack_stopped": 96.2,
+  "attack_stopped_by_block": 85.9,
+  "median_latency_ms": 0.029,
+  "p95_latency_ms": 0.069,
   "evaluations": 2409
  },
  "shell": {
@@ -39,5 +39,5 @@
    }
   }
  },
- "shell_median_latency_ms": 0.196
+ "shell_median_latency_ms": 0.171
 }

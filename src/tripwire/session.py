@@ -12,8 +12,9 @@ from .taint import TaintStore
 
 # Words in the user's own prompt that make a capability expected rather than suspicious.
 INTENT_WORDS: dict[Capability, re.Pattern[str]] = {
-    Capability.SEND: re.compile(r"\b(send|email|mail|message|reply|post|share|notify|tell|invite|forward|slack)\w*", re.I),
-    Capability.MONEY: re.compile(r"\b(pay|send money|transfer|refund|upi|invoice|bill|rent)\w*", re.I),
+    Capability.SEND: re.compile(r"\b(send|email|mail|message|reply|post|share|notify|tell|invite|forward|slack|add|include|introduce)\w*", re.I),
+    Capability.MONEY: re.compile(r"\b(pay|send money|transfer|refund|upi|invoice|bill|rent|book|reserve|order|purchase|buy)\w*", re.I),
+    Capability.CREDENTIAL: re.compile(r"\b(password|passcode|credential|2fa|mfa|login|recovery)\w*", re.I),
     Capability.DELETE: re.compile(r"\b(delete|remove|clean|clear|wipe|drop|purge|uninstall|rm)\w*", re.I),
     Capability.FETCH: re.compile(r"\b(web|url|http|download|fetch|browse|search online|look up|docs)\w*", re.I),
     Capability.EXEC: re.compile(r"\b(run|test|build|install|deploy|compile|lint|start|execute|script|npm|pip|make)\w*", re.I),
@@ -28,7 +29,9 @@ class Session:
     profile: str | None = None
     taint: TaintStore = field(default_factory=TaintStore)
     history: deque[Verdict] = field(default_factory=lambda: deque(maxlen=200))
-    secrets_read: list[str] = field(default_factory=list)  # sensitive paths read this session
+    secrets_read: list[str] = field(default_factory=list)  # sensitive paths actually read this session
+    # secret reads awaiting a human answer: verdict id -> (tool, path). Only count once approved or observed.
+    pending_secrets: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     def set_task(self, prompt: str, cwd: str | None = None, profile: str | None = None) -> None:
         if profile:

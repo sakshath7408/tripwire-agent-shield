@@ -90,6 +90,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
                 v.resolved_by = "human"
             except asyncio.TimeoutError:
                 v.decision, v.resolved_by = Decision.BLOCK, "timeout"
+                engine.resolve(v.id, Decision.BLOCK)
                 broadcast("resolved", {"id": v.id, "decision": "block", "by": "timeout"})
             finally:
                 pending.pop(v.id, None)
@@ -99,6 +100,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
 
     @app.post("/v1/verdicts/{vid}/resolve")
     def resolve(vid: str, body: Resolve) -> dict:
+        engine.resolve(vid, body.decision)
         for v in recent:
             if v.id == vid:
                 v.decision, v.resolved_by = body.decision, "human"

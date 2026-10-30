@@ -50,12 +50,28 @@ def normalise(tool: str) -> str:
     return name.lower().replace("-", "_")
 
 
+READ_PREFIX = re.compile(r"^(get|list|search|read|check|find|fetch|count|lookup)_")
+OUTSIDE_DATA = re.compile(r"(inbox|email|mail|message|channel|web|url|page|feed|post|review|comment)")
+VERB_RULES: list[tuple[re.Pattern[str], Capability]] = [
+    (re.compile(r"(password|passwd|credential|2fa|mfa|api_key|access_key|recovery|security_question)"), Capability.CREDENTIAL),
+    (re.compile(r"^(reserve|book|purchase|buy|order|checkout)_"), Capability.MONEY),
+    (re.compile(r"^cancel_"), Capability.DELETE),
+    (re.compile(r"(invite|^add_\w*(participant|user|member|guest|collaborator)s?)"), Capability.SEND),
+]
+
+
 def classify(tool: str, overrides: dict[str, str] | None = None) -> Capability:
     if overrides and tool in overrides:
         return Capability(overrides[tool])
     name = normalise(tool)
     if name in EXACT:
         return EXACT[name]
+    for pattern, cap in VERB_RULES:
+        if pattern.search(name):
+            return cap
+    # Getters never change anything. What they return is outside data when it comes from mail, chat or the web.
+    if READ_PREFIX.match(name):
+        return Capability.FETCH if OUTSIDE_DATA.search(name) else Capability.READ
     for pattern, cap in PATTERNS:
         if pattern.search(name):
             return cap

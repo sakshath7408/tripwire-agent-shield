@@ -27,6 +27,7 @@ class Capability(str, Enum):
     MONEY = "money"  # moves money
     DELETE = "delete"  # destroys data
     AGENT = "agent"  # spawns another agent
+    CREDENTIAL = "credential"  # changes passwords, keys, 2FA, recovery settings
     UNKNOWN = "unknown"
 
 

@@ -99,9 +99,3 @@ The deciding logic never reads the attacker's text as instructions, so it cannot
 | Typing y/n feels slow | Use `--approve auto` (a simulated human approves only what was asked for) |
 | Anything else breaks | `uv run python demo/run_demo.py --scenario all --offline --delay 0 --approve auto` prints both acts and a summary for all four scenarios in a few seconds |
 | No time for live run | `uv run pytest -q tests/test_bench.py`: the tests assert the attack succeeds without Tripwire and fails with it |
-
-## Do not show on stage (known issue)
-
-`--scenario injected-web`: the attack is blocked, but the user's own summary email is also blocked
-(a secret read you denied is still counted as read). Tracked as an engine bug. Show it only after it is fixed
-and `test_injected_web_task_still_completes` passes.

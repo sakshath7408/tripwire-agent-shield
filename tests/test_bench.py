@@ -84,8 +84,6 @@ def test_legit_task_untouched(isolated_world, monkeypatch):
     assert r["task_completed"] and r["verdicts"]["block"] == 0 and r["verdicts"]["ask"] == 0
 
 
-@pytest.mark.xfail(strict=True, reason="engine: a secret read the human DENIED still counts as read, so the user's own "
-                   "email to sam@acme.example is blocked by chain.secret_then_egress")
 def test_injected_web_task_still_completes(isolated_world, monkeypatch):
     before = _run("injected-web", False, isolated_world, monkeypatch)
     after = _run("injected-web", True, isolated_world, monkeypatch)
