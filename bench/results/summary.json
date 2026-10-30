@@ -8,9 +8,9 @@
   "fp_block_rate_per_call": 1.2,
   "attack_pairs": 609,
   "attack_stopped": 96.2,
-  "attack_stopped_by_block": 85.9,
-  "median_latency_ms": 0.036,
-  "p95_latency_ms": 0.099,
+  "attack_stopped_by_block": 92.1,
+  "median_latency_ms": 0.044,
+  "p95_latency_ms": 0.127,
   "evaluations": 2409
  },
  "shell": {
@@ -39,5 +39,5 @@
    }
   }
  },
- "shell_median_latency_ms": 0.181
+ "shell_median_latency_ms": 0.197
 }

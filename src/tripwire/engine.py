@@ -32,6 +32,7 @@ PATH_KEYS = ("file_path", "path", "notebook_path", "filename", "file", "target",
 CMD_KEYS = ("command", "cmd", "script", "code")
 ARGV_KEYS = ("argv", "args", "arguments", "command", "cmd")
 SINKS = {Capability.SEND, Capability.MONEY, Capability.EXEC, Capability.DELETE, Capability.WRITE, Capability.AGENT}
+HIGH_IMPACT = {Capability.SEND, Capability.MONEY, Capability.DELETE, Capability.CREDENTIAL, Capability.AGENT}
 MAX_ARGS_CHARS = 200_000  # beyond this an action is too big to check fully, so a human decides
 MAX_NEST = 32
 # Any argument key that names a file or folder, e.g. "uri", "glob", "include", "paths", "src".
@@ -188,6 +189,14 @@ class Engine:
         if cap == Capability.MONEY and not any(f.severity >= ASK_AT for f in findings):
             findings.append(Finding(rule="impact.money", severity=ASK_AT, category="scope",
                                     message="Moving money always needs a human to confirm."))
+        # Once hidden instructions have shown up, a high-impact action the user never asked for is
+        # almost certainly the attacker's, so don't hand the human a coin-flip prompt: stop it.
+        if (s.taint.injection_seen and cap in HIGH_IMPACT and not s.intends(cap)
+                and any(ASK_AT <= f.severity < BLOCK_AT for f in findings)):
+            src = s.taint.injection_seen[-1]
+            findings.append(Finding(rule="chain.injected_unrequested", severity=BLOCK_AT, category="injection",
+                                    message=f"Hidden instructions were found in {src.where}, and you never asked to {_verb(cap)}.",
+                                    evidence=src.snippet))
 
         risk = max((f.severity for f in findings), default=0)
         risk = min(100, risk + 5 * max(0, sum(f.severity >= HIGH for f in findings) - 1))

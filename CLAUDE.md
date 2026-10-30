@@ -52,3 +52,4 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - Files the agent writes can run later (`make test`, `npm test`, CI), so Write/Edit content of scripts, Makefiles, package.json scripts and source files is checked like a command at write time.
 - Never `git stash` here while other agents are working: it yanks their uncommitted files out from under them.
 - Restart the daemon with `scripts/restart_daemon.sh`, never `pkill` then start. The health check answered from the old process while it was shutting down, the new one failed to bind the port, and the demo then failed closed on every step.
+- A plain rule beat the 3B judge model: after hidden instructions are seen, an ASK on a high-impact action the user never asked for becomes BLOCK (`chain.injected_unrequested`). AgentDojo hard blocks 85.9% -> 92.1%, benign unchanged. The judge added no stops and wrongly blocked 7 real tasks, so it stays opt-in (`serve --judge`).
