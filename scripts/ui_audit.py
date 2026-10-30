@@ -10,8 +10,9 @@ For every visible element with text it flags:
 Intentional ellipsis (text-overflow: ellipsis plus a title) and scroll areas are ignored, and any
 element with data-audit-ok is skipped.
 
-Usage (dashboard states need a running daemon fed by demo/run_demo.py):
-  uv run python scripts/ui_audit.py --base http://127.0.0.1:7797 --out /tmp/ui-audit
+Usage (dashboard states need a running daemon fed by demo/run_demo.py, and TRIPWIRE_HOME set to its home so
+the browser can pair):
+  TRIPWIRE_HOME=<home> uv run python scripts/ui_audit.py --base http://127.0.0.1:7797 --out /tmp/ui-audit
   uv run python scripts/ui_audit.py --pitch docs/pitch/index.html --out /tmp/ui-audit
   uv run python scripts/ui_audit.py --web http://127.0.0.1:7798 --out /tmp/ui-audit
 Exit code 1 when anything is flagged. Screenshots of failing states land in --out.
@@ -169,9 +170,23 @@ class Audit:
 WIDTHS = [(390, 844), (768, 1024), (1024, 768), (1280, 720), (1440, 900), (1920, 1080)]
 
 
+def pair(c, base: str) -> None:
+    """Give the browser the dashboard cookie (derived from TRIPWIRE_HOME's token), as `tripwire open` would.
+    Without it every dashboard state is the "not connected" page and the audit checks nothing real."""
+    from tripwire import auth
+
+    tok = auth.read_token()
+    if not tok:
+        print("  warning: no token; set TRIPWIRE_HOME to the daemon's home or the dashboard shows 'Not connected'")
+        return
+    host = base.split("//", 1)[1].split(":")[0].split("/")[0]
+    c.add_cookies([{"name": auth.COOKIE, "value": auth.dash_key(tok), "domain": host, "path": "/"}])
+
+
 def dashboard(a: Audit, browser, base: str, widths=WIDTHS, themes=("light", "dark"), full: bool = True) -> None:
     def ctx(w, h, seen_guide=True):
         c = browser.new_context(viewport={"width": w, "height": h})
+        pair(c, base)
         if seen_guide:
             c.add_init_script("localStorage.setItem('tw-guide-seen','1')")
         return c
