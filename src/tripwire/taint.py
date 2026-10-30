@@ -53,13 +53,23 @@ INJECTION_MARKERS = re.compile(
 )
 
 # "From: alice@x.com" / "sender: alice@x.com": who wrote a message the agent read. Replying to them is normal.
-SENDER_LINE = re.compile(r"^[ \t]{0,8}[-*\"']?[ \t]{0,4}(?:from|sender|reply-to|sender_email|from_email)[\"']?[ \t]{0,4}[:=][ \t]{0,4}([^\n]{1,300})$",
+# An inbox listing may number its messages ("[3] From: ...", "3. From: ..."). Reply-To is kept apart: it is where a
+# reply would go, chosen by whoever wrote the email, so it never inherits the sender's trust (a classic phish).
+SENDER_LINE = re.compile(r"^[ \t]{0,8}(?:\[[\w-]{1,12}\][ \t]{0,4}|\d{1,6}[.)][ \t]{1,4})?[-*\"']?[ \t]{0,4}"
+                         r"(from|sender|reply-to|reply_to|replyto|sender_email|from_email)[\"']?[ \t]{0,4}[:=][ \t]{0,4}([^\n]{1,300})$",
                          re.I | re.M)
+MAX_MESSAGES = 500  # messages remembered per session (newest kept)
+# Mail-system words that are not a person's name: "reply to the support email" must not pick support@ on its own.
+GENERIC_NAMES = frozenset("""info team support admin noreply reply hello contact help helpdesk mail email news newsletter
+notifications notification notify alerts alert service services office sales billing security it no do not the and you me
+my all us bot bots system mailer daemon postmaster root user users account accounts updates update""".split())
 # A value that sits alone on its line, as a list item or a field value ("- general", "sender: bob", "recipients:
 # - alice@x.com"): directory data such as a channel list, a contact card or a message header, not a sentence.
 # Instructions hide in sentences, so a recipient seen only in prose still needs your OK.
 LISTED_LINE = re.compile(r"^[ \t]{0,40}(?:[-*][ \t]{0,4})?(?:[\"']?[\w .-]{1,40}[\"']?[ \t]{0,4}:[ \t]{0,4})?[\"']?"
                          r"([@#]?[\w.+-]{1,100}(?:@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8})?)[\"']?,?[ \t]{0,8}$")
+# "reply to the latest email", "answer this message": the email meant is the newest one read.
+LATEST_MSG = re.compile(r"\b(?:latest|last|most recent|newest|this|that)\s+(?:e-?mail|message|mail)\b", re.I)
 INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u00ad]")
 # A host written as one number (http://3232235777/) or in hex/octal parts is still an IP address.
 NUMERIC_HOST = re.compile(r"(?<=://)((?:0x[0-9a-f]{1,8}|\d{1,10})(?:\.(?:0x[0-9a-f]{1,8}|\d{1,10})){0,3})(?=[:/?#]|$)", re.I | re.M)
@@ -205,6 +215,13 @@ class TaintStore:
     listed: dict[str, bool] = field(default_factory=dict)
     # values you named only after hidden instructions were seen: not trusted, but not "never mentioned" either
     unverified: set[str] = field(default_factory=set)
+    # one row per message read (sender, its name words, whether that message itself had hidden instructions, which
+    # output it came from); used to find "the email from Sam" when you ask to reply to Sam
+    messages: list[list] = field(default_factory=list)
+    # Reply-To addresses seen on messages: where the writer asked replies to go, never trusted as the sender
+    reply_to: dict[str, bool] = field(default_factory=dict)
+    # addresses mentioned inside a message that had hidden instructions (not as its sender)
+    in_orders: set[str] = field(default_factory=set)
 
     def add_trusted(self, text: str, exclude_injected: bool = False) -> None:
         """exclude_injected: values that came from content with hidden instructions stay untrusted (a prompt sent
@@ -242,12 +259,65 @@ class TaintStore:
             if 8 <= len(n) <= 400:
                 self.untrusted_lines.append((n, TaintSource(tool, line.strip()[:160], injected=bool(m), label=label, seq=seq)))
         self.untrusted_lines = self.untrusted_lines[-5000:]
-        for sm in SENDER_LINE.finditer(text[:MAX_OBSERVE]):
+        heads = []
+        for sm in SENDER_LINE.finditer(text):
+            reply_to = sm.group(1).lower().replace("_", "-") in ("reply-to", "replyto")
             for kind in ("email", "phone"):
-                for v in indicators(sm.group(1)).get(kind, ()):
-                    self.senders[v] = self.senders.get(v, False) or bool(m)
+                for v in indicators(sm.group(2)).get(kind, ()):
+                    if reply_to:
+                        self.reply_to[v] = self.reply_to.get(v, False) or bool(m)
+                    else:
+                        self.senders[v] = self.senders.get(v, False) or bool(m)
+            if not reply_to:
+                heads.append(sm)
+        if heads:
+            self._add_messages(text, heads, seq, bool(m))
         if m:
             self.injection_seen.append(TaintSource(tool, _snippet(text, m.group(0)), injected=True, label=label))
+
+    def _add_messages(self, text: str, heads: list, seq: int, any_orders: bool) -> None:
+        """Split one output into messages at each From/sender line and judge each message on its own: an inbox with
+        one attacker email does not make Sam's lunch email an attacker's. Text before the first sender line belongs
+        to the first message."""
+        heads = heads[:MAX_MESSAGES]
+        for i, sm in enumerate(heads):
+            start = 0 if i == 0 else sm.start()
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+            seg = text[start:end]
+            orders = bool(any_orders and (INJECTION_MARKERS.search(seg) or INJECTION_MARKERS.search(canon(seg))
+                                          or _hidden_orders(seg)))
+            line = canon(sm.group(2))
+            addrs = sorted(indicators(line).get("email", ()))
+            if orders:
+                self.in_orders |= {v for v in indicators(seg).get("email", ()) if v not in addrs}
+            for a in addrs:
+                local = a.split("@")[0]
+                words = re.findall(r"[a-z]{2,30}", EMAIL.sub(" ", line).lower()) + re.findall(r"[a-z]{2,30}", local)
+                self.messages.append([a, sorted(set(words)), orders, seq])
+        self.messages = self.messages[-MAX_MESSAGES:]
+
+    def reply_targets(self, task: str) -> dict[str, bool]:
+        """The people you asked to reply to: the sender of the email you pointed at, by name ("reply to Sam",
+        "answer Priya's email") or as "the latest email". Address -> True if that very email had hidden
+        instructions. A name that fits two different addresses picks nobody (one could be a forged display name)."""
+        if not self.messages or not task:
+            return {}
+        words = {w.lower() for w in re.findall(r"[A-Za-z]{3,30}", task)} - GENERIC_NAMES
+        by_name: dict[str, set[str]] = {}
+        for a, names, _, _ in self.messages:
+            for n in names:
+                if n in words and n not in GENERIC_NAMES:
+                    by_name.setdefault(n, set()).add(a)
+        picked = {next(iter(v)) for v in by_name.values() if len(v) == 1}
+        if LATEST_MSG.search(task):
+            last = self.messages[-1][3]
+            first = next(r for r in self.messages if r[3] == last)
+            picked.add(first[0])
+        out: dict[str, bool] = {}
+        for a in sorted(picked):
+            # "taken from hidden instructions" anywhere else also counts against it
+            out[a] = any(r[2] for r in self.messages if r[0] == a) or a in self.in_orders
+        return out
 
     def is_trusted_value(self, value: str) -> bool:
         """Did the user name exactly this value? Whole values only: naming alice@corp.com does not vouch for

@@ -468,7 +468,11 @@ class Engine:
             # Judge every value that came from content, not just one: which value counts first must never depend
             # on set order (review 4: the same call was ASK or BLOCK depending on PYTHONHASHSEED).
             best: tuple[int, str, str, object] | None = None
+            # The person you asked to reply to is your pick, not the content's: judged in _recipients instead.
+            targets = s.reply_targets() if cap == Capability.SEND else {}
             for v, src in s.taint.tainted_values(blob):
+                if v in targets:
+                    continue
                 sev, msg = _taint_target(cap, _as_written(v, blob), src, s, args, injected)
                 # Ties: the longer value is the more specific one (an IBAN beats the digit run inside it).
                 if sev and (best is None or (sev, len(v)) > (best[0], len(best[1]))):
@@ -718,20 +722,35 @@ class Engine:
         out: list[Finding] = []
         unnamed: list[tuple[str, object]] = []
         replying = s.asked_to_reply()
+        targets = s.reply_targets()
         for kind in ("email", "phone"):
             named = s.taint.trusted.get(kind)
             for v in sorted(found.get(kind, ())):
                 if s.taint.is_trusted_value(v):
                     continue
-                twin = _lookalike(v, named or set()) if kind == "email" else None
+                if v in targets:
+                    if targets[v]:
+                        out.append(Finding(rule="intent.reply_target_injected", severity=MEDIUM, category="injection",
+                                           message=f"Replies to {v}, as you asked, but that email had hidden "
+                                                   "instructions in it, so check what the reply says."))
+                    continue  # you asked to reply to this person, and this is the address their email came from
+                twin = _lookalike(v, (named or set()) | set(targets)) if kind == "email" else None
                 if twin:
+                    who = "you asked to reply to" if twin in targets else "that you named"
                     out.append(Finding(rule="intent.lookalike_email", severity=HIGH, category="injection",
-                                       message=f"Sends to {v}, which looks like {twin} that you named but is a different "
+                                       message=f"Sends to {v}, which looks like {twin} {who} but is a different "
                                                "address (a classic look-alike trick)."))
                     continue
                 src = s.taint.untrusted.get(v)
                 if src and src.injected:
                     continue  # already reported as an attacker value
+                if v in s.taint.reply_to and v not in s.taint.senders:
+                    # Reply-To is chosen by whoever wrote the email: replying "to Sam" must go to Sam, not to it.
+                    out.append(Finding(rule="intent.reply_to_elsewhere", severity=MEDIUM, category="scope",
+                                       evidence=src.snippet if src else None,
+                                       message=f"Sends to {v}, the Reply-To address on an email, not the person who "
+                                               "wrote it. Phishing emails use this trick."))
+                    continue
                 if replying and v in s.taint.senders and not s.taint.senders[v]:
                     continue  # you asked to reply, and this person wrote one of the messages
                 if not named and s.intends(cap) and s.taint.listed.get(v) is False:
@@ -948,7 +967,8 @@ def _only_named_recipients(args: dict, s: Session) -> bool:
     rec = _keyed(args, RECIPIENT_KEY)
     found = indicators("\n".join(rec)[:20_000])
     people = sorted(found.get("email", set()) | found.get("phone", set()))
-    return bool(people) and all(s.taint.is_trusted_value(p) for p in people)
+    targets = s.reply_targets()
+    return bool(people) and all(s.taint.is_trusted_value(p) or targets.get(p) is False for p in people)
 
 
 def _carries_secret(blob: str, s: Session) -> bool:

@@ -31,6 +31,8 @@ INTENT_WORDS: dict[Capability, re.Pattern[str]] = {
 
 
 REPLY_WORDS = re.compile(r"\b(reply|replies|replying|respond\w*|answer\w*|write back|get back to)\b", re.I)
+# "Answer Priya's email", "get back to the latest message": answering a message is sending one.
+ANSWER_MSG = re.compile(r"\b(?:answer\w*|respond\w*|write back|get back)\b[^.!?\n;]{0,60}?\b(?:e-?mails?|messages?|mail|dms?|texts?)\b", re.I)
 # A weak send verb followed, in the same clause, by someone to send to: "email the notes to bob@x.com",
 # "add Dora to the general channel", "share the doc with Alice", "post it in #eng".
 SEND_WEAK = re.compile(
@@ -88,10 +90,15 @@ class Session:
         if pat.search(self.task):
             return True
         return cap == Capability.SEND and bool(SEND_WEAK.search(self.task) or SEND_TO_NAME.search(self.task)
-                                               or SEND_WRITE_MSG.search(self.task))
+                                               or SEND_WRITE_MSG.search(self.task) or ANSWER_MSG.search(self.task))
 
     def asked_to_reply(self) -> bool:
         return bool(self.task and REPLY_WORDS.search(self.task))
+
+    def reply_targets(self) -> dict[str, bool]:
+        """Senders you asked to reply to, by name or as "the latest email": address -> that email had hidden
+        instructions. Replying to them is your request, not something the content asked for."""
+        return self.taint.reply_targets(self.task) if self.asked_to_reply() else {}
 
     def in_workspace(self, path: str) -> bool:
         if not self.cwd:
@@ -144,7 +151,8 @@ def session_to_dict(s: Session) -> dict:
                   "untrusted": {k: _src(v, sv) for k, v in t.untrusted.items() if _clean(k, sv)},
                   "untrusted_lines": [[n, _src(src, sv)] for n, src in t.untrusted_lines[-1000:] if _clean(n, sv)],
                   "injection_seen": [_src(x, sv) for x in t.injection_seen[-50:]], "seen": t.seen,
-                  "senders": t.senders, "listed": t.listed, "unverified": sorted(t.unverified)[:500]},
+                  "senders": t.senders, "listed": t.listed, "unverified": sorted(t.unverified)[:500],
+                  "messages": t.messages[-500:], "reply_to": t.reply_to, "in_orders": sorted(t.in_orders)[:2000]},
     }
 
 
@@ -156,7 +164,9 @@ def session_from_dict(d: dict) -> Session:
         untrusted_lines=[(n, _unsrc(src)) for n, src in t.get("untrusted_lines") or []],
         injection_seen=[_unsrc(x) for x in t.get("injection_seen") or []], seen=int(t.get("seen") or 0),
         senders=dict(t.get("senders") or {}), listed=dict(t.get("listed") or {}),
-        unverified=set(t.get("unverified") or []))
+        unverified=set(t.get("unverified") or []),
+        messages=[[str(r[0]), [str(x) for x in r[1]], bool(r[2]), int(r[3])] for r in t.get("messages") or []],
+        reply_to=dict(t.get("reply_to") or {}), in_orders=set(t.get("in_orders") or []))
     s = Session(id=d["id"], cwd=d.get("cwd"), task=d.get("task") or "", profile=d.get("profile"), taint=taint,
                 secrets_read=list(d.get("secrets_read") or []),
                 pending_secrets={k: (v[0], v[1]) for k, v in (d.get("pending_secrets") or {}).items()},

@@ -81,9 +81,9 @@ def test_hosted_run_takes_the_human():
     assert floor["score"]["stopped_by_human"] == 0
     asked = [s for s in floor["steps"] if s["tripwire"] == "ask"]
     assert asked and all(s["human"] == "allow" for s in asked)
-    # the careful human lets Sam's real reply go and says why, in words
+    # Sam's real reply goes out: you asked to reply to Sam, so Tripwire allows it without asking anyone
     sam = [s for s in careful["steps"] if s["args"].get("to") == "sam@acme.example"]
-    assert sam and sam[0]["executed"] and "Sam" in sam[0]["human_said"]
+    assert sam and sam[0]["executed"] and sam[0]["tripwire"] == "allow" and sam[0]["human"] is None
     with pytest.raises(ValueError):
         demo_runner.run("legit", True, "oracle")
 

@@ -40,7 +40,7 @@ uv run tripwire uninstall claude          # takes them out again; an untouched s
 uv run tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 1,271 tests (plus 1 expected failure)
+uv run pytest -q                          # 1,283 tests (plus 1 expected failure)
 uv run python bench/run_all.py            # benchmarks, about 20 s, writes bench/results/summary.md
 ```
 
@@ -130,7 +130,7 @@ The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM 
 |---|---|
 | 01 Threat relevance | `demo/THREAT_MODEL.md` names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, `bench/results/` |
-| 03 Technical implementation | `src/tripwire/` (about 10,800 lines of Python), 1,271 tests (plus 1 expected failure), `docs/ARCHITECTURE.md` |
+| 03 Technical implementation | `src/tripwire/` (about 10,800 lines of Python), 1,283 tests (plus 1 expected failure), `docs/ARCHITECTURE.md` |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
 | 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app (Demo tab: `/#demo`) |
 | 06 Safety, privacy, responsible engineering | local only, no network lookups by the guard, args redacted before storage (`secrets.redact`), fail closed. Control: Tripwire keeps no admin key on disk. The token your agent's hooks use can only send a task, tool outputs and actions to check. It can't answer an ASK, change settings, reset, or pair a browser. Only a paired dashboard can, and a browser is paired only through a person: a one-time link printed straight to the terminal running `tripwire serve` (never to a log), or a 6-digit code from `tripwire open` that you type into that terminal or approve in a dashboard you already paired. While a session has seen hidden instructions, nobody can loosen autonomy and no new link is printed. This stops an agent that can read every file in ~/.tripwire and talk to the daemon directly. It does not stop a process running as your OS user that reads your browser's cookies, attaches a debugger to the daemon, or kills it and starts its own copy. For that, `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. Details: [docs/HARDENING.md](docs/HARDENING.md). Plain "Known limits" below |
