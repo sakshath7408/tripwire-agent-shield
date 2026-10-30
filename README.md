@@ -1,5 +1,7 @@
 # Tripwire
 
+**Live demo: https://tripwire-agent-shield.vercel.app** Pick an attack, run it without Tripwire, then with it. The real engine runs on the server against a synthetic world.
+
 A local guard that sits between an AI agent and its tools. Every tool call is checked first, and only your own words count as instructions.
 
 Built from scratch in 24 hours for the PARALLAX hackathon (BMSCE IEEE Computer Society), Track 1 "AgentShield: Secure the Agent, Not Just the Prompt".
