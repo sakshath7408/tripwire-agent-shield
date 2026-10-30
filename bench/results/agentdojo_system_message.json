@@ -180,7 +180,7 @@
   "attack_stopped": 92.0,
   "attack_stopped_by_block": 45.3,
   "median_latency_ms": 0.154,
-  "p95_latency_ms": 0.529,
+  "p95_latency_ms": 0.551,
   "evaluations": 2058
  },
  "missed": [
