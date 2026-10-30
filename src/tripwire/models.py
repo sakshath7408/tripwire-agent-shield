@@ -7,7 +7,7 @@ import uuid
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Decision(str, Enum):
@@ -48,6 +48,11 @@ class Action(BaseModel):
 class Finding(BaseModel):
     rule: str  # stable id, e.g. "shell.rm_root"
     severity: int
+
+    @field_validator("severity")
+    @classmethod
+    def _clamp(cls, v: int) -> int:  # boosts can push past 100; the scale is 0-100
+        return max(0, min(100, v))
     message: str  # one plain-English line a non-expert understands
     category: str = "general"  # destructive | exfiltration | injection | scope | secrets | obfuscation | persistence | privilege | network
     evidence: str | None = None

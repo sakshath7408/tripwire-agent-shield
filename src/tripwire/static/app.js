@@ -173,6 +173,7 @@
   /** Where an evidence snippet came from, read from the finding's own words. */
   function evidenceSource(f) {
     const m = f.message.match(/\(([^()]+)\),? not (?:from|by) you/) || f.message.match(/found in (.+?) earlier/)
+      || f.message.match(/hidden instructions in (.+?)\.$/) || f.message.match(/came from (.+?), not from you/)
       || f.message.match(/hidden instructions \(([^()]+)\)/) || f.message.match(/ from (\S+)\. You asked/);
     return m ? m[1] : "content the agent read";
   }

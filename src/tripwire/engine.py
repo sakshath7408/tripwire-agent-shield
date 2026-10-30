@@ -323,10 +323,11 @@ class Engine:
             tainted = s.taint.tainted_values(blob)
             if tainted:
                 v, src = max(tainted, key=lambda t: t[1].injected)
+                verb = _TARGET_VERB.get(cap, "Uses")
                 if src.injected:
                     # The value sat next to hidden instructions: it is attacker-chosen.
                     sev = CRITICAL if cap == Capability.MONEY else HIGH + 5
-                    msg = f"Uses '{v}', which came from the same content as hidden instructions ({src.where})."
+                    msg = f"{verb} '{v}', taken from hidden instructions in {src.where}."
                 elif cap in (Capability.WRITE, Capability.AGENT):
                     sev = 0
                 elif cap == Capability.FETCH:
@@ -338,7 +339,7 @@ class Engine:
                     msg = f"Uses '{v}' from {src.where}. You asked for this, but check the details."
                 else:
                     sev = CRITICAL if cap == Capability.MONEY else HIGH + 5
-                    msg = f"Uses '{v}', which came from content the agent read ({src.where}), not from you."
+                    msg = f"{verb} '{v}', which came from {src.where}, not from you."
                 if sev:
                     f.append(Finding(rule=f"taint.{cap.value}_target", severity=sev, category="injection",
                                      message=msg, evidence=src.snippet))
@@ -544,6 +545,10 @@ def _effective_cap(cap: Capability, args: dict) -> Capability:
             word = m.group(0).strip(" ;\n").split()[0].lower()
             return Capability.DELETE if word in ("drop", "truncate", "delete") else Capability.WRITE
     return cap
+
+
+_TARGET_VERB = {Capability.SEND: "Sends to", Capability.MONEY: "Pays", Capability.FETCH: "Visits",
+                Capability.WRITE: "Writes", Capability.AGENT: "Hands a sub-agent"}
 
 
 def _summary(d: Decision, findings: list[Finding], cap: Capability) -> str:
