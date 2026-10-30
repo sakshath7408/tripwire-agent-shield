@@ -56,7 +56,7 @@
   const isPending = (v) => v.decision === "ask" && !v.resolved_by;
   const lvl = (n) => (n >= 80 ? "high" : n >= 50 ? "mid" : n > 0 ? "low" : "none");
 
-  const UNPAIRED = "Not connected. Run `tripwire open` in your terminal to connect this browser.";
+  const UNPAIRED = "Not connected. Run \"tripwire open\" in your terminal to connect this browser.";
   /** One-time pairing: `tripwire serve` / `tripwire open` link here with #pair=<code>. The code is spent
       before any other /v1 call and never stays in the URL. */
   async function pairFromHash() {
@@ -65,13 +65,23 @@
     history.replaceState(null, "", location.pathname + location.search);
     try {
       const r = await fetch("/v1/pair", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: decodeURIComponent(m[1]) }) });
-      if (!r.ok) toast(r.status === 404 ? "This Tripwire does not need pairing." : "That pairing link was already used or has expired. Run `tripwire open` for a fresh one.", 6000);
+      if (!r.ok) toast(r.status === 404 ? "This Tripwire does not need pairing." : "That pairing link was already used or has expired. Run \"tripwire open\" in a terminal for a fresh one.", 6000);
     } catch (_) { /* the daemon is down; the usual offline banner covers it */ }
   }
   async function api(path, opts = {}) {
-    const r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts }); // same-origin: the pairing cookie rides along
+    let r;
+    try { r = await fetch(path, { headers: { "content-type": "application/json" }, ...opts }); } // same-origin: the pairing cookie rides along
+    catch (_) { throw new Error("Tripwire is not reachable."); } // not "Failed to fetch" / "Load failed"
     if (r.status === 401) { const e = new Error(UNPAIRED); e.status = 401; throw e; }
-    if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(() => "")}`.trim());
+    if (!r.ok) {
+      // Show the server's own sentence ({"detail": "..."}), never a status code with raw JSON after it.
+      const text = await r.text().catch(() => "");
+      let msg = "";
+      try { const d = JSON.parse(text).detail; msg = typeof d === "string" ? d : ""; } catch (_) { /* not JSON */ }
+      const e = new Error(msg || (r.status >= 500 ? "Tripwire hit an error. Try again." : `The request was refused (${r.status}).`));
+      e.status = r.status;
+      throw e;
+    }
     return r.json();
   }
 
@@ -148,7 +158,9 @@
     if (v.resolved_by === "human") return v.decision === "allow" ? "Approved by you" : "Blocked by you";
     if (v.auto || v.resolved_by === "rule" || v.rule_id) return v.rule_id ? "Learned rule" : "Decided on its own";
     if (v.resolved_by === "timeout") return "No answer in time, so blocked";
-    if (v.resolved_by) return "By " + v.resolved_by;
+    // Answered with the install token: the terminal prompt, a script, never this page. Say so in plain words.
+    if (v.resolved_by === "api-token") return v.decision === "allow" ? "Approved outside this page" : "Blocked outside this page";
+    if (v.resolved_by) return (v.decision === "allow" ? "Approved by " : "Blocked by ") + v.resolved_by;
     if (judgeDecided(v)) return "Local judge agreed";
     return "";
   }
@@ -157,6 +169,8 @@
     const auto = v.auto || v.resolved_by === "rule" || v.rule_id;
     return t ? `<span class="by${v.resolved_by === "human" ? " by-you" : ""}${auto ? " by-auto" : ""}" ${auto ? `title="${v.rule_id ? "Allowed by a rule you taught Tripwire" : "Within your autonomy level, so no question was asked"}"` : ""}>${auto ? icon("spark") : ""}${esc(t)}</span>` : "";
   };
+  /** It was put to a person (here, in a terminal, or the hosted demo's simulated human), whatever they answered. */
+  const wentToHuman = (v) => !!v.resolved_by && v.resolved_by !== "rule" && !v.auto && !v.rule_id;
   const judgeDecided = (v) => v.judge && !v.judge.error && (v.judge.decision === "allow" || v.judge.decision === "block");
 
   /** Short session label: "demo-injected-doc-bcc9" -> name "demo-injected-doc", hash "bcc9". */
@@ -193,27 +207,32 @@
   /** One sentence a stranger can read from across the room. */
   function storyFor(sess, vs) {
     if (!vs.length) return null;
-    const blocked = vs.filter((v) => v.decision === "block");
+    // Counts match the tally above: anything put to a person (answered, or timed out) is not "Tripwire blocked/allowed".
+    const stopped = vs.filter((v) => v.decision === "block");
+    const blocked = stopped.filter((v) => !wentToHuman(v));
     const pending = vs.filter(isPending);
-    const allowed = vs.filter((v) => v.decision === "allow");
+    const allowed = vs.filter((v) => v.decision === "allow" && !wentToHuman(v));
+    const askedBlocked = stopped.length - blocked.length;
     const inj0 = sess && (sess.injections || [])[0];
     const src = (inj0 && (inj0.source || inj0.tool)) || (sess && S.injectSrc.get(sess.id));
     // What the attack asked for: blocked actions, plus pending ones that carry an injection finding. A save the
     // user asked for that merely waits for an OK is not "what the hidden instructions told the agent to do".
     const fromAttack = (v) => (v.findings || []).some((f) => /inject|taint|chain\./.test(f.rule || "") || /inject/i.test(f.category || ""));
-    const asked = blocked.concat(pending.filter(fromAttack));
+    const asked = stopped.concat(pending.filter(fromAttack));
     const tried = [...new Set(asked.slice().reverse().map((v) => CAPDO[v.capability]).filter(Boolean))].slice(0, 3);
     const list = tried.length <= 1 ? tried.join("") : tried.slice(0, -1).join(", ") + " and " + tried[tried.length - 1];
     const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
-    if (!blocked.length && !pending.length) {
+    if (!stopped.length && !pending.length) {
       return { good: true, html: `<b>All clear.</b> ${n(allowed.length, "action", "actions")} so far, every one part of what you asked.` };
     }
     let html = "";
     if (src && asked.length) html += `<b>Hidden instructions in <mark>${esc(src)}</mark></b> told the agent to ${esc(list || "do things you never asked for")}. `;
     else if (src) html += `<b>Hidden instructions were found in <mark>${esc(src)}</mark>.</b> `;
+    else if (!list) { /* only questions, none from an attack: the counts below say it all ("The agent tried to , which...") */ }
     else if (sess && sess.profile) html += `The agent tried to ${esc(list)}, which <b>${esc(sess.profile)}</b> may not do. `;
     else html += `The agent tried to ${esc(list)}, which you never asked for. `;
-    if (blocked.length) html += `<b>Tripwire blocked ${pending.length ? n(blocked.length, "action", "actions") : blocked.length === 1 ? "it" : "all " + blocked.length}.</b> `;
+    if (blocked.length) html += `<b>Tripwire blocked ${pending.length || askedBlocked ? n(blocked.length, "action", "actions") : blocked.length === 1 ? "it" : "all " + blocked.length}.</b> `;
+    if (askedBlocked) html += `<b>${blocked.length ? `${askedBlocked} more` : askedBlocked === 1 ? "It was" : `All ${askedBlocked} were`} blocked after asking you.</b> `;
     if (pending.length) html += `<b>${n(pending.length, "action is", "actions are")} waiting for you.</b> `;
     if (allowed.length) html += `<span class="dim">Your ${n(allowed.length, "task action", "task actions")} went through.</span>`;
     return { good: false, html };
@@ -407,12 +426,21 @@
       const state = hot === "ask" ? "waiting for you" : hot === "block" ? "has blocked actions" : "all clear";
       return `<button type="button" data-sid="${esc(s.id)}" aria-pressed="${s.id === S.session}" title="${esc(s.id)}: ${state}" aria-label="Session ${esc(s.id)}, ${state}"><span class="dot" data-hot="${hot}" aria-hidden="true"></span>${esc(p.name)}${p.hash ? `<span class="sid-hash">${esc(p.hash)}</span>` : ""}</button>`;
     }).join("");
+    revealSession();
+  }
+  /** Keep the chosen session's pill in view. Also after a resize or presenter mode, which change the bar's width. */
+  function revealSession() {
     const on = el.sessions.querySelector('[aria-pressed="true"]');
-    if (on && on.scrollIntoViewIfNeeded) on.scrollIntoViewIfNeeded(false);
-    else if (on) on.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (on) {
+      const bar = el.sessions.getBoundingClientRect(), r = on.getBoundingClientRect(), pad = 24; // pad: the edge fade
+      if (r.right > bar.right - pad) el.sessions.scrollLeft += r.right - bar.right + pad;
+      else if (r.left < bar.left + pad) el.sessions.scrollLeft -= bar.left + pad - r.left;
+    }
     el.sessions.classList.toggle("is-scrolled", el.sessions.scrollLeft > 4);
     requestAnimationFrame(() => el.sessions.classList.toggle("is-scrolled", el.sessions.scrollLeft > 4));
   }
+  let revealT;
+  window.addEventListener("resize", () => { clearTimeout(revealT); revealT = setTimeout(revealSession, 120); });
   el.sessions.addEventListener("scroll", () => el.sessions.classList.toggle("is-scrolled", el.sessions.scrollLeft > 4), { passive: true });
 
   function renderBrief() {
@@ -436,7 +464,7 @@
     // Anything that went to a human counts as "needed your OK", even after you answered it;
     // allowed/blocked count only what Tripwire decided on its own.
     for (const v of vs) {
-      const k = v.resolved_by === "human" || v.resolved_by === "timeout" ? "ask" : v.decision;
+      const k = wentToHuman(v) ? "ask" : v.decision;
       c[k] = (c[k] || 0) + 1; ms += v.elapsed_ms || 0;
     }
     setStat(el.nAllow, c.allow);
@@ -706,7 +734,7 @@
       : "No decisions yet.";
     el.auditCount.textContent = all.length || "";
     el.auditRows.innerHTML = all.map((v) => {
-      const who = v.resolved_by === "human" ? `<span class="who-human">You</span>` : v.resolved_by === "timeout" ? `<span class="who-timeout">Timed out</span>` : v.resolved_by ? esc(v.resolved_by) : isPending(v) ? `<span class="who-wait">Waiting</span>` : judgeDecided(v) ? "Tripwire + judge" : "Tripwire";
+      const who = v.resolved_by === "human" ? `<span class="who-human">You</span>` : v.resolved_by === "timeout" ? `<span class="who-timeout">Timed out</span>` : v.resolved_by === "api-token" ? `<span title="Answered with the install token (a terminal or a script), not on this page">API token</span>` : v.resolved_by ? esc(v.resolved_by.charAt(0).toUpperCase() + v.resolved_by.slice(1)) : isPending(v) ? `<span class="who-wait">Waiting</span>` : judgeDecided(v) ? "Tripwire + judge" : "Tripwire";
       const ag = agentOf(v);
       return `<tr data-id="${v.id}" tabindex="0"><td>${fmtTime(v.ts)}</td><td class="sid" title="${esc(v.action.session_id)}">${esc(sessionParts(v.action.session_id).name)}</td><td class="agent-cell">${ag ? agentChip(v) : `<span class="main-agent">main</span>`}</td><td class="tool">${esc(toolLabel(v.action.tool))}</td>
         <td><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span></td><td>${badge(v.decision)}</td><td><span class="why" title="${esc(cleanSummary(v))}">${esc(cleanSummary(v))}</span></td><td>${who}</td>
@@ -839,7 +867,7 @@
       render();
     } catch (e) {
       btns.forEach((b) => (b.disabled = false));
-      toast(String(e.message).startsWith("404") ? "That action is gone. The log was probably reset." : `Couldn't send your answer: ${e.message}`);
+      toast(e.status === 404 ? "That action is gone. The log was probably reset." : `Couldn't send your answer. ${e.message}`, 5200);
     }
   }
 
@@ -947,6 +975,7 @@
     root.classList.toggle("stage");
     try { localStorage.setItem("tw-stage", root.classList.contains("stage") ? "1" : "0"); } catch (_) { /* private mode */ }
     paintStage();
+    requestAnimationFrame(revealSession);
   });
   paintStage();
 
@@ -985,7 +1014,7 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
       toast(`Exported ${data.length} decisions`);
     } catch (e) {
-      toast(`Couldn't export: ${e.message}`);
+      toast(`Couldn't export. ${e.message}`);
     }
   });
 
@@ -1002,7 +1031,7 @@
     clearTimeout(armT);
     delete el.reset.dataset.armed;
     label.textContent = "Reset";
-    try { await api("/v1/reset", { method: "POST" }); } catch (e) { toast(`Couldn't reset: ${e.message}`); }
+    try { await api("/v1/reset", { method: "POST" }); } catch (e) { toast(`Couldn't reset. ${e.message}`); }
   });
 
   // ---- Simple / Detailed ----------------------------------------------------
@@ -1067,7 +1096,7 @@
     S.settings.autonomy = b.dataset.level;
     paintSettings();
     try { S.settings = await api("/v1/settings", { method: "PUT", body: JSON.stringify({ autonomy: b.dataset.level }) }); }
-    catch (err) { S.settings.autonomy = prev; toast(`Couldn't change the level: ${err.message}`); }
+    catch (err) { S.settings.autonomy = prev; toast(`Couldn't change the level. ${err.message}`, 5200); }
     paintSettings();
   });
   el.rulesList.addEventListener("click", async (e) => {
@@ -1075,17 +1104,21 @@
     if (!b) return;
     b.disabled = true;
     try { await api(`/v1/rules/${encodeURIComponent(b.dataset.rule)}`, { method: "DELETE" }); toast("Forgotten."); }
-    catch (err) { toast(`Couldn't forget it: ${err.message}`); }
+    catch (err) { toast(`Couldn't forget it. ${err.message}`, 5200); }
     loadRules(0);
   });
   function openSettings(open) {
     el.settingsPop.hidden = !open;
     el.settingsBtn.setAttribute("aria-expanded", open);
-    if (open) loadRules(0);
+    if (open) {
+      loadRules(0);
+      const on = el.autonomySeg.querySelector('[aria-checked="true"]') || el.autonomySeg.querySelector("button");
+      if (on) on.focus({ preventScroll: true }); // keyboard users land inside the panel, not behind it
+    }
   }
   el.settingsBtn.addEventListener("click", () => openSettings(el.settingsPop.hidden));
   document.addEventListener("click", (e) => { if (!el.settingsPop.hidden && !e.target.closest("#settings-wrap")) openSettings(false); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !el.settingsPop.hidden) openSettings(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !el.settingsPop.hidden) { openSettings(false); el.settingsBtn.focus({ preventScroll: true }); } });
 
   // ---- first-open guide --------------------------------------------------------
   const TOUR_SEEN = "tw-guide-seen";
@@ -1123,7 +1156,7 @@
         <rect x="48" y="112" width="92" height="30" rx="8" fill="#e0f3ea" stroke="#1f7f5b" stroke-opacity=".4"/><text x="94" y="131" class="tv-btn" fill="#1f7f5b">Allow  A</text>
         <rect x="150" y="112" width="92" height="30" rx="8" fill="#c13a48"/><text x="196" y="131" class="tv-btn" fill="#fff">Block  B</text></svg>` },
     { kicker: "Autonomy", tone: "teal", title: "Pick how much it decides alone.",
-      body: `<ul class="tour-list tour-levels"><li><b>Strict</b><span>asks before anything outside your task.</span></li><li><b>Balanced</b><span>handles routine work in your project, asks when something leaves it.</span></li><li><b>Autonomous</b><span>only asks for sending data out, money and deleting.</span></li></ul><p class="tour-small">Blocks are blocks at every level. Change it under the gear icon.</p>`,
+      body: `<ul class="tour-list tour-levels"><li><b>Strict</b><span>asks before anything outside your task.</span></li><li><b>Balanced</b><span>handles routine work in your project, asks when something leaves it.</span></li><li><b>Autonomous</b><span>only asks for sending data out, money and deleting.</span></li></ul><p class="tour-small">Blocks are blocks at every level. ${window.TW ? "On your machine, change it under the gear icon." : "Change it under the gear icon."}</p>`,
       visual: `<svg viewBox="0 0 320 200" class="tv"><rect x="40" y="88" width="240" height="10" rx="5" class="tv-bar"/><rect x="40" y="88" width="140" height="10" rx="5" fill="url(#tg2)"/><defs><linearGradient id="tg2" x1="0" x2="1"><stop offset="0" stop-color="#62c9c3"/><stop offset="1" stop-color="#6c7cf0"/></linearGradient></defs>
         <circle cx="180" cy="93" r="14" fill="#fff" stroke="#6c7cf0" stroke-width="3"/>
         <text x="40" y="130" class="tv-s">Strict</text><text x="160" y="130" class="tv-s" text-anchor="middle">Balanced</text><text x="280" y="130" class="tv-s" text-anchor="end">Autonomous</text></svg>` },
@@ -1143,11 +1176,20 @@
     tourEl("tour-back").hidden = tour.step === 0;
     tourEl("tour-next").textContent = tour.step === 0 ? "Show me" : tour.step === last ? "Start" : "Next";
     for (const n of el.tour.querySelectorAll(".tour-content, .tour-visual")) { n.classList.remove("is-in"); void n.offsetWidth; n.classList.add("is-in"); }
+    // The dots were just rebuilt, so a focused dot (or the Back button, now hidden on step 1) is gone.
+    // Keep the keyboard inside the guide: back on the current dot, else on the dialog itself.
+    const a = document.activeElement;
+    if (a && a.classList && a.classList.contains("tour-dot")) return; // still attached: nothing to do
+    if (!a || a === document.body || !el.tour.contains(a) || a.offsetParent === null) {
+      (tour.dotFocus ? tourEl("tour-dots").querySelector(".tour-dot.on") : el.tour.querySelector(".tour-dialog")).focus({ preventScroll: true });
+    }
   }
   function openTour() {
-    tour.step = 0; tour.open = true; tour.restore = document.activeElement;
+    if (tour.open) return;
+    tour.step = 0; tour.open = true; tour.restore = document.activeElement; tour.dotFocus = false;
     el.tour.hidden = false;
     document.body.classList.add("tour-open");
+    document.querySelector(".app").inert = true; // nothing behind the guide is reachable by Tab or a screen reader
     paintTour();
     el.tour.querySelector(".tour-dialog").focus({ preventScroll: true });
   }
@@ -1156,6 +1198,7 @@
     tour.open = false;
     el.tour.hidden = true;
     document.body.classList.remove("tour-open");
+    document.querySelector(".app").inert = false;
     try { if (tourEl("tour-again").checked) localStorage.setItem(TOUR_SEEN, "1"); else localStorage.removeItem(TOUR_SEEN); } catch (_) { /* private mode */ }
     if (tour.restore && tour.restore.focus) tour.restore.focus({ preventScroll: true });
   }
@@ -1163,7 +1206,7 @@
   el.tour.addEventListener("click", async (e) => {
     if (e.target === el.tour) { closeTour(); return; }
     const d = e.target.closest("[data-step]");
-    if (d) { goTour(Number(d.dataset.step)); return; }
+    if (d) { tour.dotFocus = true; goTour(Number(d.dataset.step)); tour.dotFocus = false; return; }
     const c = e.target.closest("[data-copy]");
     if (c) {
       let ok = false;
@@ -1175,30 +1218,42 @@
       setTimeout(() => { c.querySelector("span").textContent = "Copy"; }, 1600);
       return;
     }
+    // A double click is two clicks: without this, double-clicking Next skipped a step, or closed the guide from step 4.
+    if (e.detail > 1 && e.target.closest("#tour-next, #tour-back")) return;
     if (e.target.closest("#tour-skip")) closeTour();
     else if (e.target.closest("#tour-back")) goTour(tour.step - 1);
     else if (e.target.closest("#tour-next")) { if (tour.step === STEPS.length - 1) closeTour(); else goTour(tour.step + 1); }
   });
-  el.tour.addEventListener("keydown", (e) => {
+  // Keys are read on the document, not the dialog: a click on a dot used to drop focus to <body>, and from
+  // there the arrows did nothing. Tab cycles by hand because Safari skips buttons on Tab and walked out of the guide.
+  document.addEventListener("keydown", (e) => {
+    if (!tour.open || e.metaKey || e.ctrlKey || e.altKey) return;
+    const handled = ["Escape", "ArrowRight", "ArrowLeft", "Tab"].includes(e.key) || (e.key === "Enter" && !e.target.closest("button, input, a"));
+    if (handled) e.stopPropagation(); // the dashboard's own keys (Escape closes a sheet, arrows move rows) stay quiet
     if (e.key === "Escape") { e.preventDefault(); closeTour(); }
     // On the last step, moving forward finishes the guide (it used to stay on step 5 forever).
     else if (e.key === "ArrowRight" || (e.key === "Enter" && !e.target.closest("button, input, a"))) {
       e.preventDefault();
+      if (e.repeat) return; // a held key would race through every step and close the guide
       if (tour.step === STEPS.length - 1) closeTour(); else goTour(tour.step + 1);
     }
-    else if (e.key === "ArrowLeft") { e.preventDefault(); goTour(tour.step - 1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); if (!e.repeat) goTour(tour.step - 1); }
     else if (e.key === "Tab") {
-      const f = [...el.tour.querySelectorAll("button:not([hidden]), input, [tabindex]:not([tabindex='-1'])")].filter((n) => n.offsetParent !== null);
+      const f = [...el.tour.querySelectorAll("button, input")].filter((n) => !n.hidden && !n.disabled && n.offsetParent !== null);
       if (!f.length) return;
-      const first = f[0], last = f[f.length - 1];
-      if (e.shiftKey && (document.activeElement === first || document.activeElement === el.tour.querySelector(".tour-dialog"))) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      e.preventDefault();
+      const i = f.indexOf(document.activeElement);
+      const next = i < 0 ? (e.shiftKey ? f.length - 1 : 0) : (i + (e.shiftKey ? -1 : 1) + f.length) % f.length;
+      f[next].focus();
     }
-  });
+  }, true);
   el.help.addEventListener("click", openTour);
   // First open: show the guide, unless this is the projector (?stage=1) or it was dismissed before.
   // Not on the projector, not when a deep link asks for a specific view (#demo), and not after "Don't show again".
-  if (!tourSeen() && !root.classList.contains("stage") && !new URLSearchParams(location.search).has("notour") && location.hash !== "#demo") setTimeout(openTour, 400);
+  // The #demo check runs when the timer fires: the hosted page's ?scenario= link only switches to #demo after this file loads.
+  if (!tourSeen() && !root.classList.contains("stage") && !new URLSearchParams(location.search).has("notour")) {
+    setTimeout(() => { if (location.hash !== "#demo" && !tourSeen()) openTour(); }, 400);
+  }
 
   // ---- live feed ------------------------------------------------------------
   function setConn(state) {
@@ -1206,9 +1261,16 @@
     el.conn.querySelector(".conn-text").textContent = { live: "Live", connecting: "Connecting", down: "Offline", unpaired: "Not connected" }[state];
     el.offline.hidden = state !== "down" && state !== "unpaired";
     el.offline.dataset.kind = state === "unpaired" ? "unpaired" : "down";
-    el.offline.querySelector("span").textContent = state === "unpaired"
-      ? "This browser is not paired with your Tripwire. Run `tripwire open` in a terminal; it opens a fresh, paired tab."
+    el.offline.querySelector("span").innerHTML = state === "unpaired"
+      ? "This browser is not paired with your Tripwire yet. Run <code>tripwire open</code> in a terminal; it opens a paired tab."
       : "Agents fail closed while it is down: every tool call is denied. Retrying.";
+    // Unpaired, the page sees nothing, so "Waiting for your agent" would be wrong: say what to do instead.
+    const et = el.empty.querySelector(".empty-title"), ep = et && et.nextElementSibling;
+    if (et && !et.dataset.orig) { et.dataset.orig = et.textContent; ep.dataset.orig = ep.textContent; }
+    if (et) {
+      et.textContent = state === "unpaired" ? "Connect this browser" : et.dataset.orig;
+      ep.textContent = state === "unpaired" ? "Your agents' actions show up here once this browser is paired with Tripwire." : ep.dataset.orig;
+    }
     el.offline.childNodes.forEach((n) => { if (n.nodeType === 3 && n.textContent.trim()) n.textContent = state === "unpaired" ? "Not connected." : "Tripwire is not reachable."; });
   }
 
@@ -1288,11 +1350,15 @@
 
   function start() {
     return pairFromHash().then(() => loadAll()).then(connect).catch((e) => {
-      if (e && e.status === 401) setConn("unpaired"); // no SSE retry loop: pairing needs a new tab from `tripwire open`
+      if (e && e.status === 401) setConn("unpaired"); // no SSE retry loop: pairing needs a link from `tripwire open`
       else { setConn("down"); connect(); }
     });
   }
   // A pairing link pasted into a tab that already shows the page only changes the hash: pair then, too.
+  // Paired in another tab? The cookie is shared, so coming back to this tab is enough to connect it.
+  const retryPair = () => { if (el.conn.dataset.state === "unpaired" && document.visibilityState === "visible") start(); };
+  window.addEventListener("focus", retryPair);
+  document.addEventListener("visibilitychange", retryPair);
   window.addEventListener("hashchange", () => { if (/(?:^#|&)pair=/.test(location.hash)) { if (es) es.close(); start(); } });
   start();
 })();

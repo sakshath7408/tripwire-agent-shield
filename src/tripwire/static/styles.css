@@ -326,6 +326,7 @@ b, strong { font-weight: 600; }
 .conn[data-state="unpaired"] { color: #ffd9a3; font-weight: 600; }
 .conn[data-state="unpaired"] .conn-dot { background: #e8b35a; box-shadow: 0 0 0 .2rem rgba(232, 179, 90, .25); }
 .offline span { color: var(--ink-2); font-weight: 450; }
+.offline code { font-family: var(--mono); font-size: .92em; padding: .05em .35em; border-radius: 5px; background: var(--surface); border: 1px solid var(--line); }
 
 /* audit writer degraded: decisions still run, the trail has a gap */
 .degraded {
