@@ -148,11 +148,12 @@ class Engine:
         leaked = find_secrets(obs.output[:MAX_OBSERVE])
         if leaked:
             s.secrets_read.append(f"{label or obs.tool} ({leaked[0].replace('_', ' ')})")
-        # An output arriving from a tool with a pending secret read means the human let it run.
-        for vid, (tool, path) in list(s.pending_secrets.items()):
-            if tool == obs.tool:
-                s.secrets_read.append(path)
-                del s.pending_secrets[vid]
+        # An output for the call we just judged means the human let that call run. Only the latest call
+        # counts: a later output from the same tool (reading README after a denied .env read) proves nothing.
+        hit = s.pending_secrets.get(s.last_verdict_id or "")
+        if hit and hit[0] == obs.tool:
+            s.secrets_read.append(hit[1])
+            del s.pending_secrets[s.last_verdict_id]
         self._emit("observe", {"session_id": obs.session_id, "tool": obs.tool, "source": label or obs.tool,
                                "bytes": len(obs.output), "injection": bool(s.taint.injection_seen)})
 
@@ -237,6 +238,7 @@ class Engine:
             elif v.decision == Decision.ASK:  # not read yet: a denied read must not taint the rest of the session
                 s.pending_secrets[v.id] = (action.tool, target)
         s.history.append(v)
+        s.last_verdict_id = v.id
         self._emit("verdict", v.model_dump(mode="json"))
         return v
 

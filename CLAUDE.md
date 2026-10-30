@@ -15,6 +15,7 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - Install: `uv sync`
 - Tests: `uv run pytest -q`
 - Daemon + dashboard: `uv run tripwire serve` then open http://127.0.0.1:7777
+- Stage: `scripts/preflight.sh` (green/red checklist), `scripts/stage.sh` (clean daemon + presenter dashboard), `scripts/record_demo.py` (re-record backup video after UI/engine changes)
 - Typecheck/lint: none set up; use `uv run python -m compileall -q src`
 - Hosted live demo: https://tripwire-agent-shield.vercel.app (Vercel Hobby, project tripwire-agent-shield). `api/run.py` runs one act in-process per request (`web/demo_runner.py` reuses run_demo); `web/build.sh` generates the page from `src/tripwire/static/index.html`. Deploy committed HEAD from a clean worktree: `git worktree add --detach <tmp> HEAD && cp -r .vercel <tmp>/ && cd <tmp> && npx --yes vercel deploy --prod --yes`.
 
