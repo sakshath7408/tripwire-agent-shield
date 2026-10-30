@@ -1,68 +1,102 @@
-# Hardening: run the daemon as its own OS user
+# Who can control Tripwire, and how to make it a hard boundary
 
-By default Tripwire runs as you, and so does your agent. Tripwire splits its credentials and blocks every route to
-them that we know of. But a process running as your OS user can, in principle, read any file you can, including
-`~/.tripwire/admin.key`. So the default setup raises the bar. It is not a hard boundary.
+## Default mode: no admin key on disk
 
-For a hard boundary, run the daemon as a separate OS user. Then the agent can't read the admin key, the audit key or
-the audit log, and it can't kill the daemon. It keeps only the hook token, and that token can do three things:
-send a task, send tool outputs, and ask for a verdict.
+Tripwire usually runs as you, and so does your agent. So Tripwire keeps nothing on disk that gives control of it.
 
-## What lives where
+| File in `~/.tripwire/` | What reading it gives the agent |
+|---|---|
+| `token` | Send a task, tool outputs and actions to check. Nothing else: every other endpoint answers 403. |
+| `dashboards.json` | Nothing usable. It holds SHA-256 digests of paired browsers' cookies, not the cookies. |
+| `audit.db`, `audit.key`, `sessions.json`, `settings.json` | History and settings. No credential. |
+| `admin.key` | Gone. Older versions wrote it; the daemon deletes it on start and says so. |
 
-| File | Who reads it | What it allows |
-|---|---|---|
-| `/var/lib/tripwire/admin.key` | the `tripwire` user only | everything: pairing, settings, resets, rules, audit |
-| `/var/lib/tripwire/audit.db`, `audit.key` | the `tripwire` user only | the signed audit log |
-| `~/.tripwire/token` (a copy) | you and your agent | `POST /v1/task`, `/v1/observe`, `/v1/evaluate` only |
+Only a paired dashboard (its HttpOnly cookie) can answer an ASK, change settings, delete rules, reset the view, read
+the feed or approve a new browser. That includes ASKs the MCP proxy holds: the hook token can't answer them, and an
+unanswered one ends as a block.
 
-## Steps (macOS)
+A browser is paired only where a person is:
+
+1. **`tripwire serve` in a terminal** prints a one-time link at startup, and another each time you press Enter there.
+   `scripts/restart_daemon.sh` run from your terminal prints the link straight to that terminal, never to the log.
+   Run without a terminal (an agent, cron), no link is printed anywhere.
+2. **`tripwire open`** shows a 6-digit code. You approve it by typing the digits into the `tripwire serve` terminal,
+   or by clicking OK in a dashboard you already paired, after checking the digits match. The daemon never shows the
+   digits itself, so a request made by your agent can't be approved by anything your agent can reach.
+3. **Hardened mode** (below): `sudo -u _tripwire tripwire open --print`.
+
+While any live session has seen hidden instructions, Tripwire prints no startup link, refuses Enter-for-a-link and
+demo links, and nobody can loosen autonomy (not even the dashboard). Reset the view first; attacks stay remembered.
+
+### What default mode does not stop
+
+A process running as your OS user can still do what you can. Be clear about it:
+
+- **Your browser's cookie store.** Firefox keeps cookies in a plain SQLite file. Chrome encrypts them with a Keychain
+  key (macOS asks before handing it out); Safari's are behind macOS privacy prompts. A same-user process that gets
+  the cookie is the dashboard.
+- **The daemon's memory.** A same-user process can attach a debugger to the daemon (ptrace) unless macOS's
+  protections or Linux's `ptrace_scope` stop it.
+- **Restarting the daemon.** It can stop the daemon and start its own copy in a terminal it controls (a fake
+  terminal from `script` or Python's `pty`), and that copy prints it a link. It can also edit Tripwire's code, its
+  folder, or `~/.claude/settings.json`.
+
+Tripwire's engine blocks the agent's known routes to all of these (reading `~/.tripwire`, listing hidden folders to
+find it, calls to the daemon's port, running or importing Tripwire, switching hooks off, stopping the daemon). That
+raises the bar. It is not an OS boundary. For that, run the daemon as its own user.
+
+## Hardened mode: the daemon as its own OS user
 
 ```sh
-# 1. A user with no login shell and no home folder to speak of
-sudo sysadminctl -addUser _tripwire -fullName "Tripwire daemon" -shell /usr/bin/false -home /var/empty
-sudo mkdir -p /var/lib/tripwire && sudo chown _tripwire /var/lib/tripwire && sudo chmod 700 /var/lib/tripwire
-
-# 2. Install Tripwire somewhere that user can run but you can't change
-sudo mkdir -p /opt/tripwire && sudo chown root /opt/tripwire
-sudo uv venv /opt/tripwire/.venv && sudo uv pip install --python /opt/tripwire/.venv /path/to/agent-shield
-
-# 3. Start the daemon as that user (keep this terminal open, or make it a launchd job)
-sudo -u _tripwire env TRIPWIRE_HOME=/var/lib/tripwire /opt/tripwire/.venv/bin/tripwire serve
-
-# 4. Give your own account a copy of the hook token, and only that
-mkdir -p ~/.tripwire && chmod 700 ~/.tripwire
-sudo cat /var/lib/tripwire/token > ~/.tripwire/token && chmod 600 ~/.tripwire/token
-
-# 5. Install the hooks for your agent (they read ~/.tripwire/token)
-/opt/tripwire/.venv/bin/tripwire install claude --user
-
-# 6. Pair the dashboard. This needs sudo, so the agent can't do it
-sudo -u _tripwire env TRIPWIRE_HOME=/var/lib/tripwire /opt/tripwire/.venv/bin/tripwire open --print
+tripwire harden            # prints every step for this computer (macOS or Linux); runs nothing
+tripwire harden --apply    # runs them with sudo, after you type "harden"; sudo asks for your password
 ```
 
-## Steps (Linux)
+It never runs sudo on its own, and it refuses to run without a real terminal.
 
-Same as above, with these two changes:
+What it does (macOS user `_tripwire`, Linux user `tripwire`):
 
-- Step 1: `sudo useradd --system --home-dir /var/lib/tripwire --shell /usr/sbin/nologin tripwire`.
-- Step 3: run the daemon from a systemd unit with `User=tripwire` and `Environment=TRIPWIRE_HOME=/var/lib/tripwire`.
+1. Stops the daemon you run as yourself.
+2. Creates the user with no login shell and no password (`dscl` on macOS, with an id below 500 so it never shows at
+   login; `useradd --system` on Linux).
+3. Makes Tripwire's folder (`/usr/local/var/tripwire` on macOS, `/var/lib/tripwire` on Linux), owned by that user,
+   mode 0700.
+4. Installs Tripwire into `/opt/tripwire/venv`, owned by root. The daemon must not run code you (or your agent) can
+   edit, and the hooks run from there too.
+5. Writes one fresh hook token twice: the daemon's copy (0600, its user) and yours in `~/.tripwire/token`.
+6. Starts the daemon at boot as that user: a launchd job (`/Library/LaunchDaemons/dev.tripwire.daemon.plist`) or a
+   systemd service, with `serve --hardened`. `--hardened` refuses to start unless the user has no login shell and
+   owns a 0700 folder, so an agent can't switch it on as you.
+7. Points Claude Code's hooks at `/opt/tripwire/venv/bin/tripwire`.
 
-## Lock the hooks too
+Then pair your browser. This needs sudo, so the agent can't:
 
-Your agent can still edit `~/.claude/settings.json`, which is where the hooks live. Tripwire blocks the known ways to
-do that (`tripwire uninstall`, `claude config ... hooks`, moving or deleting `~/.claude`, writing the settings file).
-For a hard guarantee, put the hooks in Claude Code's managed settings file, which only root can change:
+```sh
+sudo -u _tripwire env TRIPWIRE_HOME=/usr/local/var/tripwire /opt/tripwire/venv/bin/tripwire open --print
+```
+
+It reads `console.key` from the daemon's 0700 folder (only that user can) and prints a one-time link. Open it in
+your browser. After that, approve new browsers from the dashboard.
+
+In hardened mode your agent keeps only the hook token. It can't read the audit log, the audit key, the dashboard
+digests or the console key, and it can't stop the daemon or change its code.
+
+Keep sudo asking for your password: an agent can use a sudo that doesn't ask.
+
+### Lock the hooks too
+
+Your agent can still edit `~/.claude/settings.json`, where the hooks live. Tripwire blocks the known ways, but for a
+hard guarantee copy the `hooks` block that `tripwire install claude` wrote into Claude Code's managed settings, which
+only root can change:
 
 - macOS: `/Library/Application Support/ClaudeCode/managed-settings.json`
 - Linux: `/etc/claude-code/managed-settings.json`
 
-Copy the `hooks` block that `tripwire install claude` wrote into that file. Check your Claude Code version's docs for
-the exact path.
+Check your Claude Code version's docs for the exact path.
 
-## What is still true
+### Still true in both modes
 
-- If the daemon stops, the hooks deny every tool call (fail closed). Nothing gets through unchecked.
-- The agent can still send a task for a new session with the hook token. It cannot re-task a session that saw hidden
-  instructions, and it cannot reset sessions, pair a browser or change autonomy.
-- Tool calls that don't go through a hook or the MCP proxy are invisible to Tripwire, as before.
+- If the daemon stops, the hooks deny every tool call (fail closed).
+- In hardened mode the daemon can't read files inside your home folder, so checks that read a script from disk before
+  it runs (`bash x.sh`, `make`) can't see those files. Checks of what the agent writes and runs still work.
+- Tool calls that don't go through a hook or the MCP proxy are invisible to Tripwire.
