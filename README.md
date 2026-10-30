@@ -13,8 +13,8 @@ Built from scratch in 24 hours for the PARALLAX hackathon (BMSCE IEEE Computer S
 ```bash
 git clone https://github.com/sakshath7408/tripwire-agent-shield && cd tripwire-agent-shield
 uv sync                                   # Python 3.12+, installs everything
-uv run tripwire serve                     # daemon; prints a one-time dashboard link
-uv run tripwire open                      # (later) open the dashboard, paired with a fresh one-time code
+uv run tripwire serve                     # daemon; in a terminal it prints a one-time dashboard link
+uv run tripwire open                      # (later) type "pair" to open the dashboard with a fresh one-time code
 ```
 
 Want `tripwire` on your PATH instead of `uv run tripwire`? From the repo folder: `uv tool install .` (or `pip install .` in any Python 3.12+ virtualenv).
@@ -37,7 +37,7 @@ uv run tripwire uninstall claude          # takes them out again; an untouched s
 uv run tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 749 tests
+uv run pytest -q                          # 905 tests (plus 1 expected failure)
 uv run python bench/run_all.py            # benchmarks, about 20 s, writes bench/results/summary.md
 ```
 
@@ -127,10 +127,10 @@ The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM 
 |---|---|
 | 01 Threat relevance | `demo/THREAT_MODEL.md` names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, `bench/results/` |
-| 03 Technical implementation | `src/tripwire/` (about 8,000 lines of Python), 749 tests, `docs/ARCHITECTURE.md` |
+| 03 Technical implementation | `src/tripwire/` (about 9,000 lines of Python), 905 tests (plus 1 expected failure), `docs/ARCHITECTURE.md` |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
 | 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app (Demo tab: `/#demo`) |
-| 06 Safety, privacy, responsible engineering | local only, args redacted before storage (`secrets.redact`), fail closed, every daemon endpoint (reads too) needs the local token or a dashboard paired with a one-time code from `tripwire open` (`auth.py`); agent calls to the daemon's port, to any local port it hides (`$P`, `$((7700+77))`), or to `~/.tripwire` through globs, variables or `find` are blocked; the audit log records the real actor (`dashboard` or `api-token`); and a plain "Known limits" section below |
+| 06 Safety, privacy, responsible engineering | local only, args redacted before storage (`secrets.redact`), fail closed, split credentials (`auth.py`): the agent hook's token can only send tasks, tool outputs and actions to check; everything else needs the admin key or a dashboard paired with a one-time code that `tripwire open` mints only in your own terminal. The engine blocks the agent's known routes to the guard: the daemon's port (also via `lvh.me`-style names, `--resolve`, a Host header, rot13), `~/.tripwire` through globs or variables, importing or running Tripwire's own code, and switching Claude Code's hooks off. The audit log records the credential used (`hook-token`, `admin` or `dashboard`). Hard boundary: [docs/HARDENING.md](docs/HARDENING.md). Plain "Known limits" below |
 | 07 Feasibility and real-world impact | `tripwire install claude` works on a real Claude Code today; `mcp-proxy` works with any MCP server |
 | 08 Presentation and live demo | `demo/SCRIPT.md`, `docs/PRESENTING.md` (preflight, stage, backup video), `docs/pitch/index.html` |
 
@@ -180,7 +180,7 @@ Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in
 ## Known limits
 
 > **Read this before you trust it.**
-> - **Same OS user = defence in depth, not a sandbox.** Tripwire runs as you, and so does your agent. Every daemon endpoint needs a per-install token in `~/.tripwire/token` (mode 0600) or a dashboard cookie earned once with a one-time pairing code; no request header earns it (a 31 Oct review got the token with one faked `sec-fetch-dest` header; that is fixed). The engine blocks agent calls aimed at the daemon's port, at local ports it can't work out, or at `~/.tripwire` (wildcards and variables expanded). If a token holder still gets in, a token reset keeps sessions that saw hidden instructions, a task sent after an injection can't vouch for the injected values, and autonomy changes and learned rules then need the dashboard. But any program running as you, outside the hooks, can still read that token, edit your settings or stop the daemon. For real isolation, run the daemon as a separate OS user so the agent cannot read its token or audit key.
+> - **Same OS user = defence in depth, not a sandbox.** Tripwire runs as you, and so does your agent. It splits its credentials. The hook token (`~/.tripwire/token`, which the hooks need) can only send a task, tool outputs and actions to check. Pairing a browser, settings, resets, rules and the audit need the admin key (`~/.tripwire/admin.key`, which no hook or adapter reads) or the paired dashboard. `tripwire open` mints a pairing code only in a real terminal after you type `pair`, and no link is written to a log. A session that saw hidden instructions can't be re-tasked over the API, and a reset never forgets what it saw. On top of that, the engine blocks the agent's known routes: reading `~/.tripwire`, calling the daemon's port by any name that leads back here, importing or running Tripwire's own code, and turning Claude Code's hooks off. Three reviews each found a new route, and each is now a test (`tests/test_redteam*.py`). But a process running as your OS user can, in principle, read any file you can, including the admin key. For a hard boundary, run the daemon as a separate OS user: [docs/HARDENING.md](docs/HARDENING.md).
 > - **The hijacked agent in the demo is scripted.** Real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged.
 > - **Intent is keyword matching.** If your prompt says "send", "reply" or "pay", that kind of action counts as expected. A send to an address taken from data can still pass if the email carried no hidden-instruction phrasing and the recipient check does not catch it.
 > - **The phrase list is a list.** Without it, AgentDojo drops from 96.2% to 86.0% stopped. A new wording gets the lower number.
@@ -189,7 +189,9 @@ Other limits:
 
 - If the injection only changes what the agent says, with no unusual tool call, Tripwire sees nothing.
 - If you typed the same address the attacker uses, provenance cannot tell them apart.
-- Data copied into an allowed file or sent to an allowed recipient is caught only when it matches a secret pattern, a secret value read this session (also base64 or hex encoded), or a personal-data pattern (SSN, bank numbers, card numbers) going to someone you never named.
+- Data copied into an allowed file or sent to an allowed recipient is caught only when it matches a secret pattern, a secret value read this session (also base64, base32, hex, reversed, or cut into pieces inside one command or file name), or a personal-data pattern (SSN, bank numbers, card numbers) going to someone you never named.
+- Scripts the agent runs (`bash x.sh`, `./x`, `make`, `pytest`'s conftest, `npm test`, `pip install -e .`) are read from disk and judged when they run, and text written through `>`, heredocs, `tee` or `sed -i` is judged like a Write. Code reached only through deeper imports (a test file importing a planted module) is not followed.
+- The MCP poisoned-description check looks for fixed shapes (orders to the AI, "don't tell the user", quiet recipients, key paths, a few languages). A description that dodges all of them is still pinned on first use.
 - Tool calls that do not pass through a hook or the proxy are invisible.
 - A host the attacker already runs code on can stop Tripwire.
 - Shell tricks and secret patterns are finite. With no poisoned context, 5 of 84 shell attacks get an ask, not a block. Every verdict is in `bench/results/shell.json`.

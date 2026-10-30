@@ -239,10 +239,10 @@
   <div class="grid cols-3">
     <div class="card allow"><h3>Local only</h3><p>Binds to 127.0.0.1, so other machines can't reach it. No cloud, no telemetry.</p></div>
     <div class="card allow"><h3>Fail closed</h3><p>Daemon down, hook crash, engine bug: the call is denied by default.</p></div>
-    <div class="card allow"><h3>Paired dashboard</h3><p>One-time code from <span class="mono">tripwire open</span>. Every API call needs the local token; agent calls to the daemon or its files are blocked.</p></div>
+    <div class="card allow"><h3>Split keys</h3><p>The agent's hook token can only ask for verdicts. Pairing, resets and settings need an admin key, or a code typed into <span class="mono">tripwire open</span> in your own terminal.</p></div>
     <div class="card allow"><h3>Redaction</h3><p>Secrets are masked before any verdict is stored or shown.</p></div>
     <div class="card allow"><h3>Synthetic data</h3><p>Fake keys, fake bank, attacker hosts on .invalid.</p></div>
-    <div class="card ask"><h3>Known limits</h3><p>Same OS user: defence in depth, not a sandbox. Demo agent is scripted. Intent is keywords.</p></div>
+    <div class="card ask"><h3>Known limits</h3><p>Same OS user: we block the agent's known routes, not every file read. Hard boundary: run the daemon as its own user. Demo agent is scripted.</p></div>
   </div>
   <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>No component that reads attacker text makes a decision.</span></div>
 </section>
@@ -256,7 +256,7 @@
     <div class="card"><h3>Any MCP agent</h3><p>Wrap any MCP server. Tools pinned and signed. Role profiles.</p></div>
   </div>
   <div class="cmdline"><span class="c">$</span> uv run tripwire install claude<br><span class="c">$</span> uv run tripwire mcp-proxy --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .</div>
-  <p class="lead" style="margin-top:30px">Open source. 717 tests. Built from scratch in 24 hours.</p>
+  <p class="lead" style="margin-top:30px">Open source. 905 tests. Built from scratch in 24 hours.</p>
   <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>github: agent-shield &nbsp;|&nbsp; docs/ARCHITECTURE.md &nbsp;|&nbsp; demo/SCRIPT.md</span></div>
 </section>
 
