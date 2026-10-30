@@ -197,7 +197,7 @@ Numbers: `bench/results/ollama_demo.md`.
 | No time for live run | `uv run pytest -q tests/test_bench.py`: the tests assert the attack succeeds without Tripwire and fails with it |
 | Agent hangs on a yellow card | It is waiting for your click. Click Allow or Block, or press A or B on the dashboard. After 60 s it blocks on its own |
 | Live demo is a mess | Play `docs/demo-video/tripwire-demo.mp4`, recorded from the real code |
-| Laptop dies, internet works | Open https://tripwire-agent-shield.vercel.app on any device: same engine, same scenarios, one act per click |
+| Laptop dies, internet works | Open https://tripwire-agent-shield.vercel.app/#demo on any device (the Demo tab): same engine, same scenarios, one act per click. The pitch deck is only in the repo: `docs/pitch/index.html` |
 | Anything at all before you start | `scripts/stage.sh` again: it restarts and resets everything in about 2 seconds |
 
 ## If the projector is dark mode (or washed out)
