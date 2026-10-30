@@ -119,7 +119,7 @@ The optional judge (`tripwire serve --judge`, `judge.py`, a local Ollama model, 
 
 ## The pipeline, step by step
 
-All in `src/tripwire/engine.py`. One `Action` in, one `Verdict` out, about 0.03 ms median.
+All in `src/tripwire/engine.py`. One `Action` in, one `Verdict` out, in under 1 ms.
 
 1. **Classify** (`classify.py`). Tool name to capability: read, fetch, write, exec, send, money, delete, credential, agent, unknown. Exact names for Claude Code built-ins, then verb rules, then keyword patterns. `mcp__server__tool` names are normalised. Policy YAML can override any tool. Unknown is a medium finding: a human decides.
 2. **Permission profile** (`policy.py`, `default_policy.yaml`). A role is three lists: allow, ask, deny, each of tool globs or `cap:<capability>`. Deny beats ask beats allow. A tool in none of the lists is "outside" the role and blocked. Three roles ship: coding-assistant, inbox-assistant, finance-assistant.

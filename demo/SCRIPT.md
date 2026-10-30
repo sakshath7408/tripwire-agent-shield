@@ -97,7 +97,7 @@ cat bench/results/summary.md
 ```
 
 "We replayed AgentDojo from ETH Zurich: 4 suites, 609 attack runs, no LLM, fully reproducible.
-We stop 96 percent of the attacks. We also wrongly stop about 4 percent of real tasks. We show both."
+We stop 96 percent of the attacks, 92 percent with a hard block. We also wrongly stop about 4 percent of real tasks. We show both."
 Read only the AgentDojo row out loud. Point at the shell rows, don't read them.
 
 ## 4:20 Close (20 s)
@@ -141,6 +141,7 @@ Numbers: `bench/results/ollama_demo.md`.
 | Dashboard looks stale or old | Hard refresh (Cmd+Shift+R) |
 | Agent hangs on a yellow card | It is waiting for your click. Click Allow or Block, or press A or B on the dashboard |
 | Live demo is a mess | Play `docs/demo-video/tripwire-demo.mp4`, recorded from the real code |
+| Laptop dies, internet works | Open https://tripwire-agent-shield.vercel.app on any device: same engine, same scenarios, one act per click |
 | Anything at all before you start | `scripts/stage.sh` again: it restarts and resets everything in about 2 seconds |
 
 ## If the projector is dark mode (or washed out)
