@@ -82,6 +82,7 @@ class Proxy:
         self.check: Check | None = None
         self.lists: dict[str, bool] = {}  # ids of tools/list requests in flight -> is a later page
         self.calls: dict[str, str] = {}  # id -> full tool name for tools/call in flight
+        self.listed = asyncio.Event()  # set once a tools/list answer has been checked
         self.tasks: set[asyncio.Task] = set()
         self.out_lock = threading.Lock()
         self.proc: asyncio.subprocess.Process | None = None
@@ -141,6 +142,12 @@ class Proxy:
         tool = params.get("name")
         if not isinstance(tool, str) or not tool:
             return "This tool call had no tool name."
+        if self.pins and self.check is None and self.lists:
+            # The client pipelined the call behind its own tools/list: wait for that answer instead of refusing.
+            try:
+                await asyncio.wait_for(self.listed.wait(), timeout=15)
+            except asyncio.TimeoutError:
+                pass
         reason = self.pin_block(tool)
         if reason:
             return reason
@@ -223,6 +230,7 @@ class Proxy:
         if k in self.lists:
             later_page = self.lists.pop(k)
             self.to_client(await self.on_tools_list(msg, later_page))
+            self.listed.set()
             return
         if k in self.calls:
             tool = self.calls.pop(k)

@@ -315,6 +315,27 @@ def test_proxy_passes_benign_blocks_injected(env, tmp_path):
     assert names == ["read_file", "read_file", "read_file"]  # send_email never reached the server
 
 
+def test_proxy_waits_for_pipelined_tools_list(env, tmp_path):
+    """QA 31 Oct: a client that sent tools/call right behind tools/list (without waiting) got 'called it before
+    listing tools', because the call was judged before the list answer came back."""
+    log = tmp_path / "calls.log"
+    px = ProxyProc(proxy_env(env, tmp_path / "home", log, TRIPWIRE_TASK="Summarise notes.txt",
+                             TRIPWIRE_SESSION="mcp-pipelined"))
+    try:
+        px.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                  "clientInfo": {"name": "t", "version": "1"}})
+        for msg in ({"jsonrpc": "2.0", "id": 101, "method": "tools/list"},
+                    {"jsonrpc": "2.0", "id": 102, "method": "tools/call",
+                     "params": {"name": "read_file", "arguments": {"path": "notes.txt"}}}):
+            px.p.stdin.write((json.dumps(msg) + "\n").encode())
+        px.p.stdin.flush()
+        got = {m["id"]: m for m in (px.q.get(timeout=15), px.q.get(timeout=15))}
+        text = json.dumps(got[102])
+        assert "before listing tools" not in text, text
+    finally:
+        px.close()
+
+
 def test_proxy_fails_closed_when_daemon_down(tmp_path):
     log = tmp_path / "calls.log"
     px = ProxyProc(proxy_env(f"http://127.0.0.1:{_free_port()}", tmp_path / "home", log))
