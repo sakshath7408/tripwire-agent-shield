@@ -5,7 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Tripwire</title>
   <meta name="description" content="Tripwire watches every tool call your AI agent makes and stops the ones you never asked for.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z' fill='%233a55d0'/%3E%3Cpath d='M7 12h10' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z' fill='%2315181e'/%3E%3Cpath d='M7 12h10' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script>
+    // Theme and presenter mode are decided before paint, so nothing flashes.
+    (function () {
+      var q = new URLSearchParams(location.search), h = document.documentElement;
+      var t = q.get("theme") || localStorage.getItem("tw-theme");
+      if (t !== "dark" && t !== "light") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      h.dataset.theme = t;
+      if (q.get("stage") === "1" || localStorage.getItem("tw-stage") === "1") h.classList.add("stage");
+    })();
+  </script>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -14,11 +24,16 @@
     <symbol id="i-ask" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7.7 7.6a2.4 2.4 0 1 1 3.3 2.2c-.6.3-1 .8-1 1.5v.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="10" cy="14.4" r="1.1" fill="currentColor"/></symbol>
     <symbol id="i-block" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4.4 15.6 11.2-11.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.2 4.2 5.1v5.8c0 4.9 3.3 9.2 7.8 10.9 4.5-1.7 7.8-6 7.8-10.9V5.1L12 2.2z" fill="currentColor"/><path d="M7.6 12.2h8.8" stroke="var(--surface)" stroke-width="2" stroke-linecap="round"/></symbol>
-    <symbol id="i-warn" viewBox="0 0 20 20"><path d="M10 2.6 1.8 16.8h16.4L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 8v4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="10" cy="14.4" r="1.05" fill="currentColor"/></symbol>
+    <symbol id="i-shield-line" viewBox="0 0 24 24"><path d="M12 2.2 4.2 5.1v5.8c0 4.9 3.3 9.2 7.8 10.9 4.5-1.7 7.8-6 7.8-10.9V5.1L12 2.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7.6 12.2h8.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-hidden" viewBox="0 0 20 20"><path d="M4 3.5h12v13H4z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 7h6M7 10h6M7 13h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="m3 17 14-14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="i-user" viewBox="0 0 20 20"><circle cx="10" cy="6.8" r="3.3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3.6 17.2c.8-3.2 3.3-5 6.4-5s5.6 1.8 6.4 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
     <symbol id="i-doc" viewBox="0 0 20 20"><path d="M5 2.5h6.5L15.5 6.5v11H5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11.3 2.6v4h4" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
     <symbol id="i-close" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
     <symbol id="i-reset" viewBox="0 0 20 20"><path d="M4 10a6 6 0 1 0 1.8-4.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M4 3.2v3.6h3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 20 20"><path d="M16.5 12.2A6.8 6.8 0 0 1 7.8 3.5a6.8 6.8 0 1 0 8.7 8.7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-stage" viewBox="0 0 20 20"><rect x="2.5" y="4" width="15" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M7 17h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-judge" viewBox="0 0 20 20"><path d="M4 16.5h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M10 3.5v13M5 8l5-3 5 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11.5 5 8l2 3.5a2 2 0 0 1-4 0zM13 11.5 15 8l2 3.5a2 2 0 0 1-4 0z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
   </svg>
 
   <div class="app">
@@ -32,27 +47,37 @@
         <span class="conn" id="conn" data-state="connecting" role="status" aria-live="polite">
           <span class="conn-dot" aria-hidden="true"></span><span class="conn-text">Connecting</span>
         </span>
-        <button class="btn-quiet" id="reset" type="button" title="Clear every action and session, for a fresh demo run">
+        <button class="btn-quiet btn-icon" id="theme" type="button" aria-label="Switch to dark theme" title="Switch theme">
+          <svg aria-hidden="true"><use href="#i-moon"/></svg>
+        </button>
+        <button class="btn-quiet" id="stage" type="button" aria-pressed="false" title="Bigger type and less chrome, for a projector">
+          <svg aria-hidden="true"><use href="#i-stage"/></svg><span>Presenter</span>
+        </button>
+        <button class="btn-quiet" id="reset" type="button" title="Clear every action and session, for a fresh run">
           <svg aria-hidden="true"><use href="#i-reset"/></svg><span>Reset</span>
         </button>
       </div>
     </header>
 
-    <section class="brief" aria-label="What you asked for">
+    <div class="offline" id="offline" hidden role="alert">
+      <svg aria-hidden="true"><use href="#i-block"/></svg>Tripwire is not reachable.
+      <span>Agents fail closed while it is down: every tool call is denied. Retrying.</span>
+    </div>
+
+    <section class="brief" aria-label="What you asked for and how it went">
       <div class="asked">
-        <div class="asked-label"><svg aria-hidden="true"><use href="#i-user"/></svg>You asked the agent to</div>
-        <p class="asked-text" id="task">Nothing yet. Give your agent a task and it shows up here.</p>
+        <div class="asked-label"><svg aria-hidden="true"><use href="#i-user"/></svg>You asked</div>
+        <p class="asked-text is-empty" id="task">No task yet. When your agent starts working, what you asked it shows up here.</p>
         <div class="asked-meta"><span class="profile" id="profile" hidden></span><span id="cwd"></span></div>
       </div>
-      <div class="tally" id="tally">
-        <div class="stat stat-allow"><svg aria-hidden="true"><use href="#i-allow"/></svg><b id="n-allow">0</b><span>allowed</span></div>
-        <div class="stat stat-ask"><svg aria-hidden="true"><use href="#i-ask"/></svg><b id="n-ask">0</b><span>need approval</span></div>
-        <div class="stat stat-block"><svg aria-hidden="true"><use href="#i-block"/></svg><b id="n-block">0</b><span>blocked</span></div>
-        <div class="stat stat-time"><b id="n-ms">0</b><span>ms per decision</span></div>
+      <div class="tally" id="tally" aria-label="Verdict counts">
+        <div class="stat stat-allow is-zero"><svg aria-hidden="true"><use href="#i-allow"/></svg><b id="n-allow">0</b><span>allowed</span></div>
+        <div class="stat stat-ask is-zero"><svg aria-hidden="true"><use href="#i-ask"/></svg><b id="n-ask">0</b><span>needed your OK</span></div>
+        <div class="stat stat-block is-zero"><svg aria-hidden="true"><use href="#i-block"/></svg><b id="n-block">0</b><span>blocked</span></div>
       </div>
-      <div class="inject" id="inject" hidden role="alert">
-        <svg aria-hidden="true"><use href="#i-warn"/></svg>
-        <span id="inject-text">Hidden instructions found in content the agent read</span>
+      <div class="story" id="story" hidden>
+        <svg aria-hidden="true"><use href="#i-hidden"/></svg>
+        <p id="story-text" style="margin:0"></p>
       </div>
     </section>
 
@@ -60,14 +85,18 @@
       <section class="feed" aria-label="Agent actions">
         <div class="views" role="tablist" aria-label="View">
           <button type="button" role="tab" id="tab-live" aria-selected="true" aria-controls="live">Live</button>
-          <button type="button" role="tab" id="tab-audit" aria-selected="false" aria-controls="audit">Audit log</button>
+          <button type="button" role="tab" id="tab-audit" aria-selected="false" aria-controls="audit">Audit log<span class="count" id="audit-count"></span></button>
+          <div class="views-right" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span id="ms-note"></span></div>
         </div>
         <div id="live" role="tabpanel" aria-labelledby="tab-live">
           <section class="queue" id="queue" hidden aria-label="Waiting for your approval">
-            <h2 class="queue-title" id="queue-title">Waiting for your approval</h2>
+            <div class="queue-head">
+              <h2 class="queue-title" id="queue-title">Waiting for your approval</h2>
+              <div class="queue-hint" aria-hidden="true"><kbd>A</kbd> allow <kbd>B</kbd> block the first one</div>
+            </div>
             <ol class="queue-list" id="queue-list"></ol>
           </section>
-          <ol class="timeline" id="timeline"></ol>
+          <ol class="timeline" id="timeline" aria-label="Decisions, newest first"></ol>
         </div>
         <div id="audit" role="tabpanel" aria-labelledby="tab-audit" hidden>
           <div class="audit-bar">
@@ -82,9 +111,13 @@
           </div>
         </div>
         <div class="empty" id="empty">
-          <svg aria-hidden="true"><use href="#i-shield"/></svg>
+          <div class="empty-mark"><svg aria-hidden="true"><use href="#i-shield-line"/></svg></div>
           <p class="empty-title">Waiting for your agent</p>
-          <p>Every tool call it makes shows up here, newest first. Hook up Claude Code or the MCP proxy and give it a task.</p>
+          <p>Every tool call it makes shows up here the moment it happens.</p>
+          <ul class="empty-cmds">
+            <li><code>uv run tripwire install claude</code><span>Claude Code hooks</span></li>
+            <li><code>uv run tripwire mcp-proxy -- &lt;server&gt;</code><span>any MCP server</span></li>
+          </ul>
         </div>
       </section>
       <aside class="detail" id="detail" aria-label="Action details">
@@ -96,6 +129,7 @@
     </main>
   </div>
 
+  <div class="sr-only" id="announce" role="status" aria-live="assertive" aria-atomic="true"></div>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
   <script src="/static/app.js"></script>
 </body>
