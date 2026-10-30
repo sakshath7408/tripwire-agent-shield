@@ -23,7 +23,11 @@
     chain: null, // last /v1/audit/verify answer
     tree: null, // last /v1/audit?format=tree answer
     history: new Map(), // verdict id -> chained records (verdict + resolutions)
+    mode: document.documentElement.dataset.mode === "detailed" ? "detailed" : "simple",
+    settings: null, // {autonomy} from /v1/settings, null when the daemon has no such endpoint (hosted demo)
+    rules: null, // learned rules from /v1/rules
   };
+  const simple = () => S.mode === "simple";
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -39,6 +43,9 @@
     chain: $("chain"), chainLive: $("chain-live"), degraded: $("degraded"), degradedText: $("degraded-text"),
     agentFilter: $("agent-filter"), agentFilterText: $("agent-filter-text"),
     auditListTab: $("audit-list-tab"), auditTreeTab: $("audit-tree-tab"), auditTree: $("audit-tree"), auditList: $("audit-list"),
+    modeSeg: $("mode-seg"), help: $("help"), settingsWrap: $("settings-wrap"), settingsBtn: $("settings-btn"), settingsPop: $("settings-pop"),
+    autonomySeg: $("autonomy-seg"), autonomyHint: $("autonomy-hint"), rulesList: $("rules-list"), rulesCount: $("rules-count"), rulesEmpty: $("rules-empty"),
+    tour: $("tour"),
   };
   const phone = window.matchMedia("(max-width: 820px)");
 
@@ -126,6 +133,7 @@
 
   function byText(v) {
     if (v.resolved_by === "human") return v.decision === "allow" ? "Approved by you" : "Blocked by you";
+    if (v.auto || v.resolved_by === "rule" || v.rule_id) return v.rule_id ? "Learned rule" : "Decided on its own";
     if (v.resolved_by === "timeout") return "No answer in time, so blocked";
     if (v.resolved_by) return "By " + v.resolved_by;
     if (judgeDecided(v)) return "Local judge agreed";
@@ -133,7 +141,8 @@
   }
   const byHtml = (v) => {
     const t = byText(v);
-    return t ? `<span class="by${v.resolved_by === "human" ? " by-you" : ""}">${esc(t)}</span>` : "";
+    const auto = v.auto || v.resolved_by === "rule" || v.rule_id;
+    return t ? `<span class="by${v.resolved_by === "human" ? " by-you" : ""}${auto ? " by-auto" : ""}" ${auto ? `title="${v.rule_id ? "Allowed by a rule you taught Tripwire" : "Within your autonomy level, so no question was asked"}"` : ""}>${auto ? icon("spark") : ""}${esc(t)}</span>` : "";
   };
   const judgeDecided = (v) => v.judge && !v.judge.error && (v.judge.decision === "allow" || v.judge.decision === "block");
 
@@ -296,6 +305,7 @@
     verifyChain(0);
     checkHealth();
     loadTree(0);
+    if (S.settings === null && !loadAll.settingsTried) { loadAll.settingsTried = true; loadSettings(); }
   }
 
   let statsT, sessT;
@@ -383,6 +393,7 @@
     if (on && on.scrollIntoViewIfNeeded) on.scrollIntoViewIfNeeded(false);
     else if (on) on.scrollIntoView({ block: "nearest", inline: "nearest" });
     el.sessions.classList.toggle("is-scrolled", el.sessions.scrollLeft > 4);
+    requestAnimationFrame(() => el.sessions.classList.toggle("is-scrolled", el.sessions.scrollLeft > 4));
   }
   el.sessions.addEventListener("scroll", () => el.sessions.classList.toggle("is-scrolled", el.sessions.scrollLeft > 4), { passive: true });
 
@@ -435,10 +446,14 @@
   }
 
   function decideButtons(id) {
+    const remember = S.settings ? `<div class="q-remember"><span>Remember:</span>
+      <button type="button" class="btn-remember" data-resolve="allow" data-remember="always" data-id="${id}" title="Allow this kind of action from now on. Shows up under Learned rules.">${icon("pin")}Always allow this</button>
+      <button type="button" class="btn-remember" data-resolve="allow" data-remember="session" data-id="${id}" title="Allow this kind of action until the agent's session ends">This session</button>
+    </div>` : "";
     return `<div class="q-buttons">
       <button type="button" class="btn-decide btn-allow" data-resolve="allow" data-id="${id}">${icon("allow")}Allow<kbd aria-hidden="true">A</kbd></button>
       <button type="button" class="btn-decide btn-block" data-resolve="block" data-id="${id}">${icon("block")}Block<kbd aria-hidden="true">B</kbd></button>
-    </div>`;
+    </div>${remember}`;
   }
 
   function renderQueue() {
@@ -532,6 +547,27 @@
     const t = toolParts(v.action.tool);
     if (el.detailBody.dataset.id !== v.id) { el.detail.scrollTop = 0; el.detailBody.dataset.id = v.id; }
 
+    if (simple()) {
+      // Simple: what happened, why, where it came from, and the buttons. No numbers, ids or hashes.
+      const why = (v.findings || []).filter((f) => f.message !== headline).sort((a, b) => ctx(a) - ctx(b) || b.severity - a.severity);
+      const evidence = (v.findings || []).filter((f) => f.evidence).sort((a, b) => ctx(a) - ctx(b) || b.severity - a.severity);
+      const seen = new Set();
+      el.detailBody.innerHTML = `
+        <div class="d-top"><div class="d-head"><div>${badge(v.decision)}${byHtml(v)}</div>
+          <button type="button" class="d-close" data-close aria-label="Close details">${icon("close")}</button></div>
+        <p class="d-sum">${esc(headline)}</p>
+        ${pending ? `<div class="d-decide">${decideButtons(v.id)}${cd ? `<span class="countdown${isUrgent(v.id) ? " is-urgent" : ""}" data-cd="${v.id}">${cd}</span>` : ""}</div>` : ""}</div>
+        <div class="d-section"><h3>What happened</h3>
+          <p class="d-plain">${agentOf(v) ? `<b>${esc(agentOf(v).short)}</b> wanted to ` : "The agent wanted to "}${esc(plainAction(v))}.</p>
+          <div class="d-act">${esc(renderAct(v))}</div></div>
+        ${why.length ? `<div class="d-section"><h3>Why</h3><ul class="d-why">${why.map((f) => `<li>${esc(f.message)}</li>`).join("")}</ul></div>`
+          : v.decision === "allow" ? `<div class="d-section"><h3>Why</h3><p class="d-plain">Nothing risky found. It fits what you asked.</p></div>` : ""}
+        ${evidence.length ? `<div class="d-section"><h3>Where it came from</h3>${evidence.filter((f) => { const k = f.evidence.slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; }).map((f) =>
+          `<div class="evidence"><div class="ev-src">${icon("doc")}From ${esc(evidenceSource(f))}, not from you</div><div class="ev-text">…${highlight(f.evidence, v, f)}…</div></div>`).join("")}</div>` : ""}
+        ${v.action.parent ? `<p class="d-plain d-spawned-note">Started by <b>${esc(agentName(v.action.parent))}</b>.</p>` : ""}`;
+      return;
+    }
+
     el.detailBody.innerHTML = `
       <div class="d-top"><div class="d-head"><div>${badge(v.decision)}${byHtml(v)}</div>
         <button type="button" class="d-close" data-close aria-label="Close details">${icon("close")}</button></div>
@@ -558,6 +594,14 @@
       <details class="d-more"><summary>Full arguments</summary><pre class="json">${esc(JSON.stringify(v.action.args, null, 2))}</pre></details>
       <div class="d-id">${fmtTime(v.ts)} · session ${esc(v.action.session_id)} · via ${esc(v.action.source)} · id ${esc(v.id)}</div>`;
     loadHistory(v);
+  }
+
+  /** "read a file", "run a command"... for the Simple view's one-liner. */
+  function plainAction(v) {
+    const t = toolLabel(v.action.tool);
+    const words = { read: "read a file", write: "change a file", exec: "run a command", fetch: "fetch a web page", send: "send a message",
+      money: "move money", delete: "delete something", agent: "start another agent", credential: "change credentials" };
+    return `${words[v.capability] || `use ${t}`}${words[v.capability] ? ` (${t})` : ""}`;
   }
 
   /** Who acted, and who started them. Only for sub-agents and MCP servers; the main agent needs no label. */
@@ -759,11 +803,12 @@
     toastT = setTimeout(() => (el.toast.hidden = true), 3200);
   }
 
-  async function resolve(id, decision, btn) {
+  async function resolve(id, decision, btn, remember) {
     const btns = document.querySelectorAll(`[data-resolve][data-id="${id}"]`);
     btns.forEach((b) => (b.disabled = true));
     try {
-      await api(`/v1/verdicts/${id}/resolve`, { method: "POST", body: JSON.stringify({ decision }) });
+      await api(`/v1/verdicts/${id}/resolve`, { method: "POST", body: JSON.stringify(remember ? { decision, remember } : { decision }) });
+      if (remember) { toast(remember === "always" ? "Learned. Tripwire will allow this on its own from now on." : "Allowed for the rest of this session."); loadRules(400); }
       const v = S.verdicts.get(id);
       if (v) { v.decision = decision; v.resolved_by = "human"; S.history.delete(id); setTimeout(() => loadHistory(v, true), 400); }
       refreshStats(0);
@@ -811,7 +856,7 @@
 
   document.addEventListener("click", (e) => {
     const r = e.target.closest("[data-resolve]");
-    if (r) { e.stopPropagation(); resolve(r.dataset.id, r.dataset.resolve, r); return; }
+    if (r) { e.stopPropagation(); resolve(r.dataset.id, r.dataset.resolve, r, r.dataset.remember); return; }
     const ac = e.target.closest(".agent-chip, .t-row");
     if (ac) {
       e.stopPropagation();
@@ -837,7 +882,7 @@
     const typing = e.target.matches("input, textarea, select, [contenteditable]");
     if (e.key === "Escape" && el.detail.classList.contains("is-open")) closeDetail();
     if ((e.key === "Enter" || e.key === " ") && e.target.matches(".row, .q-item, .audit-table tbody tr")) { e.preventDefault(); e.target.click(); return; }
-    if (typing) return;
+    if (typing || tour.open || !el.settingsPop.hidden) return;
     // A / B answer the first waiting item. Shown as hints on its buttons.
     if ((e.key === "a" || e.key === "A" || e.key === "b" || e.key === "B") && S.view === "live") {
       const top = topPending();
@@ -937,6 +982,196 @@
     label.textContent = "Reset";
     try { await api("/v1/reset", { method: "POST" }); } catch (e) { toast(`Couldn't reset: ${e.message}`); }
   });
+
+  // ---- Simple / Detailed ----------------------------------------------------
+  function paintMode() {
+    root.dataset.mode = S.mode;
+    for (const b of el.modeSeg.querySelectorAll("[data-mode]")) b.setAttribute("aria-checked", b.dataset.mode === S.mode);
+  }
+  el.modeSeg.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-mode]");
+    if (!b) return;
+    S.mode = b.dataset.mode;
+    try { localStorage.setItem("tw-mode", S.mode); } catch (_) { /* private mode */ }
+    paintMode();
+    render();
+  });
+  paintMode();
+
+  // ---- settings: autonomy level and learned rules -----------------------------
+  // Built against the engine's contract; when the endpoints are missing (hosted demo) the gear stays hidden.
+  const LEVELS = {
+    strict: "Asks you before anything outside your task. Nothing is decided on its own.",
+    balanced: "Allows routine reads and edits inside your project on its own. Asks for everything that leaves it.",
+    autonomous: "Only asks for sending data out, money and deleting. Blocks still block.",
+  };
+  function paintSettings() {
+    const st = S.settings;
+    el.settingsWrap.hidden = !st;
+    if (!st) return;
+    for (const b of el.autonomySeg.querySelectorAll("[data-level]")) b.setAttribute("aria-checked", b.dataset.level === st.autonomy);
+    el.autonomyHint.textContent = LEVELS[st.autonomy] || "";
+    const rules = S.rules || [];
+    el.rulesCount.textContent = rules.length || "";
+    el.rulesEmpty.hidden = rules.length > 0;
+    el.rulesList.innerHTML = rules.map((r) => `<li class="rule-item">
+      <span class="rule-main"><span class="badge badge-${esc(r.decision || "allow")}">${icon(r.decision || "allow")}${WORD[r.decision || "allow"]}</span>
+        <span class="rule-text">${esc(r.description || `${toolLabel(r.tool || "")} ${r.target || ""}`.trim())}</span>
+        <span class="rule-meta">${esc(r.scope === "session" ? "this session" : "always")}${r.created ? ` · ${esc(fmtDate(r.created))}` : ""}</span></span>
+      <button type="button" class="rule-del" data-rule="${esc(r.id)}" aria-label="Forget this rule" title="Forget this rule">${icon("close")}</button></li>`).join("");
+  }
+  function fmtDate(x) {
+    const d = typeof x === "number" ? new Date(x * 1000) : new Date(x);
+    return isNaN(d) ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  async function loadSettings() {
+    try { S.settings = await api("/v1/settings"); } catch (_) { S.settings = null; }
+    paintSettings();
+    if (S.settings) { loadRules(0); render(); } // approval cards gain their "remember" options
+  }
+  let rulesT;
+  function loadRules(delay = 0) {
+    if (!S.settings) return;
+    clearTimeout(rulesT);
+    rulesT = setTimeout(async () => {
+      try { S.rules = await api("/v1/rules"); } catch (_) { S.rules = []; }
+      paintSettings();
+    }, delay);
+  }
+  el.autonomySeg.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-level]");
+    if (!b || !S.settings) return;
+    const prev = S.settings.autonomy;
+    S.settings.autonomy = b.dataset.level;
+    paintSettings();
+    try { S.settings = await api("/v1/settings", { method: "PUT", body: JSON.stringify({ autonomy: b.dataset.level }) }); }
+    catch (err) { S.settings.autonomy = prev; toast(`Couldn't change the level: ${err.message}`); }
+    paintSettings();
+  });
+  el.rulesList.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-rule]");
+    if (!b) return;
+    b.disabled = true;
+    try { await api(`/v1/rules/${encodeURIComponent(b.dataset.rule)}`, { method: "DELETE" }); toast("Forgotten."); }
+    catch (err) { toast(`Couldn't forget it: ${err.message}`); }
+    loadRules(0);
+  });
+  function openSettings(open) {
+    el.settingsPop.hidden = !open;
+    el.settingsBtn.setAttribute("aria-expanded", open);
+    if (open) loadRules(0);
+  }
+  el.settingsBtn.addEventListener("click", () => openSettings(el.settingsPop.hidden));
+  document.addEventListener("click", (e) => { if (!el.settingsPop.hidden && !e.target.closest("#settings-wrap")) openSettings(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !el.settingsPop.hidden) openSettings(false); });
+
+  // ---- first-open guide --------------------------------------------------------
+  const TOUR_SEEN = "tw-guide-seen";
+  const CMD_CLAUDE = "uv run tripwire install claude";
+  const CMD_MCP = "uv run tripwire mcp-proxy -- <your mcp server>";
+  const T = {
+    pill: (d, word) => `<span class="badge badge-${d}">${icon(d)}${word}</span>`,
+    code: (cmd, label) => `<div class="tour-cmd"><code>${esc(cmd)}</code><button type="button" class="tour-copy" data-copy="${esc(cmd)}" aria-label="Copy ${esc(label)}">${icon("copy")}<span>Copy</span></button></div>`,
+  };
+  const STEPS = [
+    { kicker: "Welcome", tone: "teal", title: "A guard between your AI agent and its tools.",
+      body: `<p>Agents read files, pages and emails. Any of those can hide orders. Tripwire checks every tool call before it runs and stops the ones you never asked for.</p><p class="tour-small">Runs on your machine only. Nothing leaves it.</p>`,
+      visual: `<svg viewBox="0 0 320 200" class="tv"><defs><linearGradient id="tg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#62c9c3"/><stop offset="1" stop-color="#6c7cf0"/></linearGradient></defs>
+        <rect x="18" y="72" width="78" height="56" rx="12" class="tv-box"/><text x="57" y="96" class="tv-t">AI agent</text><text x="57" y="113" class="tv-s">reads, runs, sends</text>
+        <path d="M100 100h40" class="tv-line"/><path d="M180 100h40" class="tv-line"/>
+        <path d="M160 58l26 10v22c0 17-11 31-26 36-15-5-26-19-26-36V68z" fill="url(#tg1)" opacity=".95"/><path d="M149 100h22" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+        <rect x="224" y="50" width="78" height="30" rx="9" class="tv-box"/><text x="263" y="69" class="tv-t">files</text>
+        <rect x="224" y="86" width="78" height="30" rx="9" class="tv-box"/><text x="263" y="105" class="tv-t">shell</text>
+        <rect x="224" y="122" width="78" height="30" rx="9" class="tv-box"/><text x="263" y="141" class="tv-t">email, web</text>
+        <text x="160" y="152" class="tv-s" text-anchor="middle">Tripwire</text></svg>` },
+    { kicker: "Connect", tone: "indigo", title: "One line to connect it.",
+      body: `<p>Claude Code: installs three hooks, every tool call is checked.</p>${T.code(CMD_CLAUDE, "the Claude Code command")}<p>Any MCP agent: put the gateway in front of a server.</p>${T.code(CMD_MCP, "the MCP command")}`,
+      visual: `<svg viewBox="0 0 320 200" class="tv"><rect x="24" y="40" width="272" height="120" rx="14" class="tv-term"/><circle cx="44" cy="58" r="4" fill="#f37078"/><circle cx="58" cy="58" r="4" fill="#e8b35a"/><circle cx="72" cy="58" r="4" fill="#4fc38f"/>
+        <text x="40" y="92" class="tv-code"><tspan fill="#62c9c3">$</tspan> uv run tripwire install claude</text>
+        <text x="40" y="118" class="tv-code" opacity=".75">hooks installed · 3</text><text x="40" y="140" class="tv-code" opacity=".75">dashboard  http://127.0.0.1:7777</text></svg>` },
+    { kicker: "Read the feed", tone: "amber", title: "Three words you need to know.",
+      body: `<ul class="tour-list"><li>${T.pill("allow", "Allowed")}<span>Part of your task. Went through.</span></li><li>${T.pill("ask", "Needs your OK")}<span>Unusual. Waits for you.</span></li><li>${T.pill("block", "Blocked")}<span>Taken from hidden instructions, or beyond the agent's permissions.</span></li></ul><p class="tour-small">Every decision has a plain-English reason and the exact text it came from.</p>`,
+      visual: `<svg viewBox="0 0 320 200" class="tv">
+        <rect x="24" y="30" width="272" height="40" rx="10" class="tv-row"/><circle cx="46" cy="50" r="7" fill="#1f7f5b"/><rect x="62" y="44" width="120" height="12" rx="6" class="tv-bar"/>
+        <rect x="24" y="80" width="272" height="40" rx="10" class="tv-row tv-ask"/><circle cx="46" cy="100" r="7" fill="#c98a1a"/><rect x="62" y="94" width="150" height="12" rx="6" class="tv-bar"/>
+        <rect x="24" y="130" width="272" height="40" rx="10" class="tv-row tv-block"/><circle cx="46" cy="150" r="7" fill="#c13a48"/><rect x="62" y="144" width="170" height="12" rx="6" class="tv-bar"/></svg>` },
+    { kicker: "You decide", tone: "rose", title: "You decide, once.",
+      body: `<p>When something needs your OK, press <kbd>A</kbd> to allow or <kbd>B</kbd> to block. No answer in time means blocked.</p><p>Choose <b>Always allow this</b> and Tripwire learns the rule. Forget it any time in settings.</p>`,
+      visual: `<svg viewBox="0 0 320 200" class="tv"><rect x="28" y="40" width="264" height="120" rx="14" class="tv-card"/><rect x="48" y="60" width="180" height="14" rx="7" class="tv-bar"/><rect x="48" y="84" width="120" height="10" rx="5" class="tv-bar" opacity=".6"/>
+        <rect x="48" y="112" width="92" height="30" rx="8" fill="#e0f3ea" stroke="#1f7f5b" stroke-opacity=".4"/><text x="94" y="131" class="tv-btn" fill="#1f7f5b">Allow  A</text>
+        <rect x="150" y="112" width="92" height="30" rx="8" fill="#c13a48"/><text x="196" y="131" class="tv-btn" fill="#fff">Block  B</text></svg>` },
+    { kicker: "Autonomy", tone: "teal", title: "Pick how much it decides alone.",
+      body: `<ul class="tour-list tour-levels"><li><b>Strict</b><span>asks before anything outside your task.</span></li><li><b>Balanced</b><span>handles routine work in your project, asks when something leaves it.</span></li><li><b>Autonomous</b><span>only asks for sending data out, money and deleting.</span></li></ul><p class="tour-small">Blocks are blocks at every level. Change it under the gear icon.</p>`,
+      visual: `<svg viewBox="0 0 320 200" class="tv"><rect x="40" y="88" width="240" height="10" rx="5" class="tv-bar"/><rect x="40" y="88" width="140" height="10" rx="5" fill="url(#tg2)"/><defs><linearGradient id="tg2" x1="0" x2="1"><stop offset="0" stop-color="#62c9c3"/><stop offset="1" stop-color="#6c7cf0"/></linearGradient></defs>
+        <circle cx="180" cy="93" r="14" fill="#fff" stroke="#6c7cf0" stroke-width="3"/>
+        <text x="40" y="130" class="tv-s">Strict</text><text x="160" y="130" class="tv-s" text-anchor="middle">Balanced</text><text x="280" y="130" class="tv-s" text-anchor="end">Autonomous</text></svg>` },
+  ];
+  const tour = { step: 0, open: false, restore: null };
+  const tourEl = (id) => $(id);
+  function tourSeen() { try { return localStorage.getItem(TOUR_SEEN) === "1"; } catch (_) { return true; } }
+  function paintTour() {
+    const st = STEPS[tour.step], last = STEPS.length - 1;
+    el.tour.dataset.tone = st.tone;
+    tourEl("tour-kicker").textContent = st.kicker;
+    tourEl("tour-count").textContent = `${tour.step + 1} / ${STEPS.length}`;
+    tourEl("tour-title").textContent = st.title;
+    tourEl("tour-body").innerHTML = st.body;
+    tourEl("tour-visual").innerHTML = st.visual;
+    tourEl("tour-dots").innerHTML = STEPS.map((x, i) => `<button type="button" class="tour-dot${i === tour.step ? " on" : ""}${i < tour.step ? " done" : ""}" data-step="${i}" aria-label="Step ${i + 1}: ${esc(x.title)}" ${i === tour.step ? 'aria-current="step"' : ""}></button>`).join("");
+    tourEl("tour-back").hidden = tour.step === 0;
+    tourEl("tour-next").textContent = tour.step === 0 ? "Show me" : tour.step === last ? "Start" : "Next";
+    for (const n of el.tour.querySelectorAll(".tour-content, .tour-visual")) { n.classList.remove("is-in"); void n.offsetWidth; n.classList.add("is-in"); }
+  }
+  function openTour() {
+    tour.step = 0; tour.open = true; tour.restore = document.activeElement;
+    el.tour.hidden = false;
+    document.body.classList.add("tour-open");
+    paintTour();
+    el.tour.querySelector(".tour-dialog").focus({ preventScroll: true });
+  }
+  function closeTour() {
+    if (!tour.open) return;
+    tour.open = false;
+    el.tour.hidden = true;
+    document.body.classList.remove("tour-open");
+    try { if (tourEl("tour-again").checked) localStorage.setItem(TOUR_SEEN, "1"); else localStorage.removeItem(TOUR_SEEN); } catch (_) { /* private mode */ }
+    if (tour.restore && tour.restore.focus) tour.restore.focus({ preventScroll: true });
+  }
+  function goTour(n) { tour.step = Math.max(0, Math.min(STEPS.length - 1, n)); paintTour(); }
+  el.tour.addEventListener("click", async (e) => {
+    if (e.target === el.tour) { closeTour(); return; }
+    const d = e.target.closest("[data-step]");
+    if (d) { goTour(Number(d.dataset.step)); return; }
+    const c = e.target.closest("[data-copy]");
+    if (c) {
+      let ok = false;
+      try { await navigator.clipboard.writeText(c.dataset.copy); ok = true; } catch (_) {
+        const ta = document.createElement("textarea"); ta.value = c.dataset.copy; document.body.appendChild(ta); ta.select();
+        try { ok = document.execCommand("copy"); } catch (_2) { /* no clipboard */ } ta.remove();
+      }
+      c.querySelector("span").textContent = ok ? "Copied" : "Select and copy";
+      setTimeout(() => { c.querySelector("span").textContent = "Copy"; }, 1600);
+      return;
+    }
+    if (e.target.closest("#tour-skip")) closeTour();
+    else if (e.target.closest("#tour-back")) goTour(tour.step - 1);
+    else if (e.target.closest("#tour-next")) { if (tour.step === STEPS.length - 1) closeTour(); else goTour(tour.step + 1); }
+  });
+  el.tour.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeTour(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); goTour(tour.step + 1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); goTour(tour.step - 1); }
+    else if (e.key === "Tab") {
+      const f = [...el.tour.querySelectorAll("button:not([hidden]), input, [tabindex]:not([tabindex='-1'])")].filter((n) => n.offsetParent !== null);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === el.tour.querySelector(".tour-dialog"))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  el.help.addEventListener("click", openTour);
+  // First open: show the guide, unless this is the projector (?stage=1) or it was dismissed before.
+  if (!tourSeen() && !root.classList.contains("stage") && !new URLSearchParams(location.search).has("notour")) setTimeout(openTour, 400);
 
   // ---- live feed ------------------------------------------------------------
   function setConn(state) {
