@@ -171,8 +171,12 @@ def _paths(args: dict, cwd: str | None) -> list[str]:
     return out
 
 
-def target_of(action: Action, cap: Capability, cwd: str | None) -> str:
-    """The narrow, normalised thing this action points at: who, which host, which folder, which command shape."""
+def target_of(action: Action, cap: Capability, cwd: str | None, exact: bool = False) -> str:
+    """The narrow, normalised thing this action points at: who, which host, which folder, which command shape.
+
+    exact=True is what a remembered ALLOW stores: the whole command (every branch, ref, host and flag), the exact
+    folder (not its subfolders) and, for deletes, the exact files. Approving `git push --force origin feature-x`
+    once used to learn `git push --force origin *`, which later allowed a force-push to main (review 3)."""
     args = action.args or {}
     if cap in (Capability.SEND, Capability.MONEY, Capability.CREDENTIAL):
         r = recipients(args)
@@ -184,16 +188,18 @@ def target_of(action: Action, cap: Capability, cwd: str | None) -> str:
         if cmd is None and argv:
             cmd = shlex.join(str(x) for x in argv)
         if cmd is not None:
-            return "cmd:" + command_shape(cmd)
+            return "cmd:exact:" + " ".join(cmd.strip().split()) if exact else "cmd:" + command_shape(cmd)
     urls = [u for u in _keyed(args, URL_KEY) if "://" in u or "." in u]
     if cap in (Capability.FETCH, Capability.SEND) and urls:
         return "host:" + ",".join(sorted({_host(u) for u in urls}))
     if cap in (Capability.READ, Capability.WRITE, Capability.DELETE):
         ps = _paths(args, cwd)
+        if ps and exact and cap == Capability.DELETE:
+            return "files:" + ",".join(sorted(set(ps)))
         if ps:
             dirs = sorted({os.path.dirname(p).rstrip("/") + "/" for p in ps})
             if len(dirs) == 1:
-                return "path:" + dirs[0]
+                return ("dir:" if exact else "path:") + dirs[0]
     blob = json.dumps(args, sort_keys=True, default=str)
     return "exact:" + hashlib.sha256(blob.encode()).hexdigest()[:16]
 
@@ -210,15 +216,22 @@ def target_matches(rule_target: str, target: str) -> bool:
     return rule_target == target
 
 
+def _widened(target: str) -> bool:
+    """An allow saved by an older version with a wildcard shape or a folder prefix: never honoured any more."""
+    return target.startswith("path:") or (target.startswith("cmd:") and not target.startswith("cmd:exact:"))
+
+
 def describe_target(cap: Capability, target: str) -> str:
     kind, _, val = target.partition(":")
     if kind == "to":
         return f"to {val.replace(',', ', ')}"
     if kind == "host":
         return f"on {val.replace(',', ', ')}"
-    if kind == "path":
+    if kind == "files":
+        return f"deleting exactly {val.replace(',', ', ')}"
+    if kind in ("path", "dir"):
         verb = {Capability.READ: "reading", Capability.WRITE: "changing", Capability.DELETE: "deleting"}.get(cap, "using")
-        return f"{verb} files in {val}"
+        return f"{verb} files in {val}" + (" (not its subfolders)" if kind == "dir" else "")
     if kind == "cmd":
         return f"running `{val.removeprefix('exact:')}`"
     return "with exactly these details"
@@ -310,7 +323,8 @@ class LearnedStore:
             if why:
                 raise LearnRefused(why)
         cap = v.capability
-        target = target_of(v.action, cap, s.cwd if s else v.action.cwd)
+        # An allow keeps every detail; only a block may cover a whole shape (blocking more is never unsafe).
+        target = target_of(v.action, cap, s.cwd if s else v.action.cwd, exact=decision == Decision.ALLOW)
         session = v.action.session_id if scope == "session" else None
         when = "Always" if scope == "always" else "For this session,"
         desc = (f"{when} {decision.value} {v.action.tool} {describe_target(cap, target)}"
@@ -341,8 +355,12 @@ class LearnedStore:
         if not self.rules:
             return None
         target = target_of(action, cap, cwd)
+        exact = target_of(action, cap, cwd, exact=True)
         hits = [r for r in self.rules if r.tool == action.tool and r.capability == cap.value
-                and (r.scope == "always" or r.session == action.session_id) and target_matches(r.target, target)]
+                and (r.scope == "always" or r.session == action.session_id)
+                and (target_matches(r.target, exact) if r.decision == "allow" else
+                     target_matches(r.target, target) or target_matches(r.target, exact))
+                and not (r.decision == "allow" and _widened(r.target))]
         if not hits:
             return None
         # A block beats an allow; a session answer beats an older "always" one.
