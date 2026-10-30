@@ -336,6 +336,12 @@ class Engine:
         for k, val in (shell_state.get("risky_written") or {}).items():
             if k not in s.risky_written or s.risky_written[k][0] < val[0]:
                 s.risky_written[k] = val
+        if v.decision != Decision.BLOCK and len(s.agent_written) < 5000:
+            # Files the agent wrote (Write/Edit, shell redirects, copies, patches): running one later is running its code.
+            if cap == Capability.WRITE:
+                s.agent_written.update(_norm_path(p, s) for p in _file_paths(action.args or {})[:20])
+            s.agent_written.update(list(shell_state.get("agent_written") or ())[:50])
+            s.agent_written.update(_norm_path(tgt, s) for tgt, _ in (shell_state.get("writes") or [])[:50])
         if any(f.rule == "secrets.read" for f in findings):
             target = next((p for p in _file_paths(action.args or {}) if paths.is_secret(paths.expand(p, s.cwd))),
                           None) or _first(action.args, PATH_KEYS) or action.tool
@@ -995,13 +1001,33 @@ GIT_CONFIG_EXEC = re.compile(r"^\s{0,8}(?:\w{1,40}\s{0,4}=\s{0,4}!|(?:sshCommand
                              r"\s{0,4}=)", re.I | re.M)
 
 
-def _file_scripts(path: str, content: str) -> tuple[list, bool, str | None]:
-    """(shell scripts or ("code", runner, text) tuples to judge, is a source file, persistence reason or None)."""
+def _file_scripts(path: str, content: str, runner: str | None = None) -> tuple[list, bool, str | None]:
+    """(shell scripts or ("code", runner, text) tuples to judge, is a source file, persistence reason or None).
+    runner: the file is being fed to this interpreter right now (`python3 < f`, `cat f | sh`), whatever its name."""
     low = path.lower().replace("\\", "/")
     base = low.rsplit("/", 1)[-1]
     scripts: list = []
     code_file = False
     why = None
+    if runner:
+        if runner in ("sh", "bash", "zsh", "dash", "ksh"):
+            return [content], False, None
+        return [("code", runner, content)], True, None
+    if base.endswith(".pth"):
+        # Python runs every line of a .pth file that starts with "import", on every start, in every project.
+        lines = "\n".join(ln for ln in content.splitlines() if re.match(r"\s{0,8}import[\s\t]", ln))
+        if lines:
+            return [("code", "python", lines)], True, "Python runs its import lines by itself every time it starts"
+        return [], False, None
+    if base in ("sitecustomize.py", "usercustomize.py"):
+        return [("code", "python", content)], True, "Python runs it by itself every time it starts"
+    if low.endswith((".patch", ".diff")) or re.match(r"(?:diff --git |--- \S{1,300}\n\+\+\+ )", content):
+        # A patch is the files it will create once applied: judge each one's added lines as that file.
+        for target, added in _patch_files(content):
+            sc, _cf, w = _file_scripts(target, added)
+            scripts += sc
+            why = why or w
+        return [x for x in scripts if x], True, why
     if low.endswith(SHELL_EXT) or re.match(r"#!\s{0,4}\S{0,40}\b(ba|z|da|k)?sh\b", content):
         scripts.append(content)
     elif base in ("makefile", "gnumakefile", "justfile") or base.startswith(("makefile.", "gnumakefile.")) or low.endswith(".mk"):
@@ -1040,11 +1066,58 @@ def _file_scripts(path: str, content: str) -> tuple[list, bool, str | None]:
             why = "it adds a build hook that runs code from the project on every install"
     else:
         ext = "." + base.rsplit(".", 1)[-1] if "." in base else ""
-        runner = CODE_RUNNERS.get(ext)
-        if runner:
+        run = CODE_RUNNERS.get(ext)
+        if run:
             code_file = True
-            scripts.append(("code", runner, content))
+            scripts.append(("code", run, content))
+        else:
+            # A "data" file (.txt, .json, .md, no extension) that is really code: `python3 < data.txt` runs it.
+            guess = _looks_like_code(content)
+            if guess:
+                code_file = True
+                scripts.append(content if guess == "sh" else ("code", guess, content))
     return [x for x in scripts if x], code_file, why
+
+
+def _patch_files(diff: str) -> list[tuple[str, str]]:
+    """(file, added text) for each file a unified diff creates or changes."""
+    out: list[tuple[str, list[str]]] = []
+    for line in diff[:MAX_ARGS_CHARS].splitlines()[:20_000]:
+        m = re.match(r"\+\+\+ (?:[ab]/)?(\S{1,500})", line)
+        if m:
+            out.append((m.group(1), []))
+        elif out and line.startswith("+"):
+            out[-1][1].append(line[1:])
+    return [(f, "\n".join(lines)) for f, lines in out[:50] if f != "/dev/null" and lines]
+
+
+_SHELL_START = re.compile(r"^\s{0,8}(?:curl|wget|bash|sh|zsh|python3?|node|perl|ruby|nc|ncat|scp|rsync|ssh|cat|cp|mv|rm|"
+                          r"chmod|chown|export|echo|printf|eval|source|exec|base64|openssl|git|npm|npx|pip3?|uv|tar|"
+                          r"zip|crontab|launchctl|sudo|cd|mkdir|tee|sed|awk|xargs|find|env|set|if|for|while)\b")
+
+
+def _looks_like_code(content: str) -> str | None:
+    """python / node / sh when a file without a code extension is really a program; None for prose and data."""
+    import ast
+    import warnings
+    text = content[:MAX_DISK_READ]
+    if not text.strip() or len(text) < 12:
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(text)
+        if any(isinstance(n, (ast.Import, ast.ImportFrom, ast.Call)) for n in ast.walk(tree)):
+            return "python"
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        pass
+    if re.search(r"\brequire\s{0,4}\(\s{0,4}['\"]|^\s{0,8}import\s.{1,200}\sfrom\s['\"]|\bprocess\.(?:env|argv)|"
+                 r"\bfetch\s{0,4}\(|child_process", text, re.M) and re.search(r"[;{}()]", text):
+        return "node"
+    lines = [ln for ln in text.splitlines()[:400] if ln.strip() and not ln.lstrip().startswith("#")]
+    if lines and sum(bool(_SHELL_START.match(ln)) for ln in lines) * 2 > len(lines):
+        return "sh"
+    return None
 
 
 def _json_ok(v: str) -> bool:
@@ -1060,14 +1133,14 @@ LIFECYCLE = {"preinstall", "install", "postinstall", "prepare", "preprepare", "p
 
 
 def _written_code_findings(path: str, args: dict, s: Session, injected: bool, state: dict | None = None,
-                           run: str | None = None) -> list[Finding]:
+                           run: str | None = None, runner: str | None = None) -> list[Finding]:
     """A file the agent writes may run later (`make test`, `npm test`, `python x.py`, CI), out of sight of the
     shell check. So check what the file would do now, the same way a command typed in the shell is checked.
     run="agent"|"disk": the file is being run right now (read from disk); agent-written files count in full."""
     content = "\n".join(_keyed(args, CONTENT_KEY))[:MAX_ARGS_CHARS // 4]
     if not content.strip():
         return []
-    scripts, code_file, why = _file_scripts(path, content)
+    scripts, code_file, why = _file_scripts(path, content, runner)
     name = path.rsplit("/", 1)[-1]
     out: list[Finding] = []
     if why and not run:
@@ -1120,11 +1193,37 @@ def _disk_text(full: str, s: Session) -> str | None:
 
 def _shell_writes_and_runs(s: Session, state: dict, injected: bool) -> list[Finding]:
     """Write-then-run through the shell. Text written with `>`, heredocs, tee or sed -i is judged like Write-tool
-    content; downloads and clones are remembered; files the command runs are read from disk and judged now."""
+    content; copies and applied patches are judged as writes of what they carry; downloads and clones are remembered;
+    files the command runs are read from disk and judged now."""
     out: list[Finding] = []
     for tgt, body in state.get("writes", [])[:50]:
         out += _written_code_findings(tgt, {"content": body}, s, injected, state)
         out += _written_secret_findings(tgt, body, s, state)
+    known = {**s.risky_written, **(state.get("risky_written") or {})}
+    for src, dst in state.get("copies", [])[:50]:
+        # `cp data/fixture.txt tests/conftest.py`: the destination now holds the source's code, so judge it as a write
+        # of that code to the destination (review 4: the disk check ran before the cp, on the old conftest).
+        sfull, dfull = _norm_path(src, s), _norm_path(dst, s)
+        if os.path.isdir(dfull) or dst.endswith("/"):
+            dfull = os.path.join(dfull, os.path.basename(sfull))
+        state.setdefault("copied", {})[dfull] = sfull
+        state.setdefault("agent_written", set()).add(dfull)
+        if sfull in known:
+            state.setdefault("risky_written", {})[dfull] = known[sfull]
+        text = _disk_text(sfull, s)
+        if text:
+            out += _written_code_findings(dfull, {"content": text}, s, injected, state)
+    for patch in state.get("patches", [])[:10]:
+        pfull = _norm_path(patch, s)
+        text = _disk_text(pfull, s)
+        for target, added in _patch_files(text or ""):
+            tfull = _norm_path(target, s)
+            state.setdefault("agent_written", set()).add(tfull)
+            out += _written_code_findings(tfull, {"content": added}, s, injected, state)
+        if pfull in known:
+            sev, cat, msg = known[pfull]
+            out.append(Finding(rule="exec.risky_written", severity=sev, category=cat, evidence=os.path.basename(pfull),
+                               message=f"Applies {os.path.basename(pfull)}, which the agent wrote and which {msg}"))
     for p, (sev, host) in (state.get("downloaded") or {}).items():
         full = os.path.normpath(paths.expand(p.rstrip("/"), s.cwd)) + ("/" if p.endswith("/") else "")
         state.setdefault("risky_written", {})[full] = (
@@ -1133,22 +1232,33 @@ def _shell_writes_and_runs(s: Session, state: dict, injected: bool) -> list[Find
     return out
 
 
+def _norm_path(p: str, s: Session) -> str:
+    return os.path.normpath(paths.expand(p, s.cwd))
+
+
 def _run_targets_findings(s: Session, runs: list, injected: bool, state: dict) -> list[Finding]:
     if not runs or not s.cwd:
         return []
     fresh = state.get("risky_written") or {}
     known = {**s.risky_written, **fresh}
+    copied: dict[str, str] = state.get("copied") or {}
+    written = s.agent_written | set(state.get("agent_written") or ())
     files: list[str] = []
+    runner_of: dict[str, str] = {}
     remembered: list[str] = []
 
-    def add(p: str) -> None:
+    def add(p: str, runner: str | None = None) -> None:
         full = os.path.normpath(paths.expand(p, s.cwd))
         if full not in files:
             files.append(full)
+        if runner:
+            runner_of[full] = runner
 
     for kind, t in runs[:20]:
         if kind == "file":
             add(t)
+        elif kind.startswith("as:"):
+            add(t, kind[3:])
         elif kind == "make":
             if t.endswith("/"):
                 d = os.path.normpath(paths.expand(t, s.cwd))
@@ -1185,10 +1295,19 @@ def _run_targets_findings(s: Session, runs: list, injected: bool, state: dict) -
                            message=f"Runs {label}, which the agent " + ("fetched and which " if cat == "network" else
                                                                          "wrote and which ") + msg))
     for f in files[:12]:
-        text = _disk_text(f, s)
+        # What will really run: for a file copied in this same command, the copy's source.
+        text = _disk_text(copied.get(f, f), s)
         if text:
-            agent = f in known
-            out += _written_code_findings(f, {"content": text}, s, injected, None, run="agent" if agent else "disk")
+            agent = f in known or f in written
+            out += _written_code_findings(f, {"content": text}, s, injected, None, run="agent" if agent else "disk",
+                                          runner=runner_of.get(f))
+        if injected and f in runner_of and f in written and not s.taint.names_path(f, s.cwd):
+            # After hidden instructions, feeding a file the agent itself wrote to an interpreter, unasked, is how
+            # the attacker's code gets run: stop it even when the code itself looks harmless.
+            out.append(Finding(rule="exec.injected_written", severity=HIGH, category="injection",
+                               evidence=os.path.basename(f),
+                               message=f"Runs {os.path.basename(f)}, a file the agent wrote after hidden instructions "
+                                       "were found, which you never asked it to run."))
     return sorted(out, key=lambda x: -x.severity)[:4]
 
 
@@ -1529,10 +1648,16 @@ def _agent_paraphrase(blob: str, s: Session, injected: bool) -> list[Finding]:
     return []
 
 
+READ_ONLY_CMD = re.compile(r"^\s{0,8}(?:cat|head|tail|less|more|wc|ls|rm|grep|rg|file|stat|diff|du|shasum|md5|"
+                           r"git\s{1,4}(?:diff|status|rm|checkout|restore|log|show|add))\b")
+
+
 def _runs_risky_written(cmd: str, s: Session) -> list[Finding]:
     """Running a file the agent itself wrote earlier: judge it by what that file does, at full strength."""
     if not s.risky_written:
         return []
+    if READ_ONLY_CMD.match(cmd) and not re.search(r"[|;&`$<>]", cmd):
+        return []  # `cat x.txt`, `rm x.txt`, `git diff x.txt`: looking at or cleaning up a file is not running it
     out: list[Finding] = []
     for tok in re.findall(r"[\w./~-]{1,512}", cmd[:20_000]):
         full = os.path.normpath(paths.expand(tok, s.cwd))

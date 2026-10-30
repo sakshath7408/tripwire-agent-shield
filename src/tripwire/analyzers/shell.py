@@ -541,6 +541,27 @@ def raw_socket_target(text: str, guard_ports: set[int]) -> tuple[str, str] | Non
     return None
 
 
+# Code that runs another file: exec(open(f).read()), runpy.run_path(f), importlib from a path, require('./f'), load 'f'.
+_Q = r"""['"]([^'"\n]{1,300})['"]"""
+RUNS_FILE_CODE = re.compile(
+    rf"\bexec\s{{0,4}}\(\s{{0,4}}(?:compile\s{{0,4}}\(\s{{0,4}})?open\s{{0,4}}\(\s{{0,4}}{_Q}|\bexecfile\s{{0,4}}\(\s{{0,4}}{_Q}|"
+    rf"\brun_path\s{{0,4}}\(\s{{0,4}}{_Q}|spec_from_file_location\s{{0,4}}\([^,)]{{0,200}},\s{{0,4}}{_Q}|"
+    rf"SourceFileLoader\s{{0,4}}\([^,)]{{0,200}},\s{{0,4}}{_Q}|"
+    rf"\brequire\s{{0,4}}\(\s{{0,4}}['\"]((?:\.{{1,2}}|/)[^'\"\n]{{1,300}})['\"]|"
+    rf"\bimport\s{{0,4}}\(\s{{0,4}}['\"]((?:\.{{1,2}}|/)[^'\"\n]{{1,300}})['\"]|"
+    rf"\beval\s{{0,4}}\(\s{{0,4}}(?:fs\.)?readFileSync\s{{0,4}}\(\s{{0,4}}{_Q}|"
+    rf"\b(?:load|require_relative)\s{{0,4}}\(?\s{{0,4}}{_Q}|\beval\s{{0,4}}\(\s{{0,4}}File\.read\s{{0,4}}\(\s{{0,4}}{_Q}")
+
+
+def _stdin_runner(inf) -> str | None:
+    """Which language reads code from stdin (or a file argument) for this command, if any."""
+    if inf.name in SHELLS or inf.name in ("source", "."):
+        return "sh"
+    if inf.name in INTERPS:
+        return {"nodejs": "node", "bun": "node", "deno": "node"}.get(inf.name, inf.name)
+    return None
+
+
 def _host(url: str | None) -> str | None:
     if not url:
         return None
@@ -1087,6 +1108,10 @@ def _dotted(node) -> str:
     if isinstance(node, ast.Name):
         parts.append(node.id)
         return ".".join(reversed(parts))
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "__import__" and node.args \
+            and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+        parts.append(node.args[0].value)  # __import__('os').path.expanduser is os.path.expanduser
+        return ".".join(reversed(parts))
     return ""
 
 
@@ -1509,6 +1534,9 @@ class _Analyzer:
         self.writes: list[tuple[str, str]] = []
         self.runs: list[tuple[str, str]] = []
         self.downloaded: dict[str, tuple[int, str | None]] = {}
+        self.copies: list[tuple[str, str]] = []  # (source, destination) of cp/mv/ln/install inside the command
+        self.patches: list[str] = []  # patch files applied (git apply, patch -i / < file)
+        self.written_paths: list[str] = []  # every file this command writes, whatever writes it
 
     # ---- bookkeeping ----
     def add(self, rule: str, sev: int, cat: str, msg: str, ev: str | None = None) -> None:
@@ -1720,6 +1748,11 @@ class _Analyzer:
             up_hosts = sorted(t[5:] for t in up if t.startswith("host="))
             ev = " | ".join(i.c.raw for i in infos[: j + 1])
             if "shell_in" in inf.traits and j > 0:
+                prev = infos[j - 1]
+                runner = _stdin_runner(inf)
+                if runner and prev.name in ("cat", "head", "tail", "tac", "more", "less", "sed", "awk", "tr", "base64"):
+                    for x in [y for y in prev.args if not y.startswith("-")][-4:]:
+                        self.runs.append(("as:" + runner, x))  # `cat data.txt | python3` runs data.txt
                 payload, used_dec = _eval_pipe([i.c for i in infos[:j]])
                 if "download_stdout" in up:
                     self.add("shell.pipe_to_shell", self.rce_sev(up_hosts), "exfiltration" if False else "network",
@@ -1780,7 +1813,7 @@ class _Analyzer:
                     and not (inf.name in INTERPS and (self._code_payload(inf.name, inf.args)[0] is not None
                                                       or "-m" in inf.args[:2])):
                 cands.append(pos[0])
-                self.runs.append(("file", pos[0]))
+                self.runs.append(("as:" + (_stdin_runner(inf) or "sh"), pos[0]))
         for e in cands:
             src = norm(e)
             hit = src if src in downloads else next((d for d in downloads if d.endswith("/") and src.startswith(d)), None)
@@ -1827,6 +1860,10 @@ class _Analyzer:
         sub0 = [(inner, t) for kind, idx, inner, t in sub_info if idx == 0]
         if sub0:
             inner, t = sub0[0]
+            if len(inner) == 1 and len(inner[0]) == 1:
+                w = [x for x in inner[0][0].words if not x.startswith("-")]
+                if w and _base(w[0]) in ("cat", "head", "tail") and len(w) > 1:
+                    self.runs.append(("as:sh", w[-1]))  # `sh -c "$(cat f)"`, `eval "$(cat f)"`: runs f
             val = _eval_pipe(inner[0])[0] if len(inner) == 1 else None
             if val and val.strip():
                 try:
@@ -2065,6 +2102,13 @@ class _Analyzer:
             elif op in ("<", "<>"):
                 if tgt.startswith("/dev/"):
                     continue
+                runner = _stdin_runner(inf)
+                if runner and not (inf.name in SHELLS and self._shell_payload(inf.args)[0] is not None) \
+                        and not (inf.name in INTERPS and self._code_payload(inf.name, inf.args)[0] is not None) \
+                        and not self._has_file_arg(inf):
+                    self.runs.append(("as:" + runner, tgt))  # `python3 < data.txt` runs data.txt
+                if inf.name == "patch":
+                    self.patches.append(tgt)
                 full = self.expand_path(tgt)
                 if paths.is_secret(full):
                     self.add("shell.secret_read", MEDIUM + 5, "secrets", f"Reads your credential file {tgt}.", c.raw)
@@ -2216,6 +2260,8 @@ class _Analyzer:
                 if val and _printable(val):
                     self.text(val, depth + 1)
 
+        if n == "patch":
+            self.patches += [a[k + 1] for k, x in enumerate(a[:-1]) if x in ("-i", "--input")]
         if n in ("rm", "unlink", "srm", "rmdir"):
             self.rm(inf)
         elif n == "find":
@@ -2508,6 +2554,11 @@ class _Analyzer:
                     self.text(_to_text(dec), depth + 1, quiet=True)
                     if depth + 1 <= MAX_DEPTH:
                         self.code(name, _to_text(dec), inf, depth + 1)
+        for m in RUNS_FILE_CODE.finditer(code[:MAX_LEN]):
+            target = next(g for g in m.groups() if g)
+            runner = "node" if m.group(0).lstrip().startswith(("require", "eval(", "import(")) and name != "python" \
+                else ("ruby" if name == "ruby" else name if name in INTERPS else "python")
+            self.runs.append(("as:" + runner, target))
         for m in SHELL_CALL.finditer(code):
             self.text(m.group(2), depth + 1, quiet=True)
         if name in ("ruby", "perl", "php"):
@@ -2687,6 +2738,8 @@ class _Analyzer:
         self.add("shell.find_delete", sev, "destructive", "Bulk-deletes files: " + msg[0].lower() + msg[1:], ev)
 
     def write(self, t: str, ev: str) -> None:
+        if len(self.written_paths) < 200 and t and not t.startswith("/dev/"):
+            self.written_paths.append(t)
         if not t or t.startswith("&"):
             return
         if DEV_TCP.match(t):
@@ -2872,6 +2925,8 @@ class _Analyzer:
                         inf.traits.add("secret_read")
         if dest != "/dev/null":
             self.write(dest, raw)
+            for s_ in srcs[:20]:
+                self.copies.append((s_, dest))
 
     def git(self, inf: Info) -> None:
         a, raw = inf.args, inf.c.raw
@@ -2883,6 +2938,8 @@ class _Analyzer:
         sub, rest = a[i], a[i + 1:]
         flags = [x for x in rest if x.startswith("-")]
         pos = [x for x in rest if not x.startswith("-")]
+        if sub in ("apply", "am"):
+            self.patches += [x for x in pos if x != "-"]
         if sub == "clone" and pos:
             url = pos[0]
             dest = pos[1] if len(pos) > 1 else re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1])
@@ -3425,6 +3482,10 @@ def analyze_shell(command: str, session: Session, state_out: dict | None = None)
             state_out["writes"] = list(a.writes)[:50]
             state_out["runs"] = list(dict.fromkeys(a.runs))[:20]
             state_out["downloaded"] = dict(a.downloaded)
+            state_out["copies"] = list(a.copies)[:50]
+            state_out["agent_written"] = {os.path.normpath(paths.expand(p, session.cwd)) for p in a.written_paths[:200]
+                                          if "$" not in p}
+            state_out["patches"] = list(dict.fromkeys(a.patches))[:10]
         return a.result()
     except Exception as e:  # never raise: a broken analyzer must not crash the guard
         return [Finding(rule="shell.analyzer_error", severity=MEDIUM, category="general",

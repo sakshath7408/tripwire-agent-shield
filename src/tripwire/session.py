@@ -64,6 +64,9 @@ class Session:
     secret_values: set[str] = field(default_factory=set)
     # code files the agent wrote that would do something risky when run: path -> (severity, category, message)
     risky_written: dict[str, tuple[int, str, str]] = field(default_factory=dict)
+    # every file the agent wrote this session (normalised paths); feeding one to an interpreter after hidden
+    # instructions is the attacker's code running
+    agent_written: set[str] = field(default_factory=set)
     last_seen: float = field(default_factory=time.time)
 
     def set_task(self, prompt: str, cwd: str | None = None, profile: str | None = None, verified: bool = True) -> None:
@@ -136,6 +139,7 @@ def session_to_dict(s: Session) -> dict:
         "secrets_read": s.secrets_read[-200:], "pending_secrets": {k: list(v) for k, v in s.pending_secrets.items()},
         "last_verdict_id": s.last_verdict_id, "tainted_files": sorted(s.tainted_files),
         "staged_secrets": s.staged_secrets, "risky_written": {k: list(v) for k, v in s.risky_written.items()},
+        "agent_written": sorted(s.agent_written)[:5000],
         "taint": {"trusted_text": t.trusted_text, "trusted": {k: sorted(v) for k, v in t.trusted.items()},
                   "untrusted": {k: _src(v, sv) for k, v in t.untrusted.items() if _clean(k, sv)},
                   "untrusted_lines": [[n, _src(src, sv)] for n, src in t.untrusted_lines[-1000:] if _clean(n, sv)],
@@ -158,6 +162,7 @@ def session_from_dict(d: dict) -> Session:
                 last_verdict_id=d.get("last_verdict_id"), tainted_files=set(d.get("tainted_files") or []),
                 staged_secrets=list(d.get("staged_secrets") or []),
                 risky_written={k: (int(v[0]), v[1], v[2]) for k, v in (d.get("risky_written") or {}).items()},
+                agent_written=set(d.get("agent_written") or []),
                 last_seen=float(d.get("last_seen") or time.time()))
     for v in d.get("history") or []:
         s.history.append(Verdict.model_validate(v))
