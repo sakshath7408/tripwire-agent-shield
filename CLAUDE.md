@@ -8,6 +8,9 @@ Submission opens 2 PM Sat 31 Oct 2026, hackathon ends 4 PM. Live 5-minute demo t
 Judging: does it really work, real architecture (not just a front end), innovation, intuitive UI,
 safety/privacy, real-world impact, demo. Never fake a result in the demo.
 
+## The rulebook
+`docs/BRIEF.md` holds the official brief, judging criteria and what the judge stressed at kickoff. Check every change against it. Its release checklist runs before submission.
+
 ## Commands
 - Install: `uv sync`
 - Tests: `uv run pytest -q`

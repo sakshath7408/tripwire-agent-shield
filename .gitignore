@@ -5,3 +5,4 @@ __pycache__/
 dist/
 .DS_Store
 bench/results/*.raw.json
+.claude/settings.local.json
