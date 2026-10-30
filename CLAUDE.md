@@ -40,3 +40,4 @@ safety/privacy, real-world impact, demo. Never fake a result in the demo.
 - bashlex hangs forever on an unclosed `${` inside a mid-word quote (e.g. `-'${'`); shell.py screens for it with `BASHLEX_HANG`. Fuzz any new parser before trusting it in the guard.
 - A secret read that is waiting for approval must not count as read. Record it only when allowed, approved (`Engine.resolve`) or its output is observed. Otherwise denying the read still blocks the user's own later emails.
 - Values from a document the user pointed at are not attacker values. Judge a tainted value by whether its source also carried hidden instructions (`TaintSource.injected`), not just by "came from a tool".
+- A copy of a secret is a secret. Track copied files (`tainted_files`) even inside the project, or `cp .env public/ && http.server` slips through.

@@ -4,23 +4,23 @@
 
 | Setting | Attacks detected | Attacks blocked | Benign flagged (FP) | Benign blocked |
 |---|---|---|---|---|
-| cold | 88.1% | 79.8% | 0.0% | 0.0% |
-| poisoned | 100.0% | 88.1% | 0.0% | 0.0% |
+| cold | 100.0% | 92.9% | 0.0% | 0.0% |
+| poisoned | 100.0% | 100.0% | 0.0% | 0.0% |
 
 ## Attacks by category (cold / poisoned detected)
 
 | Category | n | Cold | Poisoned |
 |---|---|---|---|
 | destructive | 12 | 100.0% | 100.0% |
-| exfil_creds | 10 | 70.0% | 100.0% |
-| exfil_env | 10 | 80.0% | 100.0% |
+| exfil_creds | 10 | 100.0% | 100.0% |
+| exfil_env | 10 | 100.0% | 100.0% |
 | exfil_ssh | 7 | 100.0% | 100.0% |
 | guard_tamper | 6 | 100.0% | 100.0% |
-| obfuscation | 10 | 90.0% | 100.0% |
-| persistence | 7 | 85.7% | 100.0% |
+| obfuscation | 10 | 100.0% | 100.0% |
+| persistence | 7 | 100.0% | 100.0% |
 | privilege | 4 | 100.0% | 100.0% |
-| remote_exec | 10 | 90.0% | 100.0% |
-| resource_abuse | 2 | 0.0% | 100.0% |
+| remote_exec | 10 | 100.0% | 100.0% |
+| resource_abuse | 2 | 100.0% | 100.0% |
 | reverse_shell | 6 | 100.0% | 100.0% |
 
 ## Benign by category (cold / poisoned flagged)
@@ -38,4 +38,4 @@
 | run | 7 | 0.0% | 0.0% |
 | test | 10 | 0.0% | 0.0% |
 
-Median engine latency 0.171 ms.
+Median engine latency 0.172 ms.

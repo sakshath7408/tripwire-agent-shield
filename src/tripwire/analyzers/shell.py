@@ -65,6 +65,85 @@ TMP_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders
 OFFICIAL_REGISTRIES = {"pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com",
                        "crates.io", "rubygems.org", "proxy.golang.org", "test.pypi.org"}
 
+MINERS = {"xmrig", "xmr-stak", "xmr-stak-rx", "minerd", "cpuminer", "cpuminer-multi", "cpuminer-opt", "cgminer",
+          "bfgminer", "ethminer", "t-rex", "nbminer", "lolminer", "phoenixminer", "nanominer", "gminer",
+          "teamredminer", "ccminer", "srbminer", "srbminer-multi", "xmrig-cuda", "nheqminer", "kawpowminer"}
+MINER_RE = re.compile(r"stratum\+(?:tcp|ssl|tls)://[^\s'\"]{1,200}|--donate-level[ =]\d", re.I)
+SECRET_ENV_NAME = re.compile(r"SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE|ACCESS_KEY|CREDENTIAL|(?:^|_)KEY(?:_|$)|"
+                             r"(?:^|_)PAT(?:_|$)|AUTH", re.I)
+NPM_LIFECYCLE = {"preinstall", "install", "postinstall", "prepare", "preprepare", "postprepare", "prepublish",
+                 "prepublishonly", "prepack", "postpack", "dependencies", "preuninstall", "postuninstall"}
+# Hosts where a credential is normally used. Sending a GitHub token to api.github.com is the token's job.
+CRED_HOMES = {"github": ("github.com", "githubusercontent.com", "ghcr.io"),
+              "aws": ("amazonaws.com", "aws.amazon.com"), "gcp": ("googleapis.com", "google.com", "gcr.io", "pkg.dev"),
+              "azure": ("azure.com", "microsoft.com", "windows.net", "azurecr.io"),
+              "npm": ("npmjs.org", "npmjs.com"), "heroku": ("heroku.com",), "docker": ("docker.io", "docker.com")}
+
+
+def _cred_source(n: str, a: list[str]) -> tuple[str, str | None] | None:
+    """If this command prints credential material, return (what, provider). Provider names CRED_HOMES or None."""
+    pos = [x for x in a if not x.startswith("-")]
+    j = " ".join(a)
+    if n == "gh" and pos[:2] == ["auth", "token"] or n == "gh" and pos[:2] == ["auth", "status"] and \
+            any(x in ("-t", "--show-token") for x in a):
+        return "your GitHub login token", "github"
+    if n == "aws":
+        if pos[:2] == ["configure", "get"] and len(pos) > 2 and re.search(r"key|token|secret", pos[2], re.I) \
+                or pos[:2] == ["configure", "export-credentials"] \
+                or pos[:2] in (["sts", "get-session-token"], ["sts", "assume-role"], ["ecr", "get-login-password"],
+                               ["iam", "create-access-key"], ["ecr-public", "get-login-password"],
+                               ["codeartifact", "get-authorization-token"]) \
+                or pos[:2] == ["secretsmanager", "get-secret-value"] or pos[:2] == ["ssm", "get-parameter"] and "--with-decryption" in a:
+            return "your AWS keys or secrets", "aws"
+    if n == "gcloud" and re.search(r"\bprint-(?:access|identity|refresh)-token\b|\bsecrets\s+versions\s+access\b|"
+                                   r"\bkeys\s+create\b", j):
+        return "your Google Cloud access token", "gcp"
+    if n == "az" and re.search(r"\bget-access-token\b|\bkeyvault\s+secret\s+show\b|\bcreate-for-rbac\b", j):
+        return "your Azure access token", "azure"
+    if n == "security" and pos[:1] and pos[0] in ("find-generic-password", "find-internet-password", "dump-keychain") \
+            and (pos[0] == "dump-keychain" or any(x.startswith("-") and ("w" in x[1:] or "g" in x[1:]) for x in a)):
+        return "passwords from your keychain", None
+    if n == "op" and (pos[:1] == ["read"] or pos[:2] == ["item", "get"] and ("--reveal" in a or "--fields" in j)
+                      or pos[:1] == ["inject"]):
+        return "a password from 1Password", None
+    if n in ("pass", "gopass") and (pos[:1] == ["show"] or len(pos) == 1 and pos[0] not in ("ls", "list", "init", "git",
+                                                                                              "insert", "generate", "rm")):
+        return "a password from your password store", None
+    if n in ("bw", "lpass") and pos[:1] in (["get"], ["show"]):
+        return "a password from your password manager", None
+    if n == "vault" and pos[:1] in (["read"], ["kv"]) and (pos[:1] == ["read"] or "get" in pos):
+        return "secrets from Vault", None
+    if n in ("kubectl", "oc") and pos[:2] in (["get", "secret"], ["get", "secrets"]) and re.search(r"-o\s*\S|--output", j):
+        return "Kubernetes secrets", None
+    if n == "heroku" and pos[:1] == ["auth:token"]:
+        return "your Heroku token", "heroku"
+    if n == "doppler" and pos[:1] == ["secrets"]:
+        return "secrets from Doppler", None
+    if n == "git" and pos[:2] == ["credential", "fill"]:
+        return "your saved git password", None
+    if n.startswith("docker-credential-") and pos[:1] == ["get"]:
+        return "your Docker login", "docker"
+    if n in ("npm", "pnpm", "yarn") and pos[:2] == ["config", "get"] and len(pos) > 2 and re.search(r"auth|token", pos[2], re.I):
+        return "your npm login token", "npm"
+    if n == "printenv" and any(SECRET_ENV_NAME.search(x) for x in pos):
+        return "a secret key from your environment", None
+    return None
+
+
+def _cred_traits(n: str, a: list[str]) -> set[str]:
+    src = _cred_source(n, a)
+    return {"cred_out", "credfor=" + (src[1] or "?")} if src else set()
+
+
+def _cred_at_home(traits: set[str], host: str | None) -> bool:
+    """True when every credential in `traits` is going to the service it belongs to (normal API use)."""
+    provs = {t[8:] for t in traits if t.startswith("credfor=")}
+    if not host or not provs or "?" in provs:
+        return False
+    h = host.lower().rstrip(".")
+    return all(any(h == d or h.endswith("." + d) for d in CRED_HOMES.get(p, ())) for p in provs)
+
+
 SECRET_VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASS|API_?KEY|PRIVATE_KEY|"
                         r"ACCESS_KEY|CREDENTIALS?)[A-Za-z0-9_]*)\}?")
 GUARD_RE = re.compile(r"(?:^|[\s/~\"'=:}])\.tripwire\b|\.claude/settings[\w.-]*\.json")
@@ -103,6 +182,7 @@ FETCH_CODE = re.compile(r"urlopen|requests\.(?:get|post)|urllib|http\.client|\bf
                         r"open-uri|Net::HTTP|LWP::|Invoke-WebRequest|\biwr\b|DownloadString|WebClient|curl_exec")
 EXEC_CODE = re.compile(r"\b(?:exec|eval|IEX|Invoke-Expression|execfile|compile)\b|new\s+Function\s*\(|\bFunction\s*\(")
 DECODE_CODE = re.compile(r"b64decode|base64|atob\s*\(|fromCharCode|unhexlify|fromhex|codecs\.decode|rot13|"
+                         r"\bpack\s*\(\s*['\"][Hh]|"
                          r"zlib\.decompress|marshal\.loads|FromBase64String|Buffer\.from\([^)]*['\"](?:base64|hex)", re.I)
 SHELL_CALL = re.compile(r"""(?:os\.system|os\.popen|subprocess\.(?:run|call|check_call|check_output|Popen|getoutput|"""
                         r"""getstatusoutput)|commands\.getoutput|\.exec(?:Sync)?|spawnSync|\bsystem|shell_exec|passthru|"""
@@ -756,6 +836,7 @@ class _Analyzer:
         self.found: dict[tuple[str, str | None], Finding] = {}
         self.hex_literals: set[str] = set()
         self.tainted_files: set[str] = set()  # files that now hold copies of secrets
+        self.staged_secrets: list[str] = []  # secret files force-added to git in this command
         self.task = (s.task or "").lower()
 
     # ---- bookkeeping ----
@@ -867,6 +948,10 @@ class _Analyzer:
         m = DB_WIPE_RE.search(cmd)
         if m:
             self.add("shell.db_wipe", HIGH, "destructive", "Wipes a database and all of its data.", m.group(0))
+        m = MINER_RE.search(cmd)
+        if m:
+            self.add("shell.crypto_miner", HIGH, "resource",
+                     "Starts a cryptocurrency miner that burns your computer's power for someone else.", m.group(0))
 
     def homoglyphs(self, cmd: str, depth: int) -> None:
         hit = None
@@ -940,6 +1025,9 @@ class _Analyzer:
                 elif "env_dump" in up:
                     self.add("shell.exfil_env", CRITICAL, "exfiltration",
                              f"Sends your environment variables, which hold passwords and keys, to {host}.", ev)
+                elif "cred_out" in up and not _cred_at_home(up, inf.host):
+                    self.add("shell.exfil_secret", CRITICAL, "exfiltration",
+                             f"Sends your login tokens or passwords to {host}.", ev)
                 elif "file_read" in up and inf.stdin_send and not (inf.host and LOCAL_HOST.match(inf.host)):
                     sev = LOW if self.mentioned(inf.host) else MEDIUM
                     self.add("shell.upload_file", sev, "exfiltration", f"Sends the contents of a local file to {host}.", ev)
@@ -995,8 +1083,8 @@ class _Analyzer:
             self.assign(name, val, c)
         words = [self.expand(w) for w in c.words]
         for _, _, _, t in sub_info:
-            inf.traits |= t & {"secret_read", "env_dump", "download_stdout", "decode"}
-            inf.traits |= {x for x in t if x.startswith("host=")}
+            inf.traits |= t & {"secret_read", "env_dump", "download_stdout", "decode", "cred_out"}
+            inf.traits |= {x for x in t if x.startswith(("host=", "credfor="))}
         for w in c.words:  # "$x" where x holds downloaded/secret content
             for v in re.findall(r"\$\{?(\w+)", w):
                 inf.traits |= self.var_traits.get(v, set())
@@ -1135,6 +1223,7 @@ class _Analyzer:
                     t.add("secret_read")
                 if n in ("env", "printenv") and len(words) == 1:
                     t.add("env_dump")
+                t |= _cred_traits(n, words[1:])
         return t
 
     def redirects(self, inf: Info, depth: int) -> None:
@@ -1172,6 +1261,8 @@ class _Analyzer:
             x = a[i]
             if x in ("--",):
                 return i + 1 < len(a)
+            if inf.name in SHELLS and x.startswith("-") and not x.startswith("--") and "s" in x[1:]:
+                return False  # `bash -s -- args` reads the script from stdin
             if x in ("-", "/dev/stdin"):
                 return False
             if x.startswith("-"):
@@ -1261,8 +1352,8 @@ class _Analyzer:
                 if a[1] in ("pip", "pip3"):
                     self.install("pip", a[2:], raw)
                 elif a[1] in ("http.server", "SimpleHTTPServer"):
-                    self.add("shell.serve_files", LOW, "network",
-                             "Shares the files in this folder with other computers on the network.", raw)
+                    opts, _ = _parse_opts(a[2:], "db", {"--directory", "--bind"})
+                    self.serve_dir(inf, next((v for f, v in opts if f in ("-d", "--directory")), None))
             elif not self._has_file_arg(inf) and n != "osascript":
                 inf.traits.add("shell_in")
         elif n == "eval":
@@ -1438,7 +1529,7 @@ class _Analyzer:
             self.net(inf, sub_info)
         if n in DNS_TOOLS:
             if any(idx >= 0 for _, idx, _, _ in sub_info) or any(SECRET_VAR.search(rw) for rw in c.raw_words[1:]):
-                bad = any(t & {"secret_read", "env_dump"} for _, _, _, t in sub_info) or any(
+                bad = any(t & {"secret_read", "env_dump", "cred_out"} for _, _, _, t in sub_info) or any(
                     SECRET_VAR.search(rw) for rw in c.raw_words[1:])
                 self.add("shell.dns_exfil", CRITICAL if bad else HIGH, "exfiltration",
                          "Smuggles data out by hiding it inside a website name lookup.", raw)
@@ -1452,7 +1543,7 @@ class _Analyzer:
                 inf.traits.add("env_dump")
                 self.add("shell.env_dump", LOW, "secrets",
                          "Prints all your environment variables, which can include passwords and keys.", raw)
-            elif n == "printenv" and any(re.search(r"SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE|ACCESS_KEY", x) for x in a):
+            elif n == "printenv" and any(SECRET_ENV_NAME.search(x) for x in a if not x.startswith("-")):
                 inf.traits.add("env_dump")
                 self.add("shell.print_secret_env", MEDIUM, "secrets", "Prints a secret key from your environment.", raw)
         if n in ("echo", "printf") and any(SECRET_VAR.search(rw) for rw in c.raw_words[1:]):
@@ -1491,6 +1582,32 @@ class _Analyzer:
         elif n in ("ngrok", "cloudflared", "localtunnel", "lt", "bore", "frpc", "serveo"):
             self.add("shell.tunnel", MEDIUM, "network", "Opens a public internet tunnel into this computer.", raw)
 
+        # commands that print credentials (their output must never reach the network)
+        ct = _cred_traits(n, a)
+        if ct:
+            inf.traits |= ct
+            what = _cred_source(n, a)[0]  # type: ignore[index]
+            if n != "printenv":  # printenv already has its own finding
+                self.add("shell.print_credential", LOW, "secrets", f"Prints {what}.", raw)
+        if n in ("iam",) or n == "aws" and a[:1] == ["iam"] or n in ("gcloud", "az"):
+            self.mint_creds(inf)
+
+        # crypto miners
+        if n in MINERS:
+            self.add("shell.crypto_miner", HIGH, "resource",
+                     "Starts a cryptocurrency miner that burns your computer's power for someone else.", raw)
+
+        # commands run on another machine or inside a container
+        if n == "ssh":
+            self.remote_cmd(inf, depth)
+        elif n in ("docker", "podman", "kubectl", "oc", "docker-compose"):
+            self.container_exec(inf, depth)
+
+        # package scripts and one-shot package runners
+        if n in ("npm", "pnpm", "yarn", "bun") and a[:2] == ["pkg", "set"] or n == "npm" and a[:1] == ["set-script"]:
+            self.npm_script(inf, depth)
+        self.run_package(inf)
+
         # installs / publishing
         if n in ("npm", "pnpm", "yarn", "bun", "pip", "uv", "poetry", "pipx", "pipenv", "gem", "cargo", "go", "brew",
                  "composer", "deno", "twine"):
@@ -1519,7 +1636,16 @@ class _Analyzer:
         if DECODE_CODE.search(code) and (EXEC_CODE.search(code) or re.search(r"\bsystem\s*\(|popen|execSync|spawn|subprocess", code)):
             self.add("shell.obfuscated_code", HIGH, "obfuscation", "Runs code that was hidden with an encoding trick.", raw)
             for m in re.finditer(r"""['"]([A-Za-z0-9+/=_-]{12,})['"]""", code):
-                dec = _b64(m.group(1))
+                lit = m.group(1)
+                dec = None
+                if re.fullmatch(r"(?:[0-9a-fA-F]{2}){4,}", lit):
+                    try:
+                        dec = binascii.unhexlify(lit).decode("latin-1")
+                    except (binascii.Error, ValueError):
+                        dec = None
+                    if not (dec and _printable(dec)):
+                        dec = None
+                dec = dec or _b64(lit)
                 if dec and _printable(dec):
                     self.text(_to_text(dec), depth + 1, quiet=True)
                     if depth + 1 <= MAX_DEPTH:
@@ -1779,11 +1905,13 @@ class _Analyzer:
                     self.add("shell.mv_away", r[1], "destructive", "Moves away " + r[2][0].lower() + r[2][1:], raw)
         elif n in ("cp", "rsync"):
             for s_ in srcs:
-                if _is_secret(self.expand_path(s_)) and not (self.s.cwd and self.in_ws(self.expand_path(s_))):
-                    self.add("shell.secret_read", MEDIUM + 5, "secrets", f"Copies your credential file {s_}.", raw)
-                    inf.traits.add("secret_read")
+                if _is_secret(self.expand_path(s_)) or os.path.normpath(self.expand_path(s_)) in self.tainted_files:
+                    # a copy of a secret is a secret wherever it lands; only reading one from outside the project is news
                     self.tainted_files.add(os.path.normpath(self.expand_path(dest)))
                     self.tainted_files.add(os.path.normpath(os.path.join(self.expand_path(dest), os.path.basename(s_))))
+                    if not (self.s.cwd and self.in_ws(self.expand_path(s_))):
+                        self.add("shell.secret_read", MEDIUM + 5, "secrets", f"Copies your credential file {s_}.", raw)
+                        inf.traits.add("secret_read")
         if dest != "/dev/null":
             self.write(dest, raw)
 
@@ -1797,6 +1925,13 @@ class _Analyzer:
         sub, rest = a[i], a[i + 1:]
         flags = [x for x in rest if x.startswith("-")]
         pos = [x for x in rest if not x.startswith("-")]
+        if sub == "add":
+            self.git_add(pos, flags, raw)
+        elif sub == "commit" and self.staged_secrets:
+            inf.traits.add("secret_read")
+        if sub == "push" and self.staged_secrets:
+            self.add("shell.exfil_secret", CRITICAL, "exfiltration",
+                     f"Pushes your secret file {self.staged_secrets[0]} to a shared git server.", raw)
         if sub == "push":
             if any(x in ("-f", "--force", "--mirror") or (x.startswith("-") and not x.startswith("--") and "f" in x) for x in flags) \
                     or any(p.startswith("+") for p in pos):
@@ -2029,6 +2164,8 @@ class _Analyzer:
         for op, tgt in c.redirects:
             if op == "<" and inf.stdin_send:
                 files.append(tgt)
+        if url is None and n in ("gh", "aws"):
+            url = {"gh": "github.com", "aws": "aws.amazon.com"}[n]
         host = _host(url) if url and "://" in (url or "") or (url and DOMAINISH.match(url or "")) else url
         inf.host = host
         if host:
@@ -2048,8 +2185,10 @@ class _Analyzer:
                 self.add("shell.upload_file", LOW, "exfiltration", f"Sends the local file {f} to {where}.", raw)
             else:
                 self.add("shell.upload_file", MEDIUM, "exfiltration", f"Sends the local file {f} to {where}.", raw)
-        bad_sub = [t for _, _, _, t in sub_info if t & {"secret_read", "env_dump"}]
-        if self.var_payload_traits(" ".join(c.words[1:])) & {"secret_read", "env_dump"}:
+        bad_sub = [t for _, _, _, t in sub_info if t & {"secret_read", "env_dump"}
+                   or "cred_out" in t and not _cred_at_home(t, host)]
+        vt = self.var_payload_traits(" ".join(c.words[1:]))
+        if vt & {"secret_read", "env_dump"} or "cred_out" in vt and not _cred_at_home(vt, host):
             bad_sub.append({"secret_read"})
         if bad_sub:
             self.add("shell.exfil_secret", CRITICAL, "exfiltration",
@@ -2063,6 +2202,169 @@ class _Analyzer:
                     self.add("shell.exfil_env_secret", HIGH, "exfiltration",
                              f"Sends the secret value ${m.group(1)} to {where}.", raw)
                     break
+
+    # ---- credential minting, remote commands, package scripts ----
+    def mint_creds(self, inf: Info) -> None:
+        n, a, raw = inf.name, inf.args, inf.c.raw
+        pos = [x for x in a if not x.startswith("-")]
+        j = " ".join(pos)
+        mint = None
+        if n == "aws" and pos[:1] == ["iam"] and len(pos) > 1:
+            if pos[1] in ("create-access-key", "create-login-profile", "update-login-profile", "create-service-specific-credential"):
+                mint = "Creates new AWS login keys, which gives lasting access to your cloud account."
+            elif pos[1] in ("create-user", "attach-user-policy", "attach-role-policy", "put-user-policy",
+                            "add-user-to-group", "update-assume-role-policy", "create-role"):
+                mint = "Changes who can get into your AWS account and what they can do."
+        elif n == "gcloud" and re.search(r"\bservice-accounts\s+keys\s+create\b|\badd-iam-policy-binding\b|"
+                                         r"\bservice-accounts\s+create\b", j):
+            mint = "Creates new Google Cloud keys or access rights, which gives lasting access to your cloud account."
+        elif n == "az" and re.search(r"\bcreate-for-rbac\b|\bcredential\s+reset\b|\brole\s+assignment\s+create\b|"
+                                     r"\bad\s+user\s+create\b", j):
+            mint = "Creates new Azure keys or access rights, which gives lasting access to your cloud account."
+        if mint:
+            self.add("shell.cloud_cred_mint", HIGH, "privilege", mint, raw)
+
+    def _nested(self, words: list[str], depth: int) -> None:
+        """Analyze a command that runs somewhere else (ssh host, container). Its paths are not our workspace."""
+        if not words:
+            return
+        cmdline = words[0] if len(words) == 1 else " ".join(shlex.quote(w) for w in words)
+        saved = self.cwd
+        self.cwd = None
+        try:
+            self.text(cmdline, depth + 1, quiet=True)
+        finally:
+            self.cwd = saved
+
+    def remote_cmd(self, inf: Info, depth: int) -> None:
+        a = inf.args
+        i = 0
+        with_val = set("bcDEeFIiJLlmOoPpQRSWw")
+        while i < len(a):
+            x = a[i]
+            if x == "--":
+                i += 1
+                break
+            if x.startswith("-") and len(x) > 1:
+                last = x[-1]
+                i += 2 if last in with_val and len(x) == 2 else 1
+                continue
+            break
+        if i + 1 < len(a):  # a[i] is the host; the rest is the remote command
+            self._nested(a[i + 1:], depth)
+
+    def container_exec(self, inf: Info, depth: int) -> None:
+        n, a = inf.name, inf.args
+        if n in ("kubectl", "oc"):
+            if "exec" in a and "--" in a:
+                self._nested(a[a.index("--") + 1:], depth)
+            return
+        k = 0
+        if n == "docker" and a[:1] == ["compose"]:
+            k = 1
+        if k >= len(a) or a[k] not in ("exec", "run") and a[k:k + 2] not in (["container", "exec"], ["container", "run"]):
+            return
+        k += 2 if a[k] == "container" else 1
+        val_opts = {"-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file", "--name", "-v", "--volume", "-p",
+                    "--publish", "--network", "--entrypoint", "--mount", "-l", "--label", "--platform", "--detach-keys",
+                    "--cpus", "-m", "--memory", "--hostname", "-h", "--add-host", "--pull", "--restart", "--cap-add",
+                    "--cap-drop", "--device", "--dns", "--gpus", "--ipc", "--pid", "--runtime", "--shm-size",
+                    "--ulimit", "--user", "--index"}
+        while k < len(a):
+            x = a[k]
+            if x == "--":
+                k += 1
+                break
+            if x.startswith("-"):
+                k += 2 if x in val_opts else 1
+                continue
+            break
+        if k + 1 < len(a):  # a[k] is the container (or image); the rest runs inside it
+            self._nested(a[k + 1:], depth)
+
+    def npm_script(self, inf: Info, depth: int) -> None:
+        a, raw = inf.args, inf.c.raw
+        start = 2 if a[:2] == ["pkg", "set"] else 1
+        items = [x for x in a[start:] if not x.startswith("-")]
+        if a[:1] == ["set-script"] and len(items) >= 2:
+            items = [f"scripts.{items[0]}={items[1]}"]
+        for it in items:
+            key, sep, val = it.partition("=")
+            m = re.fullmatch(r"scripts\.([\w:-]+)", key.strip())
+            if not m or not sep:
+                continue
+            if m.group(1).lower() in NPM_LIFECYCLE:
+                self.add("shell.package_hook", HIGH, "persistence",
+                         f"Adds a package '{m.group(1)}' script that runs automatically on every install: {_clip(val, 60)}", raw)
+            self.text(val, depth + 1, quiet=True)
+
+    def run_package(self, inf: Info) -> None:
+        """npx / bunx / pnpm dlx / yarn dlx / npm exec / pipx run / uvx: download a package and run it at once."""
+        n, a, raw = inf.name, inf.args, inf.c.raw
+        if n in ("npx", "bunx", "uvx", "pnpx"):
+            rest = a
+        elif n in ("pnpm", "yarn") and a[:1] == ["dlx"] or n == "npm" and a[:1] in (["exec"], ["x"]) \
+                or n == "pipx" and a[:1] == ["run"] or n == "bun" and a[:1] == ["x"]:
+            rest = a[1:]
+        else:
+            return
+        specs: list[str] = []
+        i = 0
+        while i < len(rest):
+            x = rest[i]
+            if x == "--":
+                break
+            if x in ("-p", "--package", "--from", "--spec", "--with"):
+                if i + 1 < len(rest):
+                    specs.append(rest[i + 1])
+                i += 2
+                continue
+            if x.startswith(("--package=", "--from=", "--spec=", "--with=")):
+                specs.append(x.split("=", 1)[1])
+            elif not x.startswith("-"):
+                specs.append(x)
+                break  # the first positional is the package; the rest are its arguments
+            i += 1
+        for sp in specs:
+            url = sp.split("@", 1)[1].strip() if re.search(r"@\s*(?:git\+)?https?://", sp) and not URLISH.search(sp) else sp
+            if URLISH.search(url) or re.match(r"^[\w.-]+/[\w.-]+#", url):
+                h = _host(url)
+                sev = self.rce_sev([h]) if "://" in url else HIGH
+                if self.mentioned(url):
+                    sev = MEDIUM + 10
+                self.add("shell.run_remote_package", sev, "network",
+                         f"Downloads a package from {h or _clip(url, 60)} and runs it right away, "
+                         "skipping the normal package registry.", raw)
+
+    def git_add(self, pos: list[str], flags: list[str], raw: str) -> None:
+        forced = any(x in ("-f", "--force") or (x.startswith("-") and not x.startswith("--") and "f" in x) for x in flags)
+        hits = [p for p in pos if _is_secret(self.expand_path(p)) or os.path.normpath(self.expand_path(p)) in self.tainted_files]
+        if not hits:
+            return
+        self.staged_secrets += hits
+        if forced:
+            self.add("shell.git_add_secret", HIGH, "secrets",
+                     f"Forces your secret file {hits[0]} into git even though it is set to be ignored.", raw)
+        else:
+            self.add("shell.git_add_secret", MEDIUM, "secrets", f"Adds your secret file {hits[0]} to git.", raw)
+
+    def serve_dir(self, inf: Info, d: str | None) -> None:
+        raw = inf.c.raw
+        full = os.path.normpath(self.expand_path(d)) if d else (os.path.normpath(self.cwd) if self.cwd else None)
+        if not full:
+            self.add("shell.serve_files", LOW, "network",
+                     "Shares the files in this folder with other computers on the network.", raw)
+            return
+        leaked = [t for t in self.tainted_files if t == full or t.startswith(full.rstrip("/") + "/")]
+        if leaked or _is_secret(full) or _is_secret(full.rstrip("/") + "/x"):
+            self.add("shell.serve_secrets", CRITICAL, "exfiltration",
+                     "Shares your secret files with anyone who can reach this computer over the network.", raw)
+        elif full in ("/", HOME) or full in EXTRA_SYSTEM or paths.is_system(full):
+            self.add("shell.serve_files", HIGH, "exfiltration",
+                     f"Shares a whole system or home folder ({d or full}) with other computers on the network.", raw)
+        else:
+            self.add("shell.serve_files", LOW, "network",
+                     "Shares the files in this folder with other computers on the network.", raw)
 
     def install(self, n: str, a: list[str], raw: str) -> None:
         if not a:
