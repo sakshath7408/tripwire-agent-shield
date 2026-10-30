@@ -452,39 +452,17 @@ class Engine:
         if invite:
             f += self._invite(args, blob, s, injected)
         if cap in (Capability.SEND, Capability.MONEY, Capability.FETCH, Capability.AGENT) or (cap == Capability.WRITE and not path):
-            tainted = s.taint.tainted_values(blob)
-            if tainted:
-                v, src = max(tainted, key=lambda t: t[1].injected)
-                v = _as_written(v, blob)  # matched case-insensitively, shown the way it was written
-                verb = _TARGET_VERB.get(cap, "Uses")
-                if src.injected:
-                    # The value sat next to hidden instructions: it is attacker-chosen.
-                    sev = CRITICAL if cap == Capability.MONEY else HIGH + 5
-                    msg = f"{verb} '{v}', taken from hidden instructions in {src.where}."
-                elif cap == Capability.WRITE:
-                    sev = 0
-                elif cap == Capability.AGENT:
-                    # Handing a sub-agent an address or link from something it read: the child may act on it unseen.
-                    sev = MEDIUM
-                    msg = f"Hands a sub-agent '{v}', which came from {src.where}, not from you."
-                elif cap == Capability.FETCH:
-                    sev = MEDIUM if injected else LOW
-                    msg = f"Visits '{v}', which came from content the agent read ({src.where}), not from you."
-                elif cap == Capability.SEND and any(v.lower() in d.lower() for d in _keyed(args, DEST_URL_KEY)):
-                    # Asking to send something (to Sam) does not make a web address from an email or page a place to
-                    # upload to: "post the notes to https://..." in a polite email has no injection phrase at all.
-                    sev = MEDIUM
-                    msg = f"Uploads to '{v}', a web address you never named, taken from {src.where}."
-                elif s.intends(cap):
-                    # User asked for this kind of action and the value came from a clean document they pointed at.
-                    sev = MEDIUM if cap == Capability.MONEY else LOW
-                    msg = f"Uses '{v}' from {src.where}. You asked for this, but check the details."
-                else:
-                    sev = CRITICAL if cap == Capability.MONEY else HIGH + 5
-                    msg = f"{verb} '{v}', which came from {src.where}, not from you."
-                if sev:
-                    f.append(Finding(rule=f"taint.{cap.value}_target", severity=sev, category="injection",
-                                     message=msg, evidence=src.snippet))
+            # Judge every value that came from content, not just one: which value counts first must never depend
+            # on set order (review 4: the same call was ASK or BLOCK depending on PYTHONHASHSEED).
+            best: tuple[int, str, str, object] | None = None
+            for v, src in s.taint.tainted_values(blob):
+                sev, msg = _taint_target(cap, _as_written(v, blob), src, s, args, injected)
+                # Ties: the longer value is the more specific one (an IBAN beats the digit run inside it).
+                if sev and (best is None or (sev, len(v)) > (best[0], len(best[1]))):
+                    best = (sev, v, msg, src)
+            if best:
+                f.append(Finding(rule=f"taint.{cap.value}_target", severity=best[0], category="injection",
+                                 message=best[2], evidence=best[3].snippet))
             f += self._recipients(args, cap, s, injected)
             tmpl = s.taint.template_source(blob) if cap in (Capability.SEND, Capability.FETCH) else None
             if tmpl:
@@ -932,6 +910,29 @@ def _carries_secret(blob: str, s: Session) -> bool:
 def _guard_home():
     from pathlib import Path
     return Path(os.environ.get("TRIPWIRE_HOME") or Path.home() / ".tripwire")
+
+
+def _taint_target(cap: Capability, v: str, src, s: Session, args: dict, injected: bool) -> tuple[int, str]:
+    """How bad it is that an outgoing action uses `v`, a value that came from content the agent read."""
+    verb = _TARGET_VERB.get(cap, "Uses")
+    if src.injected:
+        # The value sat next to hidden instructions: it is attacker-chosen.
+        return (CRITICAL if cap == Capability.MONEY else HIGH + 5), f"{verb} '{v}', taken from hidden instructions in {src.where}."
+    if cap == Capability.WRITE:
+        return 0, ""
+    if cap == Capability.AGENT:
+        # Handing a sub-agent an address or link from something it read: the child may act on it unseen.
+        return MEDIUM, f"Hands a sub-agent '{v}', which came from {src.where}, not from you."
+    if cap == Capability.FETCH:
+        return (MEDIUM if injected else LOW), f"Visits '{v}', which came from content the agent read ({src.where}), not from you."
+    if cap == Capability.SEND and any(v.lower() in d.lower() for d in _keyed(args, DEST_URL_KEY)):
+        # Asking to send something (to Sam) does not make a web address from an email or page a place to
+        # upload to: "post the notes to https://..." in a polite email has no injection phrase at all.
+        return MEDIUM, f"Uploads to '{v}', a web address you never named, taken from {src.where}."
+    if s.intends(cap):
+        # User asked for this kind of action and the value came from a clean document they pointed at.
+        return (MEDIUM if cap == Capability.MONEY else LOW), f"Uses '{v}' from {src.where}. You asked for this, but check the details."
+    return (CRITICAL if cap == Capability.MONEY else HIGH + 5), f"{verb} '{v}', which came from {src.where}, not from you."
 
 
 def _is_routine(cmd: str) -> bool:

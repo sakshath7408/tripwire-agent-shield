@@ -129,6 +129,14 @@ def deobfuscated_emails(text: str) -> set[str]:
     return out
 
 
+class Found(set):
+    """A set that always iterates in sorted order. Verdicts and their wording must never depend on Python's hash
+    seed (review 4: the same call got ASK or BLOCK after a restart because "the first tainted value" moved)."""
+
+    def __iter__(self):
+        return iter(sorted(set.__iter__(self)))
+
+
 def indicators(text: str) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     text = canon(text)
@@ -139,7 +147,7 @@ def indicators(text: str) -> dict[str, set[str]]:
         if kind == "email":
             found |= deobfuscated_emails(text)
         if found:
-            out[kind] = found
+            out[kind] = Found(found)
     return out
 
 
@@ -257,14 +265,14 @@ class TaintStore:
         return False
 
     def tainted_values(self, text: str) -> list[tuple[str, TaintSource]]:
-        """Indicators inside `text` that came from untrusted data and not from the user."""
+        """Indicators inside `text` that came from untrusted data and not from the user, sorted by value."""
         hits = []
         for vals in indicators(text).values():
             for v in vals:
                 src = self.untrusted.get(v) or _domain_match(v, self.untrusted)
                 if src and not self.is_trusted_value(v):
                     hits.append((v, src))
-        return hits
+        return sorted(hits, key=lambda h: h[0])
 
     def template_source(self, text: str) -> tuple[str, TaintSource] | None:
         """A URL in `text` that is an untrusted URL with something added on the end (`?d=` + data).
@@ -272,7 +280,7 @@ class TaintStore:
         for v in indicators(text).get("url", ()):
             if self.is_trusted_value(v):
                 continue
-            for k, src in self.untrusted.items():
+            for k, src in sorted(self.untrusted.items()):
                 # "...?d=" + data, or a query string tacked onto a bare link. A longer path alone is normal browsing.
                 if k.startswith("http") and len(k) > 12 and len(v) > len(k) and v.startswith(k) and \
                         (k[-1] in "=?&" or v[len(k)] in "?&"):
@@ -288,7 +296,7 @@ class TaintStore:
         link (a path that was itself in the data, or a short docs path) is not this."""
         if v in self.untrusted:
             return None  # the full link was in the data: plain link following
-        for k, src in self.untrusted.items():
+        for k, src in sorted(self.untrusted.items()):
             if not (k.startswith("http") and k.endswith("/") and k.count("/") >= 3 and len(k) > 12
                     and len(v) > len(k) and v.startswith(k)):
                 continue
@@ -366,10 +374,10 @@ def _whole(v: str, text: str) -> bool:
 
 
 def _domain_match(value: str, untrusted: dict[str, TaintSource]) -> TaintSource | None:
-    for k, src in untrusted.items():
-        if len(k) > 5 and (k in value or value in k):
-            return src
-    return None
+    """The untrusted value this one is part of (or that is part of it). Several can match: prefer one from content
+    with hidden instructions, then the longest, then by name, so the answer never depends on dict order."""
+    hits = [(src.injected, len(k), k, src) for k, src in untrusted.items() if len(k) > 5 and (k in value or value in k)]
+    return max(hits, key=lambda h: h[:3])[3] if hits else None
 
 
 def _snippet(text: str, needle: str, width: int = 70) -> str:

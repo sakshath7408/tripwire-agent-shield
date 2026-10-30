@@ -1580,7 +1580,7 @@ class _Analyzer:
             self.sql(blob)
         for j, inf in enumerate(infos):
             up: set[str] = set().union(*(i.traits for i in infos[:j])) if j else set()
-            up_hosts = [t[5:] for t in up if t.startswith("host=")]
+            up_hosts = sorted(t[5:] for t in up if t.startswith("host="))
             ev = " | ".join(i.c.raw for i in infos[: j + 1])
             if "shell_in" in inf.traits and j > 0:
                 payload, used_dec = _eval_pipe([i.c for i in infos[:j]])
@@ -2064,7 +2064,7 @@ class _Analyzer:
                 inf.traits.add("shell_in")
         if "executor" in inf.traits:
             dl = "download_stdout" in inf.traits and "own_fetch" not in inf.traits
-            hosts = [t[5:] for t in inf.traits if t.startswith("host=")]
+            hosts = sorted(t[5:] for t in inf.traits if t.startswith("host="))
             if dl:
                 self.add("shell.pipe_to_shell", self.rce_sev(hosts), "network",
                          f"Downloads code from {hosts[0] if hosts else 'the internet'} and runs it right away, "
