@@ -26,9 +26,11 @@ can't vouch for values that came from them.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import threading
 import time
 from collections import Counter, deque
 from pathlib import Path
@@ -82,6 +84,32 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         engine.autonomy = saved
     if engine.learned.path is None and not engine.learned.rules:
         engine.learned = autolib.LearnedStore(home / "learned.yaml")
+    # Sessions survive a daemon restart: the task, what was learned from tool outputs, and above all that hidden
+    # instructions were seen. Without this, restarting the daemon mid-session wiped the injection memory and the
+    # attacker's next call was allowed (QA 31 Oct).
+    sessions_path = home / "sessions.json"
+    restored = engine.sessions.load(sessions_path) if not engine.sessions.all() else 0
+    if restored:
+        log.warning("restored %d session(s) from %s", restored, sessions_path)
+    saved_at = {"changes": engine.sessions.changes, "error": None}
+
+    def save_sessions() -> None:
+        changes = engine.sessions.changes
+        try:
+            engine.sessions.save(sessions_path)
+            saved_at.update(changes=changes, error=None)
+        except Exception as e:  # noqa: BLE001 - a busy dict mid-iteration or a full disk: retry on the next tick
+            if saved_at["error"] is None:
+                log.error("could not save sessions to %s: %s", sessions_path, e)
+            saved_at["error"] = f"{type(e).__name__}: {e}"
+
+    def saver() -> None:
+        while True:
+            time.sleep(2)
+            if engine.sessions.changes != saved_at["changes"]:
+                save_sessions()
+
+    threading.Thread(target=saver, name="tripwire-sessions", daemon=True).start()
     app_trace = audit.register
     recent: deque[Verdict] = deque(maxlen=500)
     pending: dict[str, asyncio.Future] = {}
@@ -107,13 +135,20 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
             q.put_nowait((kind, data))
 
     engine.listeners.append(broadcast)
-    app = FastAPI(title="Tripwire", version="0.1.0")
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        yield
+        save_sessions()  # a clean stop (Ctrl-C, restart script) writes the latest state
+
+    app = FastAPI(title="Tripwire", version="0.1.0", lifespan=lifespan)
     app.state.engine = engine
     app.state.audit = audit
     app.state.token = token
     app.state.home = home
     app.state.new_pair = new_pair
     app.state.dash_key = dash
+    app.state.save_sessions = save_sessions
+    app.state.restored_sessions = restored
 
     @app.middleware("http")
     async def guard_the_guard(request: Request, call_next):
@@ -203,8 +238,15 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         return {"ok": True}
 
     def record_verdict(v: Verdict, agent: str, parent: str | None) -> None:
+        try:  # serialising is part of recording: a failure here must not turn a verdict into an HTTP 500
+            body = v.model_dump_json()
+        except Exception as e:  # noqa: BLE001
+            audit.error = f"{type(e).__name__}: {e}"
+            log.error("AUDIT APPEND FAILED: %s", audit.error)
+            body = json.dumps({"id": v.id, "decision": v.decision.value, "risk": v.risk, "summary": v.summary,
+                               "tool": v.action.tool, "note": "the full verdict could not be encoded"}, ensure_ascii=True)
         record("verdict", id=v.id, ref=v.id, ts=v.ts, session=v.action.session_id, agent=agent, parent=parent,
-               trace=v.trace, tool=v.action.tool, decision=v.decision.value, risk=v.risk, body=v.model_dump_json())
+               trace=v.trace, tool=v.action.tool, decision=v.decision.value, risk=v.risk, body=body)
 
     def record_resolution(vid: str, v: Verdict | None, decision: Decision, by: str) -> None:
         a = v.action if v else None
@@ -390,7 +432,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     def healthz() -> dict:
         # "ok" means the daemon is deciding (adapters and scripts poll this). Audit health is separate,
         # so a broken disk shows up as audit "degraded" without making every agent fail closed.
-        return {"ok": True, "audit": audit.health()}
+        return {"ok": True, "audit": audit.health(),
+                "sessions": {"live": len(engine.sessions.all()), "restored": restored, "save_error": saved_at["error"]}}
 
     if STATIC.exists():
         app.mount("/static", StaticFiles(directory=STATIC), name="static")
