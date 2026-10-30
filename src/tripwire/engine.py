@@ -192,7 +192,9 @@ class Engine:
         self.learned = learned or auto.LearnedStore()
 
     def set_guard_port(self, port: int) -> None:
+        from .analyzers import shell as _shell
         self.guard_ports.add(int(port))
+        _shell.GUARD_PORTS.add(int(port))
         self._port_re = _daemon_port_re(self.guard_ports)
 
     def set_autonomy(self, level: str) -> str:

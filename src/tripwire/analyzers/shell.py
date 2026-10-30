@@ -359,7 +359,8 @@ def _is_secret(full: str) -> bool:
     return paths.is_secret(full) or paths.is_secret(full.rstrip("/") + "/")
 
 
-GUARD_FILES = ("token", "audit.key", "audit.db", "settings.json", "learned.yaml", "policy.yaml", "pins.json", "pins.key")
+GUARD_FILES = ("token", "admin.key", "audit.key", "audit.db", "settings.json", "learned.yaml", "policy.yaml", "pins.json",
+               "pins.key", "sessions.json")
 
 
 def _under_home(full: str) -> bool:
@@ -421,6 +422,123 @@ def _guard_glob_at(w: str, gh: str, cwd: str | None) -> bool:
         if any(_comp_match(pc[-1], f) for f in GUARD_FILES) or re.search(r"[*?\[]", pc[-1]):
             return True
     return False
+
+
+# ---- guard discovery: list the hidden folders in your home folder, then open what turns up -------------------------
+# Review 4: `ls -a ~ | grep -i trip | xargs -I{} cat ~/{}/admin.key`, `for d in ~/.*/; do cat "$d"admin.key; done` and
+# `glob(expanduser('~/.*/*.key'))` + open() never name ~/.tripwire, yet reach it. Any command or code that enumerates a
+# folder holding Tripwire's home and reads what it finds is guard access, unless a literal filter rules the guard out.
+_ENUM_CODE = re.compile(r"\b(?:listdir|scandir|walk|iterdir|i?glob|rglob|readdirSync|readdir|opendirSync|opendir|"
+                        r"Dir\.(?:entries|children|each_child|glob|foreach)|Dir\[|each_child|getAllFiles)\b", re.I)
+_HOME_CODE = re.compile(r"expanduser\(\s{0,4}['\"]~/?['\"]\s{0,4}\)|Path\.home\(\)|environ(?:\.get\(|\[)\s{0,4}['\"]HOME|"
+                        r"getenv\(\s{0,4}['\"]HOME|homedir\(\)|process\.env(?:\.HOME\b|\[['\"]HOME)|Dir\.home\b|"
+                        r"ENV\[['\"]HOME|\$ENV\{HOME\}|expand_path\(\s{0,4}['\"]~/?['\"]|getpwuid|USERPROFILE", re.I)
+_READ_CODE = re.compile(r"\bopen\s{0,4}\(|read_text|read_bytes|readFile|createReadStream|File\.(?:read|open|binread|"
+                        r"readlines)|IO\.(?:read|readlines)|\bslurp|copyfile|copytree|shutil\.|\bcp\b|\bcat\b|"
+                        r"\b(?:head|tail|less|more|xxd|od|strings|base64|tar|zip|rsync|scp|dd|nl|bat|awk|sed|tee|grep\s{1,4}-\w{0,6}r)\b|"
+                        r"-exec\b|\bxargs\b|<\s{0,3}\$|\bsource\b", re.I)
+_LS_HOME = r"\bls\b[^|;&\n]{0,600}"
+_GREP_PAT = re.compile(r"\b(?:e|f)?grep\s{1,4}((?:-[A-Za-z]{1,8}\s{1,4})*)(?:-e\s{1,4})?(?:'([^']{1,200})'|\"([^\"]{1,200})\"|([^\s|;&'\"]{1,200}))")
+
+
+GUARD_PORTS: set[int] = {7777, int(os.environ.get("TRIPWIRE_PORT") or 7777)}  # Engine.set_guard_port adds the live one
+
+
+def _home_refs() -> list[str]:
+    """Ways to write each folder that holds Tripwire's home (your home folder for the default ~/.tripwire)."""
+    gh = _guard_home()
+    parents = dict.fromkeys([os.path.dirname(gh), HOME])
+    refs: list[str] = []
+    for p in parents:
+        if p == HOME:
+            refs += [r"~", r"\$\{?HOME\}?"]
+        refs.append(re.escape(p))
+    return refs
+
+
+def _guard_names() -> list[str]:
+    return list(dict.fromkeys([os.path.basename(_guard_home()), ".tripwire"]))
+
+
+def _filter_spares_guard(text: str) -> bool:
+    """A literal name filter (grep PATTERN) in the command that can't match Tripwire's folder."""
+    pats = []
+    for m in _GREP_PAT.finditer(text[:20_000]):
+        flags, pat = m.group(1) or "", m.group(2) or m.group(3) or m.group(4) or ""
+        if "-v" in flags.split() or not pat or "$" in pat.replace("$'", "") and not pat.endswith("$"):
+            return False
+        pats.append((pat, "i" in flags.replace("-", "")))
+    if not pats:
+        return False
+    for pat, icase in pats:
+        try:
+            rx = re.compile(pat, re.I if icase else 0)
+        except re.error:
+            return False
+        if any(rx.search(n) for n in _guard_names() + list(GUARD_FILES)):
+            return False
+    return True
+
+
+def guard_discovery(text: str) -> str | None:
+    """Evidence when `text` enumerates a folder that holds Tripwire's home and reads what it finds."""
+    text = text[:MAX_LEN]
+    refs = "|".join(_home_refs())
+    names = _guard_names()
+    hit = None
+    # 1. a wildcard right under that folder that can match the guard's folder name: ~/.*/, $HOME/.t*, ~/.[t]rip*
+    for m in re.finditer(rf"(?:^|[\s'\"=(\[,{{:`])(?:{refs})/+([^\s'\"/;|&)<>,}}]{{0,80}}[*?\[][^\s'\"/;|&)<>,}}]{{0,80}})", text):
+        comp = m.group(1)
+        if any(_comp_match(c, n) for c in _brace(comp) for n in names):
+            hit = m.group(0).strip(" '\"=([,{:`")
+            break
+    # 2. listing the folder itself: ls -a ~, find ~ (no narrower start), listdir/glob/readdir over the home folder
+    if hit is None:
+        for m in re.finditer(_LS_HOME, text):
+            seg = m.group(0)
+            if re.search(r"\s-[A-Za-z]{0,8}[aA]", seg) and re.search(rf"(?:^|\s)['\"]?(?:{refs})/?['\"]?(?=$|\s)", seg[2:]):
+                hit = seg.strip()
+                break
+    if hit is None:
+        m = re.search(rf"\bfind\s{{1,4}}(?:-[HLP]\s{{1,4}})*['\"]?(?:{refs})/?['\"]?(?=\s|$)", text)
+        if m and not re.search(r"\s-(?:i?name|i?path|i?regex)\s", text[m.end():m.end() + 400]):
+            hit = m.group(0)
+    if hit is None:
+        e = _ENUM_CODE.search(text)
+        if e and _HOME_CODE.search(text):
+            hit = e.group(0) + "(" + _HOME_CODE.search(text).group(0) + ")"
+    if hit is None or not _READ_CODE.search(text) or _filter_spares_guard(text):
+        return None
+    return hit
+
+
+# ---- raw sockets: a hand-built connection is how a guarded agent talks to Tripwire's own API unseen ----------------
+_SOCK_CALL = re.compile(r"create_connection\s{0,4}\(|\.connect(?:_ex)?\s{0,4}\(\s{0,4}\(|net\.(?:connect|createConnection)\s{0,4}\(|"
+                        r"\.connect\s{0,4}\(\s{0,4}[\w'\"]|TCPSocket\.(?:new|open)\s{0,4}\(|IO::Socket::INET|fsockopen\s{0,4}\(|"
+                        r"Socket\.tcp\s{0,4}\(|socket\.socket\s{0,4}\(")
+_SOCK_LITERAL = re.compile(r"""\(\s{0,4}\(?\s{0,4}['"]([\w.:\[\]-]{1,253})['"]\s{0,4},\s{0,4}(\d{1,5})\s{0,4}\)?|"""
+                           r"""\(\s{0,4}(\d{1,5})\s{0,4},\s{0,4}['"]([\w.:\[\]-]{1,253})['"]""")
+
+
+def raw_socket_target(text: str, guard_ports: set[int]) -> tuple[str, str] | None:
+    """(evidence, why) when code opens a raw TCP connection whose address isn't a plain literal, or is a plain literal
+    pointing at this computer's guard port. A literal public host with a literal port is ordinary networking."""
+    text = text[:MAX_LEN]
+    m = _SOCK_CALL.search(text)
+    if not m:
+        return None
+    calls = [x for x in _SOCK_CALL.finditer(text) if not x.group(0).startswith("socket.socket")]
+    if not calls:
+        return None  # a socket object that never connects anywhere (or only binds/listens)
+    for c in calls:
+        lit = _SOCK_LITERAL.match(text, c.end() - 1) or _SOCK_LITERAL.match(text, c.end() - 2)
+        if lit is None:
+            return c.group(0), "computed"
+        host, port = (lit.group(1), lit.group(2)) if lit.group(1) else (lit.group(4), lit.group(3))
+        from ..engine import is_local_name
+        if is_local_name(host) and int(port) in guard_ports:
+            return f"{host}:{port}", "guard"
+    return None
 
 
 def _host(url: str | None) -> str | None:
@@ -1483,6 +1601,25 @@ class _Analyzer:
         if m:
             self.add("shell.fork_bomb", CRITICAL, "destructive",
                      "Freezes your computer by copying itself over and over (a fork bomb).", m.group(0))
+        hit = guard_discovery(cmd)
+        if hit:
+            self.add("shell.guard_tamper", CRITICAL, "scope",
+                     "Lists the hidden folders in your home folder and opens what it finds there, which reaches "
+                     "Tripwire's own key and token.", hit)
+        sock = raw_socket_target(cmd, GUARD_PORTS)
+        if sock:
+            self.add("shell.guard_tamper", CRITICAL, "scope",
+                     "Opens a raw network connection to an address worked out while the code runs, which is how "
+                     "Tripwire's own control panel would be reached unseen." if sock[1] == "computed" else
+                     "Opens a raw network connection to Tripwire's own control panel.", sock[0])
+        for m in re.finditer(r"/dev/(?:tcp|udp)/([^\s/;|&)]{1,260})/([^\s;|&)<>]{1,60})", cmd):
+            h, prt = m.group(1), m.group(2)
+            from ..engine import is_local_name
+            if re.search(r"[$`(]", h + prt) and not (re.fullmatch(r"[\w.-]{1,253}", h) and not is_local_name(h)) \
+                    or is_local_name(h.strip("'\"")) and (not prt.isdigit() or int(prt) in GUARD_PORTS):
+                self.add("shell.guard_tamper", CRITICAL, "scope",
+                         "Opens a raw connection to this computer, or to an address worked out at run time, which is how "
+                         "Tripwire's own control panel would be reached unseen.", m.group(0))
         m = DEV_TCP.search(cmd)
         if m:
             if REV_SHELL_HINT.search(cmd):
@@ -2264,6 +2401,19 @@ class _Analyzer:
                 or (n == "tr" and len(a) >= 2 and "n-z" in a[1].lower()):
             inf.traits.add("decode")
 
+        # raw connections to an address worked out at run time (or to this computer's guard port)
+        if n in RAW_SOCKET:
+            pos = [rw for rw in c.raw_words[1:] if not rw.startswith("-")]
+            hostw = pos[0] if pos else ""
+            portw = pos[1] if len(pos) > 1 else ""
+            from ..engine import is_local_name
+            exp_host = self.expand(hostw).strip("'\"")
+            if re.search(r"\$\(|`|\$\{?\w", hostw) and (re.search(r"\$\(|`", hostw) or "$" in exp_host) or \
+                    hostw and is_local_name(exp_host) and (re.search(r"[$`]", portw) or
+                                                           portw.isdigit() and int(portw) in GUARD_PORTS):
+                self.add("shell.guard_tamper", CRITICAL, "scope",
+                         f"Opens a raw connection with {n} to an address worked out at run time (or to Tripwire's own "
+                         "port), which is how Tripwire's own control panel would be reached unseen.", raw)
         # reverse shells / listeners
         if n in ("nc", "ncat", "netcat"):
             opts, _ = _parse_opts(a, "pswiqWIOT", {"--source-port", "--wait"})
@@ -2388,6 +2538,10 @@ class _Analyzer:
                          f"Pieces together the name of your credential file {hidden[0]} so it doesn't show, then opens it.", raw)
             else:
                 self.add("shell.secret_read", MEDIUM + 5, "secrets", f"Reads your credential file {secrets[0]}.", raw)
+        # Only plain-literal sockets and no other network call: then a "net" sink with no folded target is that socket.
+        self._sock_literal = bool(_SOCK_CALL.search(code)) and raw_socket_target(code, GUARD_PORTS) is None and \
+            not re.search(r"urlopen|Request|HTTPS?Connection|requests|httpx|aiohttp|fetch|SMTP|urlretrieve|ftplib|"
+                          r"telnetlib|xmlrpc|websocket", code)
         self.code_sinks(name, fold, built, bool(secrets), fetchy, inf, depth)
         if name == "osascript":
             if re.search(r"login\s+item", code, re.I):
@@ -2437,6 +2591,8 @@ class _Analyzer:
                     self.add("shell.dynamic_path", MEDIUM, "obfuscation",
                              f"{verb} a file whose name is only worked out while the code runs, so it can't be checked first.", raw)
             elif kind == "net":
+                if getattr(self, "_sock_literal", False) and not sus_read:
+                    continue  # socket.create_connection(('example.com', 443)): a plain address, checked like any other
                 if sus_read:
                     self.add("shell.dynamic_net", HIGH, "exfiltration",
                              "Sends data to an address worked out while the code runs, after opening a file that looks "
