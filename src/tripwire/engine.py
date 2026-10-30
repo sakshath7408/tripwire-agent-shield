@@ -8,6 +8,7 @@ Deterministic first. The judge never sees untrusted data, so it cannot be inject
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Callable
 
@@ -146,12 +147,23 @@ class Engine:
 
         if cap == Capability.EXEC:
             cmd = _first(args, CMD_KEYS) or blob
-            f += analyze_shell(cmd, s)
+            shell = analyze_shell(cmd, s)
+            f += shell
             src = s.taint.command_from_data(cmd)
             if src:
-                f.append(Finding(rule="taint.command_from_data", severity=HIGH + 5, category="injection",
-                                 message=f"This exact command was written inside content the agent read ({src.tool}), not by you.",
-                                 evidence=src.snippet))
+                # READMEs legitimately say "run npm test". Copying a command from data is only
+                # dangerous when the command itself is risky, or is unfamiliar after an injection.
+                risky = any(x.severity >= MEDIUM for x in shell)
+                if risky:
+                    sev = HIGH + 5
+                elif _is_routine(cmd):
+                    sev = 0
+                else:
+                    sev = MEDIUM if s.taint.injection_seen else LOW
+                if sev:
+                    f.append(Finding(rule="taint.command_from_data", severity=sev, category="injection",
+                                     message=f"This exact command was written inside content the agent read ({src.tool}), not by you.",
+                                     evidence=src.snippet))
 
         if path:
             full = paths.expand(path, s.cwd)
@@ -212,6 +224,15 @@ class Engine:
                 fn(kind, data)
             except Exception:
                 pass
+
+
+ROUTINE = re.compile(
+    r"^\s*(npm|pnpm|yarn|bun)\s+(test|run (test|lint|build|dev|typecheck)|install|ci)\b|^\s*(pytest|tox|make|cargo (test|build|check)|"
+    r"go (test|build|vet)|python -m (pytest|unittest)|uv (run pytest|sync)|git (status|diff|log|show)|ls|pwd|tsc|eslint|ruff)\b")
+
+
+def _is_routine(cmd: str) -> bool:
+    return bool(ROUTINE.match(cmd)) and not re.search(r"[|;&`$><]", cmd)
 
 
 def _verb(cap: Capability) -> str:

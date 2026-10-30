@@ -54,6 +54,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
     audit = Audit(audit_path or HOME / "audit.db")
     recent: deque[Verdict] = deque(maxlen=500)
     pending: dict[str, asyncio.Future] = {}
+    deadlines: dict[str, float] = {}
     queues: set[asyncio.Queue] = set()
     started = time.time()
 
@@ -82,6 +83,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
         if v.decision == Decision.ASK and wait > 0:
             fut = asyncio.get_running_loop().create_future()
             pending[v.id] = fut
+            deadlines[v.id] = time.time() + min(wait, 300)
+            broadcast("held", {"id": v.id, "deadline": deadlines[v.id]})
             try:
                 v.decision = await asyncio.wait_for(fut, timeout=min(wait, 300))
                 v.resolved_by = "human"
@@ -90,6 +93,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
                 broadcast("resolved", {"id": v.id, "decision": "block", "by": "timeout"})
             finally:
                 pending.pop(v.id, None)
+                deadlines.pop(v.id, None)
         audit.write(v)
         return v
 
@@ -119,17 +123,22 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
         cats = Counter(f.category for v in recent if v.decision != Decision.ALLOW for f in v.findings)
         return {"total": len(recent), "allow": c["allow"], "ask": c["ask"], "block": c["block"],
                 "categories": dict(cats.most_common(8)), "sessions": len(engine.sessions.all()),
-                "pending": list(pending), "uptime_s": round(time.time() - started),
+                "pending": [{"id": k, "deadline": deadlines.get(k)} for k in pending], "uptime_s": round(time.time() - started),
                 "judge": engine.judge is not None,
                 "avg_ms": round(sum(v.elapsed_ms for v in recent) / len(recent), 2) if recent else 0}
 
     @app.get("/v1/sessions")
     def sessions() -> list[dict]:
-        return [{"id": s.id, "cwd": s.cwd, "task": s.task, "injection_seen": len(s.taint.injection_seen),
+        return [{"id": s.id, "cwd": s.cwd, "task": s.task, "profile": s.profile,
+                 "injection_seen": len(s.taint.injection_seen),
+                 "injections": [{"tool": i.tool, "snippet": i.snippet} for i in s.taint.injection_seen[-5:]],
                  "secrets_read": s.secrets_read, "actions": len(s.history)} for s in engine.sessions.all()]
 
     @app.post("/v1/reset")
     def reset() -> dict:
+        for fut in pending.values():  # never leave a held agent hanging: settle as block
+            if not fut.done():
+                fut.set_result(Decision.BLOCK)
         engine.sessions.reset()
         recent.clear()
         broadcast("reset", {})
@@ -152,6 +161,12 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None) -> 
                 queues.discard(q)
 
         return EventSourceResponse(gen())
+
+    @app.get("/v1/audit")
+    def audit_log(limit: int = 1000, session_id: str | None = None) -> list[dict]:
+        q = "select json from verdicts" + (" where session=?" if session_id else "") + " order by ts desc limit ?"
+        rows = audit.db.execute(q, (session_id, limit) if session_id else (limit,)).fetchall()
+        return [json.loads(r[0]) for r in rows]
 
     @app.get("/healthz")
     def healthz() -> dict:

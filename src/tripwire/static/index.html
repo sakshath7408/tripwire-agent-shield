@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tripwire</title>
+  <meta name="description" content="Tripwire watches every tool call your AI agent makes and stops the ones you never asked for.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z' fill='%233a55d0'/%3E%3Cpath d='M7 12h10' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-allow" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m6.3 10.3 2.5 2.5 5-5.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-ask" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7.7 7.6a2.4 2.4 0 1 1 3.3 2.2c-.6.3-1 .8-1 1.5v.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="10" cy="14.4" r="1.1" fill="currentColor"/></symbol>
+    <symbol id="i-block" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m4.4 15.6 11.2-11.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.2 4.2 5.1v5.8c0 4.9 3.3 9.2 7.8 10.9 4.5-1.7 7.8-6 7.8-10.9V5.1L12 2.2z" fill="currentColor"/><path d="M7.6 12.2h8.8" stroke="var(--surface)" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 20 20"><path d="M10 2.6 1.8 16.8h16.4L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 8v4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="10" cy="14.4" r="1.05" fill="currentColor"/></symbol>
+    <symbol id="i-user" viewBox="0 0 20 20"><circle cx="10" cy="6.8" r="3.3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M3.6 17.2c.8-3.2 3.3-5 6.4-5s5.6 1.8 6.4 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 20 20"><path d="M5 2.5h6.5L15.5 6.5v11H5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11.3 2.6v4h4" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 20 20"><path d="M4 10a6 6 0 1 0 1.8-4.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M4 3.2v3.6h3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <svg class="brand-mark" aria-hidden="true"><use href="#i-shield"/></svg>
+        <span class="brand-name">Tripwire</span>
+      </div>
+      <nav class="sessions" id="sessions" aria-label="Agent sessions" hidden></nav>
+      <div class="top-right">
+        <span class="conn" id="conn" data-state="connecting" role="status" aria-live="polite">
+          <span class="conn-dot" aria-hidden="true"></span><span class="conn-text">Connecting</span>
+        </span>
+        <button class="btn-quiet" id="reset" type="button" title="Clear every action and session, for a fresh demo run">
+          <svg aria-hidden="true"><use href="#i-reset"/></svg><span>Reset</span>
+        </button>
+      </div>
+    </header>
+
+    <section class="brief" aria-label="What you asked for">
+      <div class="asked">
+        <div class="asked-label"><svg aria-hidden="true"><use href="#i-user"/></svg>You asked the agent to</div>
+        <p class="asked-text" id="task">Nothing yet. Give your agent a task and it shows up here.</p>
+        <div class="asked-meta"><span class="profile" id="profile" hidden></span><span id="cwd"></span></div>
+      </div>
+      <div class="tally" id="tally">
+        <div class="stat stat-allow"><svg aria-hidden="true"><use href="#i-allow"/></svg><b id="n-allow">0</b><span>allowed</span></div>
+        <div class="stat stat-ask"><svg aria-hidden="true"><use href="#i-ask"/></svg><b id="n-ask">0</b><span>need approval</span></div>
+        <div class="stat stat-block"><svg aria-hidden="true"><use href="#i-block"/></svg><b id="n-block">0</b><span>blocked</span></div>
+        <div class="stat stat-time"><b id="n-ms">0</b><span>ms per decision</span></div>
+      </div>
+      <div class="inject" id="inject" hidden role="alert">
+        <svg aria-hidden="true"><use href="#i-warn"/></svg>
+        <span id="inject-text">Hidden instructions found in content the agent read</span>
+      </div>
+    </section>
+
+    <main class="work">
+      <section class="feed" aria-label="Agent actions">
+        <div class="views" role="tablist" aria-label="View">
+          <button type="button" role="tab" id="tab-live" aria-selected="true" aria-controls="live">Live</button>
+          <button type="button" role="tab" id="tab-audit" aria-selected="false" aria-controls="audit">Audit log</button>
+        </div>
+        <div id="live" role="tabpanel" aria-labelledby="tab-live">
+          <section class="queue" id="queue" hidden aria-label="Waiting for your approval">
+            <h2 class="queue-title" id="queue-title">Waiting for your approval</h2>
+            <ol class="queue-list" id="queue-list"></ol>
+          </section>
+          <ol class="timeline" id="timeline"></ol>
+        </div>
+        <div id="audit" role="tabpanel" aria-labelledby="tab-audit" hidden>
+          <div class="audit-bar">
+            <p class="audit-note" id="audit-note">Every decision Tripwire made, newest first.</p>
+            <button type="button" class="btn-quiet" id="export">Export JSON</button>
+          </div>
+          <div class="audit-scroll">
+            <table class="audit-table">
+              <thead><tr><th>Time</th><th>Session</th><th>Tool</th><th>Action</th><th>Decision</th><th>Decided by</th><th class="num">Risk</th><th class="num">ms</th></tr></thead>
+              <tbody id="audit-rows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="empty" id="empty">
+          <svg aria-hidden="true"><use href="#i-shield"/></svg>
+          <p class="empty-title">Waiting for your agent</p>
+          <p>Every tool call it makes shows up here, newest first. Hook up Claude Code or the MCP proxy and give it a task.</p>
+        </div>
+      </section>
+      <aside class="detail" id="detail" aria-label="Action details">
+        <div class="detail-empty" id="detail-empty">
+          <p>Pick any action to see exactly why Tripwire decided what it did.</p>
+        </div>
+        <div class="detail-body" id="detail-body" hidden></div>
+      </aside>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

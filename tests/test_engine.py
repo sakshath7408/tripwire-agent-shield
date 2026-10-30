@@ -100,3 +100,9 @@ def test_engine_error_fails_closed(monkeypatch):
     e = Engine()
     monkeypatch.setattr(e, "_analyze", lambda *a: 1 / 0)
     assert ev(e, "read_file", path="a.txt").decision == Decision.BLOCK
+
+
+def test_routine_command_from_readme_not_blocked():
+    e = make()
+    e.observe(Observation(session_id="s", tool="Read", output="Tests run with `npm test`"))
+    assert ev(e, "Bash", command="npm test").decision == Decision.ALLOW
