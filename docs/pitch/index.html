@@ -5,25 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tripwire pitch</title>
 <style>
+  /* Watchtower: the same palette, type and ink bar as the live dashboard (src/tripwire/static/styles.css). */
   :root {
-    --bg: #eef1f5; --surface: #ffffff; --surface-2: #f6f8fa; --line: #dde2e9; --line-strong: #c6cdd7;
-    --ink: #141a23; --ink-2: #3c4655; --muted: #5a6577;
-    --accent: #3a55d0; --accent-soft: #e6ebfb;
-    --allow: #1b7a46; --allow-soft: #e3f3ea;
-    --ask: #a35a00; --ask-soft: #fdf0dc; --ask-line: #f0c27a;
-    --block: #c42b2b; --block-soft: #fbe6e5; --block-line: #efb1ae;
-    --trusted: #2a49c4; --trusted-soft: #eaeefc; --untrusted: #a35a00; --untrusted-soft: #fff6e6;
-    --sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
-    --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    --bg: #eef1f6; --surface: #ffffff; --surface-2: #f6f8fb; --line: #dfe4ec; --line-strong: #c3cbd8;
+    --ink: #0f1627; --ink-2: #3a4458; --muted: #65708a;
+    --accent: #0f7f84; --accent-soft: #dcf2f1;
+    --allow: #1f7f5b; --allow-soft: #e0f3ea; --allow-line: #a9dcc3;
+    --ask: #a85e00; --ask-soft: #fbeedb; --ask-line: #ecc98f;
+    --block: #c13a48; --block-soft: #fbe6e8; --block-line: #f0b8be;
+    --trusted: #0f7f84; --trusted-soft: #dcf2f1; --trusted-line: #a6dcd9; --untrusted: #a85e00; --untrusted-soft: #fffaf1;
+    --bar-bg: #121a2c; --bar-ink: #f2f4f9; --bar-dim: rgba(242, 244, 249, .66);
+    --glass-edge: inset 0 1px 0 rgba(255, 255, 255, .9), inset 0 0 0 1px rgba(255, 255, 255, .5);
+    --shadow: 0 1px 2px rgba(15, 22, 39, .06), 0 2px 6px rgba(15, 22, 39, .05);
+    --shadow-md: 0 8px 20px -8px rgba(15, 22, 39, .18), 0 2px 4px -1px rgba(15, 22, 39, .06);
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, "Cascadia Code", Consolas, monospace;
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .18 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; overflow: hidden; }
+  html, body { height: 100%; margin: 0; color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; overflow: hidden;
+    background:
+      radial-gradient(42% 60% at 0% 0%, rgba(15, 127, 132, .10) 0%, rgba(15, 127, 132, 0) 70%),
+      radial-gradient(40% 55% at 100% 0%, rgba(47, 79, 158, .10) 0%, rgba(47, 79, 158, 0) 70%),
+      var(--bg); }
   .stage { position: fixed; inset: 0; overflow: hidden; }
   .deck { width: 1280px; height: 720px; position: absolute; left: 50%; top: 50%; margin: -360px 0 0 -640px; transform-origin: center center; }
-  .slide { position: absolute; inset: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
-           padding: 60px 80px 84px; display: none; flex-direction: column; box-shadow: 0 1px 2px rgba(20,26,35,.06), 0 2px 8px rgba(20,26,35,.04); }
+  .slide { position: absolute; inset: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+           padding: 118px 80px 84px; display: none; flex-direction: column; box-shadow: var(--shadow-md), var(--glass-edge); }
   .slide.on { display: flex; }
-  .kicker { font-size: 18px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  /* the ink bar from the dashboard, across the top of every slide */
+  .slide::before { content: ""; position: absolute; left: 14px; right: 14px; top: 14px; height: 56px; border-radius: 12px;
+    background:
+      var(--grain) 0 0 / 160px 160px repeat,
+      radial-gradient(28% 220% at 0% 0%, rgba(98, 201, 195, .28) 0%, rgba(98, 201, 195, 0) 75%),
+      radial-gradient(30% 260% at 100% 100%, rgba(90, 110, 220, .30) 0%, rgba(90, 110, 220, 0) 75%),
+      var(--bar-bg);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .10), 0 10px 28px -14px rgba(15, 22, 39, .6); }
+  .slide::after { content: "Tripwire"; position: absolute; right: 36px; top: 30px; font-size: 17px; font-weight: 650; letter-spacing: -.015em; color: var(--bar-ink); }
+  .kicker { position: absolute; left: 36px; top: 30px; margin: 0; font-size: 15px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--bar-ink); z-index: 1; display: flex; align-items: center; gap: 10px; }
+  .kicker::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #4fc38f; box-shadow: 0 0 0 3px rgba(79, 195, 143, .25); }
   h1 { font-size: 56px; line-height: 1.08; letter-spacing: -.02em; margin: 0 0 28px; font-weight: 700; max-width: 1000px; }
   h2 { font-size: 46px; line-height: 1.1; letter-spacing: -.02em; margin: 0 0 30px; font-weight: 700; }
   p, li { font-size: 26px; line-height: 1.4; color: var(--ink-2); margin: 0; }
@@ -32,20 +52,20 @@
   code, .mono { font-family: var(--mono); }
   .foot { position: absolute; left: 80px; right: 80px; bottom: 28px; display: flex; justify-content: space-between; font-size: 16px; color: var(--muted); }
   .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; color: var(--ink); }
-  .brand svg { width: 18px; height: 18px; color: var(--accent); }
+  .brand svg { width: 18px; height: 18px; color: var(--ink); }
   .grid { display: grid; gap: 24px; flex: 1; align-content: start; }
   .cols-3 { grid-template-columns: repeat(3, 1fr); }
   .cols-2 { grid-template-columns: 1fr 1fr; }
-  .card { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 24px 26px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 24px 26px; box-shadow: var(--shadow), var(--glass-edge); }
   .card h3 { font-size: 20px; margin: 0 0 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
   .card p { font-size: 24px; color: var(--ink); }
   .card.block { background: var(--block-soft); border-color: var(--block-line); }
   .card.block h3 { color: var(--block); }
   .card.ask { background: var(--ask-soft); border-color: var(--ask-line); }
   .card.ask h3 { color: var(--ask); }
-  .card.allow { background: var(--allow-soft); border-color: #a9d8bd; }
+  .card.allow { background: var(--allow-soft); border-color: var(--allow-line); }
   .card.allow h3 { color: var(--allow); }
-  .card.trusted { background: var(--trusted-soft); border-color: #b9c6f5; }
+  .card.trusted { background: var(--trusted-soft); border-color: var(--trusted-line); }
   .card.trusted h3 { color: var(--trusted); }
   .card.untrusted { background: var(--untrusted-soft); border-color: var(--ask-line); }
   .card.untrusted h3 { color: var(--untrusted); }
@@ -55,7 +75,9 @@
   .pill.ask { background: var(--ask-soft); color: var(--ask); }
 
   /* slide 1 */
-  .s1 h1 { font-size: 64px; }
+  .s1 h1 { font-size: 62px; }
+  .s1 .grid { flex: 0 0 auto; }
+  .s1 .lead { margin-top: 56px !important; }
   .s1 .lead { max-width: 900px; }
 
   /* slide 2: quote */
@@ -65,9 +87,9 @@
   /* slide 3: demo */
   .steps { display: grid; grid-template-columns: 1fr 1fr; gap: 34px 40px; flex: 0 0 auto; margin-bottom: 40px; }
   .step { display: flex; gap: 18px; align-items: flex-start; }
-  .num { width: 44px; height: 44px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 22px; display: grid; place-items: center; flex: none; }
+  .num { width: 44px; height: 44px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 22px; display: grid; place-items: center; flex: none; font-family: var(--mono); }
   .step p { font-size: 25px; }
-  .cmd { font-family: var(--mono); font-size: 21px; line-height: 1.6; background: var(--ink); color: #e8ecf2; border-radius: 10px; padding: 16px 22px; }
+  .cmd { font-family: var(--mono); font-size: 21px; line-height: 1.6; background: var(--bar-bg); color: #e8ecf2; border-radius: 12px; padding: 16px 22px; box-shadow: inset 0 1px 0 rgba(255,255,255,.1); }
   .cmd .c { color: #98a3b3; }
 
   /* slide 4: diagram */
@@ -76,9 +98,9 @@
   .zone h3 { margin: 0 0 4px; font-size: 18px; letter-spacing: .06em; text-transform: uppercase; font-weight: 650; }
   .zone.red { background: var(--block-soft); border: 1px solid var(--block-line); }
   .zone.red h3 { color: var(--block); }
-  .zone.green { background: var(--allow-soft); border: 1px solid #a9d8bd; }
+  .zone.green { background: var(--allow-soft); border: 1px solid var(--allow-line); }
   .zone.green h3 { color: var(--allow); }
-  .zone.blue { background: var(--accent-soft); border: 1px solid #b9c6f5; }
+  .zone.blue { background: var(--accent-soft); border: 1px solid var(--trusted-line); }
   .zone.blue h3 { color: var(--accent); }
   .box { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 19px; line-height: 1.25; color: var(--ink); }
   .box small { display: block; font-size: 15px; color: var(--muted); margin-top: 2px; }
@@ -92,8 +114,8 @@
 
   /* slide 5: numbers */
   .nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-bottom: 26px; }
-  .stat { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 24px 26px; }
-  .stat .big { font-size: 64px; font-weight: 700; letter-spacing: -.03em; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 24px 26px; box-shadow: var(--shadow), var(--glass-edge); }
+  .stat .big { font-size: 60px; font-weight: 700; letter-spacing: -.03em; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
   .stat .big.good { color: var(--allow); }
   .stat .lbl { font-size: 20px; color: var(--muted); margin-top: 10px; line-height: 1.3; }
   table { border-collapse: collapse; width: 100%; font-size: 21px; }
@@ -102,7 +124,7 @@
   td.n { font-variant-numeric: tabular-nums; font-weight: 650; }
 
   /* slide 7 */
-  .cmdline { font-family: var(--mono); font-size: 24px; background: var(--ink); color: #e8ecf2; border-radius: 10px; padding: 18px 22px; }
+  .cmdline { font-family: var(--mono); font-size: 24px; background: var(--bar-bg); color: #e8ecf2; border-radius: 12px; padding: 18px 22px; box-shadow: inset 0 1px 0 rgba(255,255,255,.1); }
   .cmdline .c { color: #98a3b3; }
 
   .hint { position: fixed; right: 18px; bottom: 12px; font-size: 13px; color: var(--muted); }
@@ -116,7 +138,7 @@
 
 <!-- 1 The threat -->
 <section class="slide s1 on">
-  <p class="kicker">Tripwire</p>
+  <p class="kicker">The threat</p>
   <h1>Anyone who can put text in front of your agent can give it orders.</h1>
   <div class="grid cols-3">
     <div class="card block"><h3>Who attacks</h3><p>A README author. An email sender. A web page. An MCP tool description.</p></div>
