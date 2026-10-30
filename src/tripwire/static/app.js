@@ -18,6 +18,11 @@
     fresh: new Set(), // ids that arrived live, for the arrival animation
     firstSeen: new Map(), // id -> epoch ms when we first saw a deadline, so the countdown bar has a start
     view: "live",
+    agent: null, // agent filter (null = everyone)
+    auditView: "list", // "list" | "tree"
+    chain: null, // last /v1/audit/verify answer
+    tree: null, // last /v1/audit?format=tree answer
+    history: new Map(), // verdict id -> chained records (verdict + resolutions)
   };
 
   const $ = (id) => document.getElementById(id);
@@ -31,6 +36,9 @@
     nAllow: $("n-allow"), nAsk: $("n-ask"), nBlock: $("n-block"), msNote: $("ms-note"),
     story: $("story"), storyText: $("story-text"), offline: $("offline"), announce: $("announce"),
     theme: $("theme"), stage: $("stage"),
+    chain: $("chain"), chainLive: $("chain-live"), degraded: $("degraded"), degradedText: $("degraded-text"),
+    agentFilter: $("agent-filter"), agentFilterText: $("agent-filter-text"),
+    auditListTab: $("audit-list-tab"), auditTreeTab: $("audit-tree-tab"), auditTree: $("audit-tree"), auditList: $("audit-list"),
   };
   const phone = window.matchMedia("(max-width: 820px)");
 
@@ -133,6 +141,28 @@
   function sessionParts(id) {
     const m = String(id).match(/^(.*?)[-_]([0-9a-f]{4,12})$/i);
     return m && m[1] ? { name: m[1], hash: m[2] } : { name: id, hash: "" };
+  }
+
+  /** Who acted. The main agent of a session is plain; anything else gets a short label.
+      Claude Code sub-agents look like "claude-code:<session>/<type>:<id>", MCP servers like "mcp:<name>". */
+  function agentInfo(agent, session) {
+    if (!agent || agent === session) return null;
+    const a = String(agent);
+    let m = a.match(/\/([^/:]+):([^/]+)$/);
+    if (m) return { id: a, kind: "sub-agent", name: m[1], short: `sub-agent: ${m[1]}` };
+    m = a.match(/^mcp:(.+)$/);
+    if (m) return { id: a, kind: "mcp", name: m[1], short: `mcp: ${m[1]}` };
+    m = a.match(/^claude-code:(.+)$/);
+    if (m && m[1] === session) return null;
+    const name = sessionParts(a.includes(":") ? a.slice(a.indexOf(":") + 1) : a).name;
+    return { id: a, kind: "agent", name, short: `agent: ${name}` };
+  }
+  const agentOf = (v) => agentInfo(v.action.agent, v.action.session_id);
+  const agentName = (id) => { const i = agentInfo(id, null); return i ? i.name : sessionParts(id).name; };
+  function agentChip(v, extra = "") {
+    const a = agentOf(v);
+    if (!a) return "";
+    return `<button type="button" class="agent-chip${extra}" data-agent="${esc(a.id)}" title="Only show what ${esc(a.short)} did">${icon("agent")}${esc(a.short)}</button>`;
   }
 
   const CAPDO = { read: "read a secret", write: "change files", exec: "run commands", fetch: "pull in outside content",
@@ -263,6 +293,9 @@
     pickSession();
     if (!S.selected) autoSelect();
     render();
+    verifyChain(0);
+    checkHealth();
+    loadTree(0);
   }
 
   let statsT, sessT;
@@ -299,12 +332,24 @@
     if (v) S.selected = v.id;
   }
 
-  const viewVerdicts = () => S.order.map((id) => S.verdicts.get(id)).filter((v) => !S.session || v.action.session_id === S.session);
+  const viewVerdicts = () => S.order.map((id) => S.verdicts.get(id))
+    .filter((v) => (!S.session || v.action.session_id === S.session) && (!S.agent || v.action.agent === S.agent));
 
   // ---- render ----------------------------------------------------------------
   function render() {
+    // The detail pane always belongs to the visible session: when the session changes (a click, or
+    // follow mode moving to a new one) a selection from another session is dropped and re-picked.
+    if (S.selected) {
+      const sel = S.verdicts.get(S.selected);
+      if (!sel || (S.session && sel.action.session_id !== S.session) || (S.agent && sel.action.agent !== S.agent)) {
+        S.selected = null;
+        autoSelect();
+      }
+    }
     renderSessions();
     renderBrief();
+    renderFilter();
+    renderChain();
     if (S.view === "live") {
       renderQueue();
       renderTimeline();
@@ -312,6 +357,11 @@
       renderAudit();
     }
     renderDetail();
+  }
+
+  function renderFilter() {
+    el.agentFilter.hidden = !S.agent;
+    if (S.agent) el.agentFilterText.textContent = agentName(S.agent);
   }
 
   function renderSessions() {
@@ -398,7 +448,7 @@
       const hasDl = S.deadlines.has(v.id);
       return `<li class="q-item${prev.has(v.id) ? "" : " is-new"}${S.selected === v.id ? " is-selected" : ""}" data-id="${v.id}" tabindex="0" aria-label="Needs your OK: ${esc(cleanSummary(v))}">
         <div class="q-sum">${esc(cleanSummary(v))}</div>
-        <div class="q-meta"><span class="tool">${esc(toolLabel(v.action.tool))}</span><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span>${riskHtml(v.risk)}</div>
+        <div class="q-meta">${agentChip(v)}<span class="tool">${esc(toolLabel(v.action.tool))}</span><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span>${riskHtml(v.risk)}</div>
         ${cd ? `<div class="countdown${isUrgent(v.id) ? " is-urgent" : ""}" data-cd="${v.id}">${cd}</div>` : ""}
         <div class="q-actions">${decideButtons(v.id)}</div>
         ${hasDl ? `<div class="q-progress${isUrgent(v.id) ? " is-urgent" : ""}" data-pg="${v.id}" aria-hidden="true"><i style="width:${timeLeftPct(v.id)}%"></i></div>` : ""}
@@ -416,7 +466,7 @@
     return `<div class="row-badge">${badge(v.decision)}${byHtml(v) || (pending ? `<span class="by">Waiting for you</span>` : "")}</div>
       <div class="row-main">
         <div class="row-sum">${esc(cleanSummary(v))}</div>
-        <div class="row-act"><span class="tool">${esc(toolLabel(v.action.tool))}</span><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span></div>
+        <div class="row-act">${agentChip(v)}<span class="tool">${esc(toolLabel(v.action.tool))}</span><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span></div>
       </div>
       <div class="row-side">${riskHtml(v.risk)}<time title="Decided in ${fmtMs(v.elapsed_ms)} ms">${fmtTime(v.ts)}</time></div>`;
   }
@@ -430,7 +480,7 @@
     let anchor = el.timeline.firstChild;
     for (const v of vs) {
       let li = rowEls.get(v.id);
-      const sig = `${v.decision}|${v.resolved_by}|${v.summary}|${S.held.has(v.id)}`;
+      const sig = `${v.decision}|${v.resolved_by}|${v.summary}|${S.held.has(v.id)}|${v.action.agent || ""}`;
       if (!li) {
         li = document.createElement("li");
         li.className = "row";
@@ -498,8 +548,58 @@
           </li>`).join("")}</ol>` : `<p class="muted-p">Nothing risky found. It matches a normal ${esc(CAPWORD[v.capability] || "action")} for what you asked.</p>`}
       </div>
       ${judgeHtml(v)}
+      ${agentHtml(v)}
+      ${historyHtml(v)}
       <details class="d-more"><summary>Full arguments</summary><pre class="json">${esc(JSON.stringify(v.action.args, null, 2))}</pre></details>
       <div class="d-id">${fmtTime(v.ts)} · session ${esc(v.action.session_id)} · via ${esc(v.action.source)} · id ${esc(v.id)}</div>`;
+    loadHistory(v);
+  }
+
+  /** Who acted, and who started them. Only for sub-agents and MCP servers; the main agent needs no label. */
+  function agentHtml(v) {
+    const a = agentOf(v);
+    if (!a) return "";
+    const parent = v.action.parent ? agentName(v.action.parent) : "";
+    return `<div class="d-section"><h3>Who acted</h3><div class="d-agent">
+      ${agentChip(v, " is-big")}${parent ? `<span class="d-spawned">spawned by <b>${esc(parent)}</b></span>` : ""}
+    </div></div>`;
+  }
+
+  /** The chained records for this action: the verdict and every resolution, each with its hash. */
+  function historyHtml(v) {
+    const recs = S.history.get(v.id);
+    const items = recs ? recs.map((r) => {
+      const body = r.body || {};
+      let what;
+      if (r.kind === "verdict") what = r.decision === "ask" ? "Asked" : WORD[r.decision] || r.decision;
+      else if (body.by === "timeout") what = "No answer in time, so blocked";
+      else if (body.by === "human") what = r.decision === "allow" ? "Allowed by you" : "Blocked by you";
+      else what = `${WORD[r.decision] || r.decision} by ${body.by || "Tripwire"}`;
+      return `<li data-k="${esc(r.kind)}" data-d="${esc(r.decision || "")}"><span class="h-what">${esc(what)}</span><time>${fmtTime(r.ts)}</time><code class="hash" title="SHA-256 ${esc(r.hash)}">#${esc(String(r.hash || "").slice(0, 7))}</code></li>`;
+    }).join("") : "";
+    const pendingNote = isPending(v) ? `<li class="h-wait"><span class="h-what">Waiting for your answer</span></li>` : "";
+    return `<div class="d-section d-history"><h3>Record${recs && recs.length > 1 ? `<span class="n">${recs.length} entries</span>` : ""}</h3>
+      ${recs === undefined ? `<p class="muted-p h-loading">Reading the audit chain…</p>` : recs === null ? `<p class="muted-p">Not in the audit chain (older record or hosted demo).</p>`
+        : `<ol class="history">${items}${pendingNote}</ol>`}
+      <p class="h-export">Every entry is hashed and signed. For auditors: <code>tripwire audit export</code></p>
+    </div>`;
+  }
+
+  const historyT = new Map();
+  /** Fetch this action's chained records once; refetch after a resolution. */
+  function loadHistory(v, force = false) {
+    if (!force && S.history.has(v.id)) return;
+    if (historyT.has(v.id)) return;
+    historyT.set(v.id, true);
+    const who = v.action.agent || v.action.session_id;
+    api(`/v1/audit/events?since=0&limit=2000&agent=${encodeURIComponent(who)}`).then((evs) => {
+      const recs = evs.filter((r) => (r.kind === "verdict" && (r.ref === v.id || r.id === v.id)) || (r.kind === "resolution" && r.ref === v.id))
+        .map((r) => { let body = {}; try { body = JSON.parse(r.json || "{}"); } catch (_) { /* keep empty */ } return { ...r, body }; });
+      S.history.set(v.id, recs.length ? recs : null);
+    }).catch(() => S.history.set(v.id, null)).finally(() => {
+      historyT.delete(v.id);
+      if (S.selected === v.id) renderDetail();
+    });
   }
 
   /** The local judge's card: small and secondary. The rules decided first; the judge only speaks on grey-zone asks. */
@@ -528,18 +628,110 @@
   }
 
   function renderAudit() {
-    const all = S.order.map((id) => S.verdicts.get(id));
+    el.auditListTab.setAttribute("aria-selected", S.auditView === "list");
+    el.auditTreeTab.setAttribute("aria-selected", S.auditView === "tree");
+    el.auditList.hidden = S.auditView !== "list";
+    el.auditTree.hidden = S.auditView !== "tree";
+    if (S.auditView === "tree") { renderTree(); return; }
+    const all = S.order.map((id) => S.verdicts.get(id)).filter((v) => !S.agent || v.action.agent === S.agent);
     el.auditNote.textContent = all.length
       ? `${all.length} ${all.length === 1 ? "decision" : "decisions"} across ${new Set(all.map((v) => v.action.session_id)).size} ${new Set(all.map((v) => v.action.session_id)).size === 1 ? "session" : "sessions"}, newest first.`
       : "No decisions yet.";
     el.auditCount.textContent = all.length || "";
     el.auditRows.innerHTML = all.map((v) => {
       const who = v.resolved_by === "human" ? `<span class="who-human">You</span>` : v.resolved_by === "timeout" ? `<span class="who-timeout">Timed out</span>` : v.resolved_by ? esc(v.resolved_by) : isPending(v) ? `<span class="who-wait">Waiting</span>` : judgeDecided(v) ? "Tripwire + judge" : "Tripwire";
-      return `<tr data-id="${v.id}" tabindex="0"><td>${fmtTime(v.ts)}</td><td class="sid" title="${esc(v.action.session_id)}">${esc(sessionParts(v.action.session_id).name)}</td><td class="tool">${esc(toolLabel(v.action.tool))}</td>
+      const ag = agentOf(v);
+      return `<tr data-id="${v.id}" tabindex="0"><td>${fmtTime(v.ts)}</td><td class="sid" title="${esc(v.action.session_id)}">${esc(sessionParts(v.action.session_id).name)}</td><td class="agent-cell">${ag ? agentChip(v) : `<span class="main-agent">main</span>`}</td><td class="tool">${esc(toolLabel(v.action.tool))}</td>
         <td><span class="act" title="${esc(renderAct(v))}">${esc(renderAct(v))}</span></td><td>${badge(v.decision)}</td><td><span class="why" title="${esc(cleanSummary(v))}">${esc(cleanSummary(v))}</span></td><td>${who}</td>
         <td class="num">${v.risk}</td><td class="num">${fmtMs(v.elapsed_ms)}</td></tr>`;
     }).join("");
   }
+
+  // ---- agents tree (Audit > Agents) --------------------------------------------
+  let treeT, treeLoading = false;
+  function loadTree(delay = 0) {
+    clearTimeout(treeT);
+    treeT = setTimeout(async () => {
+      if (treeLoading) return;
+      treeLoading = true;
+      try {
+        const t = await api("/v1/audit?format=tree&limit=30");
+        S.tree = t && t.traces ? t.traces : null;
+      } catch (_) { S.tree = null; }
+      treeLoading = false;
+      const deep = (S.tree || []).some((t) => t.agents > 1);
+      el.auditTreeTab.hidden = !S.tree || !S.tree.length;
+      el.auditTreeTab.title = deep ? "Who spawned whom, and what each agent did" : "One agent per session so far";
+      if (S.view === "audit") renderAudit();
+    }, delay);
+  }
+  function renderTree() {
+    el.auditNote.textContent = S.tree && S.tree.length
+      ? `${S.tree.length} ${S.tree.length === 1 ? "trace" : "traces"}. A trace is a main agent and everything it spawned. Click an agent to see only its actions.`
+      : "No traces yet.";
+    if (!S.tree) { el.auditTree.innerHTML = `<p class="muted-p" style="padding:1rem">The agent tree needs the local daemon.</p>`; return; }
+    const counts = (c) => `<span class="t-counts">${c.allow ? `<span class="tc tc-allow" title="allowed">${icon("allow")}${c.allow}</span>` : ""}${c.ask ? `<span class="tc tc-ask" title="needed your OK">${icon("ask")}${c.ask}</span>` : ""}${c.block ? `<span class="tc tc-block" title="blocked">${icon("block")}${c.block}</span>` : ""}${!c.allow && !c.ask && !c.block ? `<span class="tc tc-none">no actions</span>` : ""}</span>`;
+    const node = (n, depth, root) => {
+      const info = agentInfo(n.agent, n.session) || (depth === 0 ? { kind: "main", name: sessionParts(n.session || n.agent).name, short: "" } : { kind: "agent", name: agentName(n.agent) });
+      const kindWord = info.kind === "main" ? "main agent" : info.kind === "sub-agent" ? "sub-agent" : info.kind === "mcp" ? "MCP server" : "agent";
+      const task = n.tasks && n.tasks.length ? n.tasks[n.tasks.length - 1].prompt : "";
+      const spawn = n.spawned_by ? `<span class="t-spawn" title="The call that started this agent">started by ${esc(agentName(n.parent))}</span>` : (n.parent ? `<span class="t-spawn">under ${esc(agentName(n.parent))}</span>` : "");
+      const inj = n.injections > 0 ? `<span class="t-inj" title="Hidden instructions were found in what this agent read">${icon("hidden")}${n.injections === 1 ? "hidden instructions seen" : `${n.injections}× hidden instructions`}</span>` : "";
+      return `<li class="t-node" style="--depth:${depth}">
+        <button type="button" class="t-row${S.agent === n.agent ? " is-on" : ""}" data-agent="${esc(n.agent)}" data-trace="${esc(root)}" aria-pressed="${S.agent === n.agent}">
+          <span class="t-main"><span class="t-name">${esc(info.name)}</span><span class="t-kind">${kindWord}</span>${spawn}${inj}
+            ${task ? `<span class="t-task" title="${esc(task)}">${esc(task)}</span>` : ""}</span>
+          ${counts(n.counts)}
+        </button>
+        ${n.children && n.children.length ? `<ul>${n.children.map((c) => node(c, depth + 1, root)).join("")}</ul>` : ""}
+      </li>`;
+    };
+    el.auditTree.innerHTML = S.tree.map((t) => `<section class="trace">
+      <header class="trace-head"><span class="trace-title">${esc(sessionParts(t.root.session || t.trace).name)}</span>
+        <span class="trace-meta">${t.agents} ${t.agents === 1 ? "agent" : "agents"} · ${t.totals.allow} allowed · ${t.totals.ask} asked · ${t.totals.block} blocked</span></header>
+      <ul class="tree">${node(t.root, 0, t.trace)}</ul></section>`).join("");
+  }
+
+  // ---- audit chain: is the log intact? --------------------------------------
+  let chainT;
+  function verifyChain(delay = 0) {
+    clearTimeout(chainT);
+    chainT = setTimeout(async () => {
+      try { S.chain = await api("/v1/audit/verify"); } catch (_) { S.chain = null; }
+      renderChain();
+    }, delay);
+  }
+  function renderChain() {
+    const c = S.chain;
+    for (const node of [el.chain, el.chainLive]) {
+      node.hidden = !c;
+      if (!c) continue;
+      const text = node.querySelector("span"), use = node.querySelector("use");
+      if (!text || !use) continue;
+      node.dataset.ok = c.ok ? "1" : "0";
+      if (c.ok) {
+        const n = c.checked || 0;
+        const quiet = node === el.chainLive;
+        text.textContent = quiet ? `Log intact · ${n} signed` : `Audit log intact · ${n} ${n === 1 ? "record" : "records"} signed${c.legacy ? `, ${c.legacy} older unsigned` : ""}`;
+        node.title = `Every record is hash-chained and signed. ${(c.notes || []).join(" ")}`.trim();
+        use.setAttribute("href", "#i-lock");
+      } else {
+        text.textContent = c.problem || "Audit log failed verification";
+        node.title = (c.notes || []).join(" ") || "The hash chain does not check out.";
+        use.setAttribute("href", "#i-block");
+      }
+    }
+  }
+  async function checkHealth() {
+    try {
+      const h = await api("/healthz");
+      const a = h && h.audit;
+      const bad = a && a.status === "degraded";
+      el.degraded.hidden = !bad;
+      if (bad) el.degradedText.textContent = `${a.error ? a.error + ". " : ""}${a.queued ? `${a.queued} ${a.queued === 1 ? "record is" : "records are"} queued and will be written in order once the disk recovers.` : "Decisions still run; the trail has a gap until writes recover."}`;
+    } catch (_) { el.degraded.hidden = true; }
+  }
+  setInterval(checkHealth, 30000);
 
   function tickCountdowns() {
     for (const n of document.querySelectorAll("[data-cd]")) {
@@ -568,8 +760,9 @@
     try {
       await api(`/v1/verdicts/${id}/resolve`, { method: "POST", body: JSON.stringify({ decision }) });
       const v = S.verdicts.get(id);
-      if (v) { v.decision = decision; v.resolved_by = "human"; }
+      if (v) { v.decision = decision; v.resolved_by = "human"; S.history.delete(id); setTimeout(() => loadHistory(v, true), 400); }
       refreshStats(0);
+      verifyChain(1200);
       if (phone.matches && el.detail.classList.contains("is-open")) { closeDetail(); return; } // show the next waiting item
       render();
     } catch (e) {
@@ -595,9 +788,32 @@
     render();
   }
 
+  async function filterAgent(agent) {
+    S.agent = S.agent === agent ? null : agent;
+    S.selected = null;
+    if (S.agent) {
+      // pull in anything older than the live window for this agent
+      try { for (const v of await api(`/v1/verdicts?limit=500&agent=${encodeURIComponent(S.agent)}`)) upsert(v, false); sortOrder(); } catch (_) { /* live data is enough */ }
+      const first = S.order.map((id) => S.verdicts.get(id)).find((v) => v.action.agent === S.agent);
+      if (first) { S.session = first.action.session_id; S.followSession = false; }
+    }
+    autoSelect();
+    render();
+  }
+  el.agentFilter.addEventListener("click", () => filterAgent(S.agent));
+  el.auditListTab.addEventListener("click", () => { S.auditView = "list"; render(); });
+  el.auditTreeTab.addEventListener("click", () => { S.auditView = "tree"; loadTree(0); render(); });
+
   document.addEventListener("click", (e) => {
     const r = e.target.closest("[data-resolve]");
     if (r) { e.stopPropagation(); resolve(r.dataset.id, r.dataset.resolve, r); return; }
+    const ac = e.target.closest(".agent-chip, .t-row");
+    if (ac) {
+      e.stopPropagation();
+      const wasTree = !!ac.closest(".t-row");
+      filterAgent(ac.dataset.agent).then(() => { if (wasTree && S.agent) setView("live"); });
+      return;
+    }
     if (e.target.closest("[data-close]")) { closeDetail(); return; }
     const s = e.target.closest("[data-sid]");
     if (s) { S.session = s.dataset.sid; S.followSession = false; S.selected = null; autoSelect(); render(); return; }
@@ -676,7 +892,7 @@
     el.live.hidden = view !== "live";
     el.audit.hidden = view !== "audit";
     document.body.dataset.view = view;
-    if (view === "audit") el.empty.hidden = true;
+    if (view === "audit") { el.empty.hidden = true; loadTree(0); verifyChain(0); }
     render();
   }
   el.tabLive.addEventListener("click", () => setView("live"));
@@ -759,6 +975,8 @@
       if (v.decision === "ask") refreshStats(300);
       announce(v);
       render();
+      verifyChain(1500);
+      if (S.view === "audit") loadTree(1500);
     });
     on("held", (d) => {
       if (d.id && d.deadline) { S.held.add(d.id); setDeadline(d.id, d.deadline * 1000); render(); }
@@ -770,6 +988,8 @@
       S.deadlines.delete(d.id);
       S.firstSeen.delete(d.id);
       refreshStats();
+      if (v) { S.history.delete(d.id); if (S.selected === d.id) loadHistory(v, true); }
+      verifyChain(1500);
       render();
     });
     on("task", (t) => {
@@ -784,6 +1004,7 @@
     on("reset", () => {
       S.verdicts.clear(); S.order = []; S.sessions = []; S.selected = null; S.session = null;
       S.followSession = true; S.held.clear(); S.deadlines.clear(); S.firstSeen.clear(); S.injectSrc.clear(); S._lastTaskSession = null;
+      S.agent = null; S.history.clear(); S.tree = null;
       closeDetail();
       loadAll().catch(() => {});
       toast("Cleared. Ready for a fresh run.");
