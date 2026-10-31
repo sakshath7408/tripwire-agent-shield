@@ -274,14 +274,6 @@
             <span class="meta">31 Oct 2026 <code>PYTHONHASHSEED=0 uv run python bench/run_all.py</code></span>
           </li>
         </ul>
-        <div class="limits" aria-labelledby="limits-title">
-          <h3 id="limits-title">Known limits</h3>
-          <ul>
-            <li><b>The hijacked agent in the demo is scripted.</b> Real models we tried refused the injections on their own. Tripwire's verdicts are real; the "agent fell for it" part is staged.</li>
-            <li><b>Default mode runs as you.</b> A program running as your user outside the agent can stop the daemon. <code>tripwire harden</code> moves it to its own OS user; that is the real boundary.</li>
-            <li><b>The phrase list is one signal.</b> It knows AgentDojo's template. A wording it has not seen gets the provenance-only number: 92.0% stopped, 45.3% hard-blocked.</li>
-          </ul>
-        </div>
       </div>
     </section>
 
@@ -300,7 +292,7 @@
 
   <footer class="foot">
     <div class="wrap foot-in">
-      <p>Built from scratch at PARALLAX 2026, BMSCE IEEE Computer Society. Track 1, Agent Shield.</p>
+      <p>Built from scratch by <b>Team Sludge</b> at PARALLAX 2026. Track 1, Agent Shield.</p>
       <p class="foot-links">
         <a href="/app">Open the app</a>
         <a href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener">GitHub</a>

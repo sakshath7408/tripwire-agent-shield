@@ -272,15 +272,6 @@ figcaption { color: var(--muted); font-size: .85rem; margin-top: .6rem; }
 .stats .proof:hover { color: #a6ebe6; }
 .stats .meta { color: var(--bar-dim); font-size: .78rem; margin-top: .9rem; padding-top: .6rem; border-top: 1px solid var(--bar-line); }
 .stats .meta code { display: block; margin-top: .15rem; font-size: .76rem; color: rgba(242, 244, 249, .82); overflow-wrap: anywhere; }
-.limits { margin-top: 2.5rem; padding: 1.25rem 1.4rem; border-radius: var(--r-l); border: 1px solid var(--bar-line); background: rgba(0, 0, 0, .18); }
-.limits h3 { color: var(--bar-ink); margin-bottom: .6rem; display: inline-flex; align-items: center; gap: .5rem; }
-.limits h3::before { content: ""; width: .55rem; height: .55rem; border-radius: 50%; background: var(--ask); }
-.limits ul { display: grid; gap: .55rem; }
-.limits li { color: var(--bar-dim); font-size: .93rem; line-height: 1.5; padding-left: 1rem; position: relative; }
-.limits li::before { content: ""; position: absolute; left: 0; top: .62em; width: .3rem; height: .3rem; border-radius: 50%; background: var(--bar-dim); }
-.limits b { color: var(--bar-ink); }
-.limits code { color: var(--bar-ink); }
-@media (min-width: 760px) { .limits ul { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; } }
 
 /* ---- install --------------------------------------------------------------------------------------------- */
 #install { margin-top: 5rem; }

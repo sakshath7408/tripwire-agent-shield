@@ -6,7 +6,7 @@ Pick an attack. Run it without Tripwire, then with it. The real engine runs on t
 
 A local guard that sits between an AI agent and its tools. Every tool call is checked first, and only your own words count as instructions.
 
-Built from scratch in 24 hours for the PARALLAX hackathon (BMSCE IEEE Computer Society), Track 1 "AgentShield: Secure the Agent, Not Just the Prompt".
+Built from scratch in 24 hours by **Team Sludge** for the PARALLAX hackathon, Track 1 "AgentShield: Secure the Agent, Not Just the Prompt".
 
 ## 30-second quickstart
 
