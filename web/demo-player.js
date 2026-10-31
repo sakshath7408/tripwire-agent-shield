@@ -165,17 +165,41 @@
     return { what: d.kind, to: d.url || d.to || "", body: d.data || "" };
   }
 
-  function setInbox(items, state) {
+  // Only real data counts as stolen. An email or upload whose body is just an error ("could not read the
+  // files") reached the attacker empty-handed: shown, but as a try that carried nothing.
+  const INBOX_SHOWN = 3;
+  let inboxOpen = false;
+  function setInbox(items, state, quiet) {
     const card = $("oc-inbox");
-    if (state === "done") landed("oc-inbox", 0);
-    card.dataset.state = items.length ? "bad" : state === "idle" ? "idle" : state === "running" ? "running" : "good";
-    $("oc-inbox-n").textContent = items.length ? `${items.length} ${items.length === 1 ? "item" : "items"} stolen` : state === "done" ? "Empty. Nothing got out." : "Empty";
-    $("oc-inbox-list").innerHTML = items.map((d) => {
+    if (state === "done" && !quiet) landed("oc-inbox", 0);
+    if (state === "idle") inboxOpen = false;
+    const stolen = items.filter((d) => !d.empty), tried = items.length - stolen.length;
+    card.dataset.state = stolen.length ? "bad" : state === "idle" ? "idle" : state === "running" ? "running" : "good";
+    const triedText = tried ? ` ${tried === 1 ? "One try" : `${tried} tries`} had nothing to send.` : "";
+    $("oc-inbox-n").textContent = stolen.length ? `${stolen.length} ${stolen.length === 1 ? "item" : "items"} stolen`
+      : state === "done" ? `Empty. Nothing got out.${triedText}` : "Empty";
+    const ordered = stolen.concat(items.filter((d) => d.empty));
+    const shown = inboxOpen ? ordered : ordered.slice(0, INBOX_SHOWN);
+    const rows = shown.map((d) => {
+      if (d.empty) {
+        const t = itemText(d);
+        return `<li class="oc-tried" title="It tried, but its reads were stopped, so it had nothing to send"><b>${esc(t.what)}</b> <span class="to">${esc(t.to)}</span><span class="peek">Tried to send, but had nothing to send</span></li>`;
+      }
       const t = itemText(d);
       const first = String(t.body).trim().split("\n").find((l) => l.trim()) || "";
       return `<li title="${esc(t.body)}"><b>${esc(t.what)}</b> <span class="to">${esc(t.to)}</span>${first ? `<span class="peek">${esc(first.slice(0, 90))}</span>` : ""}</li>`;
-    }).join("");
+    });
+    const more = ordered.length - shown.length;
+    if (more > 0) rows.push(`<li class="oc-more"><button type="button" data-inbox-more>Show ${more} more</button></li>`);
+    $("oc-inbox-list").innerHTML = rows.join("");
+    $("oc-inbox-list").dataset.items = JSON.stringify(items);
   }
+  $("oc-inbox-list").addEventListener("click", (e) => {
+    if (!e.target.closest("[data-inbox-more]")) return;
+    inboxOpen = true;
+    const card = $("oc-inbox");
+    setInbox(JSON.parse($("oc-inbox-list").dataset.items || "[]"), card.dataset.state === "running" ? "running" : "done", true);
+  });
 
   function setBank(balance, start, state) {
     const lost = start - balance;
@@ -376,8 +400,9 @@
       } else {
         $("raw-log").prepend(rawRow(step));
       }
-      if (step.after.attacker_items !== drops) {
-        drops = step.after.attacker_items;
+      const dropped = step.after.attacker_drops ?? step.after.attacker_items;
+      if (dropped !== drops) {
+        drops = dropped;
         setInbox(r.attacker_inbox.slice(0, drops), "running");
       }
       setBank(step.after.balance, r.start_balance, "running");
@@ -442,7 +467,17 @@
   document.addEventListener("click", async (e) => {
     const b = e.target.closest(".copy-btn[data-copy]");
     if (!b) return;
-    try { await navigator.clipboard.writeText(b.dataset.copy); b.classList.add("is-done"); setTimeout(() => b.classList.remove("is-done"), 1400); } catch (_) { /* no clipboard */ }
+    let tip = b.querySelector(".copied");
+    if (!tip) { tip = document.createElement("span"); tip.className = "copied"; b.append(tip); }
+    tip.textContent = "Copied";
+    b.classList.add("is-done");
+    let ok = false;
+    try { await navigator.clipboard.writeText(b.dataset.copy); ok = true; } catch (_) { /* no clipboard */ }
+    if (!ok) { tip.textContent = "Select and copy"; b.classList.remove("is-done"); }
+    const live = $("announce");
+    if (live) { live.textContent = ""; setTimeout(() => { live.textContent = ok ? "Copied to the clipboard." : "Could not copy. Select the command and copy it."; }, 50); }
+    clearTimeout(b._t);
+    b._t = setTimeout(() => { b.classList.remove("is-done"); tip.remove(); }, 1600);
   });
 
   paintHuman();

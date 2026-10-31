@@ -81,6 +81,7 @@
           <a class="btn btn-ghost" href="#install">Install</a>
           <a class="text-link" href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener"><svg aria-hidden="true"><use href="#i-git"/></svg>GitHub</a>
         </div>
+        <p class="hero-proof"><b>Real model, real hijack.</b> A real AI model (qwen2.5:7b, run locally) followed the hidden instructions 4 of 4 times. With Tripwire, every attack step was blocked on its own, 4 of 4, and the task still finished. <a href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/ollama_demo.md" rel="noopener">Proof</a></p>
       </div>
       <figure class="hero-art" aria-label="Animation: the agent's tool calls pass through Tripwire; the one carrying an address from a poisoned README is stopped, the others reach their tools">
         <svg class="flow" viewBox="0 0 640 340" aria-hidden="true">
@@ -217,12 +218,19 @@
         <h2 id="numbers-title">Measured, not promised.</h2>
         <p class="sub">Every tile links to the exact result file in the repo and the command that made it. Rerun before quoting. "Stopped" means a hard block or an ask; "hard block" means nobody was asked.</p>
         <ul class="stats">
+          <li class="stat-hi">
+            <span class="big" data-n="4" data-d="0" data-t="{n} of 4">4 of 4</span>
+            <span class="label">A real model, hijacked and stopped</span>
+            <span class="def">A real AI model (qwen2.5:7b, run locally) followed the hidden instructions 4 of 4 times. With Tripwire, every attack step was blocked on its own, 4 of 4, and the task still finished. The attack text sits on a web page the model reads.</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/ollama_demo.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>ollama_demo.md</a>
+            <span class="meta">31 Oct 2026 <code>uv run python demo/run_demo.py --planner ollama --model qwen2.5:7b --scenario agentdojo-web --offline --delay 0</code></span>
+          </li>
           <li>
             <span class="big" data-n="96.2" data-d="1" data-t="{n}%">96.2%</span>
             <span class="label">AgentDojo attacks stopped</span>
             <span class="def">609 attack pairs, 4 suites. 92.1% hard-blocked, with the phrase list on.</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/summary.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>summary.md</a>
-            <span class="meta">31 Oct 2026 05:40 <code>uv run python bench/run_all.py</code></span>
+            <span class="meta">31 Oct 2026 05:40 <code>uv run --group bench python bench/run_all.py</code></span>
           </li>
           <li>
             <span class="big" data-n="92.0" data-d="1" data-t="{n}%">92.0%</span>
@@ -233,10 +241,10 @@
           </li>
           <li>
             <span class="big" data-n="95.9" data-d="1" data-t="{n}%">95.9%</span>
-            <span class="label">Normal tasks allowed</span>
-            <span class="def">97 AgentDojo user tasks with no hard block (92.9% of their 339 calls untouched).</span>
+            <span class="label">Normal tasks finish</span>
+            <span class="def">95.9% of 97 AgentDojo user tasks finish with no hard block (82.5% with no question at all).</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/agentdojo.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>agentdojo.md</a>
-            <span class="meta">31 Oct 2026 05:40 <code>uv run python bench/agentdojo_replay.py</code></span>
+            <span class="meta">31 Oct 2026 05:40 <code>uv run --group bench python bench/agentdojo_replay.py</code></span>
           </li>
           <li>
             <span class="big" data-n="96" data-d="0" data-t="{n} of 96">96 of 96</span>
@@ -264,14 +272,14 @@
             <span class="label">Median decision time</span>
             <span class="def">0.143 ms median on AgentDojo (p95 0.486 ms), 0.509 ms on the shell corpus. No model in the loop.</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/summary.json" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>summary.json</a>
-            <span class="meta">31 Oct 2026 05:40 <code>uv run python bench/run_all.py</code></span>
+            <span class="meta">31 Oct 2026 05:40 <code>uv run --group bench python bench/run_all.py</code></span>
           </li>
           <li>
             <span class="big" data-n="100" data-d="0" data-t="{n}%">100%</span>
             <span class="label">Identical across hash seeds</span>
             <span class="def">Every verdict is the same under <code>PYTHONHASHSEED</code> 0, 1 and 2. A test checks three seeds; full benchmark runs under 0 and 2 print identical tables.</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/tests/test_redteam4.py" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: tests/<wbr>test_redteam4.py</a>
-            <span class="meta">31 Oct 2026 <code>PYTHONHASHSEED=0 uv run python bench/run_all.py</code></span>
+            <span class="meta">31 Oct 2026 <code>PYTHONHASHSEED=0 uv run --group bench python bench/run_all.py</code></span>
           </li>
         </ul>
       </div>
@@ -281,18 +289,19 @@
       <p class="kicker">Install</p>
       <h2 id="install-title">Four commands. Python 3.12 and uv.</h2>
       <ol class="cmds">
-        <li><code>git clone https://github.com/sakshath7408/tripwire-agent-shield<br>cd tripwire-agent-shield</code><button type="button" class="copy" data-copy="git clone https://github.com/sakshath7408/tripwire-agent-shield && cd tripwire-agent-shield" aria-label="Copy the clone command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
-        <li><code>uv sync</code><button type="button" class="copy" data-copy="uv sync" aria-label="Copy uv sync"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
-        <li><code>uv run tripwire serve</code><span class="note">prints a one-time dashboard link</span><button type="button" class="copy" data-copy="uv run tripwire serve" aria-label="Copy the serve command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
-        <li><code>uv run tripwire install claude</code><span class="note">Claude Code hooks; <code>mcp-proxy</code> for any MCP server</span><button type="button" class="copy" data-copy="uv run tripwire install claude" aria-label="Copy the install command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
+        <li><code>git clone --depth 1 https://github.com/sakshath7408/tripwire-agent-shield<br>cd tripwire-agent-shield</code><span class="note">a shallow clone skips the old demo videos in the history</span><button type="button" class="copy" data-copy="git clone --depth 1 https://github.com/sakshath7408/tripwire-agent-shield && cd tripwire-agent-shield" aria-label="Copy the clone command"><svg aria-hidden="true"><use href="#i-copy"/></svg><span class="copied" aria-hidden="true">Copied</span></button></li>
+        <li><code>uv tool install .</code><span class="note">puts <code>tripwire</code> on your PATH</span><button type="button" class="copy" data-copy="uv tool install ." aria-label="Copy the tool install command"><svg aria-hidden="true"><use href="#i-copy"/></svg><span class="copied" aria-hidden="true">Copied</span></button></li>
+        <li><code>tripwire serve</code><span class="note">keep it running; it prints a one-time dashboard link</span><button type="button" class="copy" data-copy="tripwire serve" aria-label="Copy the serve command"><svg aria-hidden="true"><use href="#i-copy"/></svg><span class="copied" aria-hidden="true">Copied</span></button></li>
+        <li><code>cd ~/your-project<br>tripwire install claude</code><span class="note">guards Claude Code in that folder. <code>--user</code> guards every project; <code>mcp-proxy</code> wraps any MCP server</span><button type="button" class="copy" data-copy="tripwire install claude" aria-label="Copy the install command"><svg aria-hidden="true"><use href="#i-copy"/></svg><span class="copied" aria-hidden="true">Copied</span></button></li>
       </ol>
+      <p class="sr-only" id="copy-live" role="status" aria-live="polite"></p>
       <p class="install-foot">Nothing leaves your machine. The daemon listens on 127.0.0.1 only and never does a DNS lookup. <a href="https://github.com/sakshath7408/tripwire-agent-shield#readme" rel="noopener">Full README</a></p>
     </section>
   </main>
 
   <footer class="foot">
     <div class="wrap foot-in">
-      <p>Built from scratch by <b>Team Sludge</b> at PARALLAX 2026. Track 1, Agent Shield.</p>
+      <p>Built from scratch by <b>Team Sludge</b> at PARALLAX 2026. Track 1, Agent Shield. Open source, <a href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/LICENSE" rel="noopener">MIT licensed</a>.</p>
       <p class="foot-links">
         <a href="/app">Open the app</a>
         <a href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener">GitHub</a>
@@ -351,8 +360,16 @@
       }
       document.querySelectorAll(".copy").forEach(function (b) {
         b.addEventListener("click", function () {
-          b.classList.add("is-done"); setTimeout(function () { b.classList.remove("is-done"); }, 1400);
-          if (navigator.clipboard) navigator.clipboard.writeText(b.dataset.copy).catch(function () {});
+          var live = document.getElementById("copy-live");
+          b.querySelector(".copied").textContent = "Copied";
+          b.classList.add("is-done"); clearTimeout(b._t);
+          b._t = setTimeout(function () { b.classList.remove("is-done"); }, 1600);
+          function done(ok) {
+            if (!ok) b.querySelector(".copied").textContent = "Select and copy";
+            if (live) { live.textContent = ""; setTimeout(function () { live.textContent = ok ? "Copied to the clipboard." : "Could not copy. Select the command and copy it."; }, 50); }
+          }
+          if (navigator.clipboard) navigator.clipboard.writeText(b.dataset.copy).then(function () { done(true); }, function () { done(false); });
+          else done(false);
         });
       });
     })();

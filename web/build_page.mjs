@@ -22,6 +22,7 @@ const SYMBOLS = `<svg width="0" height="0" style="position:absolute" aria-hidden
     <symbol id="i-mail" viewBox="0 0 20 20"><rect x="2.5" y="4.5" width="15" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m3 5.5 7 5.2 7-5.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
     <symbol id="i-bank" viewBox="0 0 20 20"><path d="M3 8 10 3.5 17 8M4.5 8.5v6M8 8.5v6M12 8.5v6M15.5 8.5v6M3 16.5h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-task" viewBox="0 0 20 20"><rect x="3.5" y="3.5" width="13" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m7 10.2 2.1 2.1L13.3 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-home" viewBox="0 0 20 20"><path d="M3.5 9.2 10 3.8l6.5 5.4M5.3 7.9v8.3h3.5v-4.6h2.4v4.6h3.5V7.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-git" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
   </svg>
 `;
@@ -80,7 +81,7 @@ const RAWNOTE = `        <div class="raw-note" id="raw-note" hidden>
           <p>Press <b>Run with Tripwire</b> to see the same agent, same world, with every call checked first.</p>
         </div>
 `;
-const LINKS = `        <a class="btn-quiet top-link" href="/" title="About Tripwire, features and numbers"><span>Home</span></a>
+const LINKS = `        <a class="btn-quiet top-link" href="/" title="About Tripwire, features and numbers" aria-label="Home"><svg aria-hidden="true"><use href="#i-home"/></svg><span>Home</span></a>
         <a class="btn-quiet top-link" href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener" title="Source code on GitHub"><svg aria-hidden="true"><use href="#i-git"/></svg><span>GitHub</span></a>
 `;
 // The main view is honest: a website cannot reach a daemon on your machine, so it says how to connect one.
@@ -89,8 +90,8 @@ const EMPTY = `          <div class="empty-main">
             <p class="empty-title">Connect your agent</p>
             <p>Tripwire runs on your machine, next to your agent. This page shows the product; the daemon it talks to is yours.</p>
             <ul class="empty-cmds">
-              <li><code>uv run tripwire install claude</code><span>Claude Code hooks</span><button type="button" class="copy-btn" data-copy="uv run tripwire install claude" aria-label="Copy the Claude Code command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
-              <li><code>uv run tripwire mcp-proxy -- &lt;server&gt;</code><span>any MCP server</span><button type="button" class="copy-btn" data-copy="uv run tripwire mcp-proxy -- <server>" aria-label="Copy the MCP command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
+              <li><code>tripwire install claude</code><span>Claude Code hooks, run inside your project</span><button type="button" class="copy-btn" data-copy="tripwire install claude" aria-label="Copy the Claude Code command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
+              <li><code>tripwire mcp-proxy --name myserver -- &lt;your mcp server command&gt;</code><span>any MCP server</span><button type="button" class="copy-btn" data-copy="tripwire mcp-proxy --name myserver -- <your mcp server command>" aria-label="Copy the MCP command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
             </ul>
             <p class="empty-links"><a href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener">Get it on GitHub</a><span aria-hidden="true">·</span><button type="button" class="link-btn" id="open-demo">Or watch the demo</button></p>
           </div>

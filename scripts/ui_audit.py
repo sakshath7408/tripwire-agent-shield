@@ -12,9 +12,9 @@ element with data-audit-ok is skipped.
 
 Usage (dashboard states need a running daemon fed by demo/run_demo.py, and TRIPWIRE_HOME set to its home so
 the browser can pair):
-  TRIPWIRE_HOME=<home> uv run python scripts/ui_audit.py --base http://127.0.0.1:7797 --out /tmp/ui-audit
-  uv run python scripts/ui_audit.py --pitch docs/pitch/index.html --out /tmp/ui-audit
-  uv run python scripts/ui_audit.py --web http://127.0.0.1:7798 --out /tmp/ui-audit   # / landing page and /app
+  TRIPWIRE_HOME=<home> uv run --group ui python scripts/ui_audit.py --base http://127.0.0.1:7797 --out /tmp/ui-audit
+  uv run --group ui python scripts/ui_audit.py --pitch docs/pitch/index.html --out /tmp/ui-audit
+  uv run --group ui python scripts/ui_audit.py --web http://127.0.0.1:7798 --out /tmp/ui-audit   # / landing page and /app
 Exit code 1 when anything is flagged. Screenshots of failing states land in --out.
 """
 
@@ -34,6 +34,8 @@ AUDIT_JS = r"""
   const vis = (el) => {
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") return false;
+    // an ancestor faded out (the landing hero's resting pills) hides it too
+    for (let p = el.parentElement; p; p = p.parentElement) if (getComputedStyle(p).opacity === "0") return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
@@ -110,7 +112,9 @@ AUDIT_JS = r"""
       const rr = prev.getBoundingClientRect();
       // only labels meant for that rect: vertically in its row and horizontally centred on it
       const cx = (tr.left + tr.right) / 2;
-      const inRow = tr.top >= rr.top - rr.height && tr.bottom <= rr.bottom + rr.height && cx >= rr.left && cx <= rr.right;
+      // A caption under or over the box (its centre outside the box) is not the box's own label.
+      const cy = (tr.top + tr.bottom) / 2;
+      const inRow = cy >= rr.top && cy <= rr.bottom && cx >= rr.left && cx <= rr.right;
       if (inRow && !inside(tr, rr)) issues.push({ kind: "svg-text-outside-rect", where: path(t), detail: `text ${fmt(tr)} vs rect ${fmt(rr)}`, text: snippet(t.textContent) });
     }
   }
@@ -367,6 +371,20 @@ def landing(a: Audit, browser, base: str) -> None:
             p.goto(base + f"/?theme={theme}")
             p.wait_for_timeout(500)
             a.check(p, f"landing-{theme}-{w}")
+            # Sections fade in as they scroll into view ([data-reveal]): scroll the whole page so the numbers,
+            # the install steps and the footer are checked too, then the "Copied" label of a copy button.
+            # The hero animation loops; its pills sit mid-flight at any moment, so these checks use the picture
+            # reduced motion shows (the same resting state the first check above sees).
+            p.emulate_media(reduced_motion="reduce")
+            p.evaluate("""async () => { for (let y = 0; y < document.body.scrollHeight; y += 400) {
+                window.scrollTo(0, y); await new Promise(r => setTimeout(r, 60)); } }""")
+            p.wait_for_timeout(900)
+            a.check(p, f"landing-{theme}-{w}-scrolled")
+            if w in (390, 1280) and theme == "light":
+                c.grant_permissions(["clipboard-read", "clipboard-write"]) if browser.browser_type.name == "chromium" else None
+                p.locator("#install .copy").last.click()
+                p.wait_for_timeout(250)
+                a.check(p, f"landing-copied-{w}")
             c.close()
 
 
@@ -418,6 +436,7 @@ def web(a: Audit, browser, base: str, scenarios: list[str]) -> None:
         p.fill("#c-text", "The weather is nice today. " * 30)
         p.click("#run-off")
         p.wait_for_function("!document.getElementById('run-on').disabled", timeout=120000)
+        p.wait_for_timeout(800)  # the outcome cards flip in (transform) for ~0.6 s; mid-flip they poke out by a few px
         a.check(p, f"web-custom-nothing-{w}")
         c.close()
 

@@ -19,6 +19,12 @@ body[data-demo="1"] .empty-main, body:not([data-demo="1"]) .empty-demo { display
 .copy-btn svg { width: 1rem; height: 1rem; }
 .copy-btn:hover { color: var(--you); border-color: var(--you); }
 .copy-btn.is-done { color: var(--allow); border-color: var(--allow); }
+.copy-btn { position: relative; }
+.copy-btn .copied { position: absolute; right: calc(100% + .333rem); top: 50%; transform: translateY(-50%); font-size: var(--t-xs); font-weight: 600; color: var(--allow); background: var(--surface); padding: .067rem .333rem; border-radius: 5px; pointer-events: none; white-space: nowrap; }
+.oc-list li.oc-tried { border-color: var(--line); color: var(--muted); }
+.oc-list li.oc-tried b { color: var(--muted); }
+.oc-list li.oc-more { display: block; background: none; border: 0; padding: 0; animation: none; }
+.oc-more button { border: 0; background: none; color: var(--you); font: inherit; font-size: var(--t-xs); font-weight: 600; cursor: pointer; padding: .133rem 0; text-decoration: underline; text-underline-offset: 2px; }
 .empty-links { margin-top: 1rem !important; font-size: var(--t-s); display: flex; justify-content: center; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .empty-links a { color: var(--you); font-weight: 600; text-decoration: none; }
 .empty-links a:hover { text-decoration: underline; }
@@ -98,7 +104,7 @@ body[data-demo="1"] .empty-main, body:not([data-demo="1"]) .empty-demo { display
 .oc[data-state="good"] .oc-big, .oc[data-state="good"] .oc-head { color: var(--allow); }
 .oc[data-state="running"] .oc-big { color: var(--ink-2); }
 .oc-inbox .oc-big { font-size: var(--t-l); }
-.oc-list { list-style: none; margin: .333rem 0 0; padding: 0; display: grid; gap: .267rem; max-height: 6.4rem; overflow-y: auto; }
+.oc-list { list-style: none; margin: .333rem 0 0; padding: 0; display: grid; gap: .267rem; }
 .oc-list:empty { display: none; }
 .oc-list li {
   font-size: var(--t-xs); line-height: 1.3; color: var(--ink);
@@ -198,9 +204,9 @@ body.floor-on .human-note { color: var(--ask); }
   .demo { grid-template-columns: minmax(0, 1fr); padding: .8rem .8rem .867rem; margin-top: .6rem; gap: .8rem; }
   .top-link span { display: none; }
   .top-link { width: 2.133rem; padding: .367rem; }
-  .scenarios { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: .133rem; }
-  .scenarios::-webkit-scrollbar { display: none; }
-  .scenarios button { white-space: nowrap; flex: none; }
+  /* Wrap, never a sideways row: "Try your own attack" sat off-screen at the end of it. */
+  .scenarios { flex-wrap: wrap; }
+  .scenarios button { white-space: nowrap; }
   .scenario-story { min-height: 0; }
   .demo-buttons { display: grid; grid-template-columns: 1fr 1fr; }
   .btn-run { justify-content: center; padding: .6rem .5rem; font-size: var(--t-s); }
