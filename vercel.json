@@ -5,6 +5,11 @@
   "buildCommand": "sh web/build.sh",
   "outputDirectory": "public",
   "cleanUrls": true,
+  "redirects": [
+    { "source": "/", "has": [{ "type": "query", "key": "scenario" }], "destination": "/app", "permanent": false },
+    { "source": "/", "has": [{ "type": "query", "key": "tab", "value": "demo" }], "destination": "/app", "permanent": false },
+    { "source": "/", "has": [{ "type": "query", "key": "autorun" }], "destination": "/app", "permanent": false }
+  ],
   "functions": {
     "api/run.py": {
       "includeFiles": "{web/demo_runner.py,demo/run_demo.py,demo/world/__init__.py,demo/world/agent.py,demo/world/world.py,demo/world/fixtures/**,demo/poisoned-repo/**,src/tripwire/**}",
@@ -17,6 +22,6 @@
       { "key": "X-Content-Type-Options", "value": "nosniff" },
       { "key": "Referrer-Policy", "value": "no-referrer" }
     ] },
-    { "source": "/(static/.*|demo.*|)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }] }
+    { "source": "/(static/.*|demo.*|landing.css|app|)", "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }] }
   ]
 }

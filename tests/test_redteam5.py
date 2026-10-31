@@ -155,7 +155,8 @@ def test_mac_is_standard_hmac_sha256():
     k, body = os.urandom(32), b'{"tool":"Bash"}'
     want = hmac.new(k, b"n1\nallow\n" + hashlib.sha256(body).hexdigest().encode(), "sha256").hexdigest()
     assert daemon_id.mac(k, "n1", "allow", body) == want
-    assert daemon_id.same(want, want) and not daemon_id.same(want, want[:-1] + "0")
+    wrong = want[:-1] + ("1" if want.endswith("0") else "0")  # a random key ends in "0" one time in 16
+    assert daemon_id.same(want, want) and not daemon_id.same(want, wrong)
 
 
 def test_identity_file_is_private_and_per_port(tmp_path):

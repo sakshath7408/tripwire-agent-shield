@@ -14,7 +14,7 @@ Usage (dashboard states need a running daemon fed by demo/run_demo.py, and TRIPW
 the browser can pair):
   TRIPWIRE_HOME=<home> uv run python scripts/ui_audit.py --base http://127.0.0.1:7797 --out /tmp/ui-audit
   uv run python scripts/ui_audit.py --pitch docs/pitch/index.html --out /tmp/ui-audit
-  uv run python scripts/ui_audit.py --web http://127.0.0.1:7798 --out /tmp/ui-audit
+  uv run python scripts/ui_audit.py --web http://127.0.0.1:7798 --out /tmp/ui-audit   # / landing page and /app
 Exit code 1 when anything is flagged. Screenshots of failing states land in --out.
 """
 
@@ -177,6 +177,10 @@ def demo_cookie(base: str) -> str | None:
     import os as _os
     import urllib.request as _rq
     home = _os.environ.get("TRIPWIRE_HOME") or _os.path.expanduser("~/.tripwire")
+    # Once a session has seen hidden instructions the daemon refuses new pairings, even with the demo key. A cookie
+    # paired before the demo was fed (TRIPWIRE_DASH_COOKIE) keeps the scripts working on a fed daemon.
+    if _os.environ.get("TRIPWIRE_DASH_COOKIE"):
+        return _os.environ["TRIPWIRE_DASH_COOKIE"]
     try:
         key = open(_os.path.join(home, "demo-admin.key")).read().strip()
         req = _rq.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={"X-Tripwire-Demo-Admin": key})
@@ -354,11 +358,24 @@ def pitch(a: Audit, browser, path: str) -> None:
         c.close()
 
 
+def landing(a: Audit, browser, base: str) -> None:
+    """The landing page at /, both themes, phone to 1920."""
+    for (w, h) in ((320, 640), (390, 844), (768, 1024), (1280, 720), (1920, 1080)):
+        for theme in ("light", "dark"):
+            c = browser.new_context(viewport={"width": w, "height": h})
+            p = c.new_page()
+            p.goto(base + f"/?theme={theme}")
+            p.wait_for_timeout(500)
+            a.check(p, f"landing-{theme}-{w}")
+            c.close()
+
+
 def web(a: Audit, browser, base: str, scenarios: list[str]) -> None:
+    landing(a, browser, base)
     for (w, h) in ((390, 844), (1280, 720), (1920, 1080)):
         c = browser.new_context(viewport={"width": w, "height": h})
         p = c.new_page()
-        p.goto(base + "/")
+        p.goto(base + "/app")
         p.wait_for_timeout(1200)
         if not p.locator("#tour").is_hidden():
             for i in range(5):
@@ -373,7 +390,7 @@ def web(a: Audit, browser, base: str, scenarios: list[str]) -> None:
             c.close()
             continue
         for scn in scenarios:
-            p.goto(base + f"/?scenario={scn}#demo")
+            p.goto(base + f"/app?scenario={scn}#demo")
             p.wait_for_timeout(800)
             for guarded, btn in ((False, "#run-off"), (True, "#run-on")):
                 p.click(btn)
@@ -388,7 +405,7 @@ def web(a: Audit, browser, base: str, scenarios: list[str]) -> None:
     for (w, h) in ((390, 844), (1280, 720)):
         c = browser.new_context(viewport={"width": w, "height": h})
         p = c.new_page()
-        p.goto(base + "/?scenario=custom")
+        p.goto(base + "/app?scenario=custom")
         p.wait_for_timeout(800)
         a.check(p, f"web-custom-idle-{w}")
         for place in ("repo", "inbox", "web"):

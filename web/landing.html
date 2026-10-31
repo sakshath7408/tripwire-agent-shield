@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tripwire · a local guard between your AI agent and its tools</title>
+  <meta name="description" content="Tripwire checks every tool call your AI agent makes before it runs. Only your words are instructions; everything the agent reads is data. Open source, runs on your machine.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z' fill='%23121a2c'/%3E%3Cpath d='M7 12h10' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script>
+    // Deep links that belong to the app (the Demo tab) go there before anything paints.
+    (function () {
+      var q = new URLSearchParams(location.search);
+      if (location.hash === "#demo" || q.has("scenario") || q.get("tab") === "demo" || q.has("autorun") || q.has("floor")) {
+        location.replace("/app" + location.search + (location.hash === "#demo" || q.has("scenario") || q.get("tab") === "demo" ? "#demo" : location.hash));
+        return;
+      }
+      // Same theme rule as the app, decided before paint so nothing flashes.
+      var t = q.get("theme") || localStorage.getItem("tw-theme");
+      if (t !== "dark" && t !== "light") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.dataset.theme = t;
+      document.documentElement.classList.add("js");
+    })();
+  </script>
+  <link rel="stylesheet" href="/landing.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.2 4.2 5.1v5.8c0 4.9 3.3 9.2 7.8 10.9 4.5-1.7 7.8-6 7.8-10.9V5.1L12 2.2z" fill="currentColor"/><path d="M7.6 12.2h8.8" stroke="var(--surface)" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-git" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 20 20"><path d="M6.5 4.6v10.8a.6.6 0 0 0 .9.5l8.6-5.4a.6.6 0 0 0 0-1L7.4 4.1a.6.6 0 0 0-.9.5z" fill="currentColor"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 20 20"><rect x="7" y="7" width="9.5" height="9.5" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.3A1.8 1.8 0 0 0 11.2 3.5H5.3A1.8 1.8 0 0 0 3.5 5.3v5.9A1.8 1.8 0 0 0 5.3 13H7" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 20 20"><path d="m5 10.5 3.2 3.2L15.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 20 20"><path d="M16.5 12.2A6.8 6.8 0 0 1 7.8 3.5a6.8 6.8 0 1 0 8.7 8.7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-link" viewBox="0 0 20 20"><path d="M8.5 11.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2l-1 1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M11.5 8.5a3 3 0 0 0-4.2 0l-2.6 2.6a3 3 0 0 0 4.2 4.2l1-1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <!-- feature icons -->
+    <symbol id="f-trace" viewBox="0 0 24 24"><path d="M4 18c4-1 5-9 9-9s4 7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="4" cy="18" r="2" fill="currentColor"/><circle cx="20" cy="16" r="2" fill="currentColor"/></symbol>
+    <symbol id="f-shell" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m7 9 3 3-3 3M12.5 15h4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="f-role" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19c.7-3.3 2.9-5 5.5-5s4.8 1.7 5.5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 6.5h4.5M16 10h4.5M16 13.5h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="f-ask" viewBox="0 0 24 24"><path d="M4 5.5h16v10H11l-4.5 3.5V15.5H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10.3 8.4a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.8.6-.8 1.1v.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12.1" cy="13.3" r=".9" fill="currentColor"/></symbol>
+    <symbol id="f-learn" viewBox="0 0 24 24"><path d="M12 3.5l2.3 4.7 5.2.8-3.8 3.6.9 5.2L12 15.3l-4.6 2.5.9-5.2L4.5 9l5.2-.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="f-pair" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.5 11h7M12 8.5v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="f-chain" viewBox="0 0 24 24"><path d="M9.5 14.5a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1.2 1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14.5 9.5a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1.2-1.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="f-pin" viewBox="0 0 24 24"><path d="M9.5 3.5h5l.7 6.2 2.8 2.8v1.8H6v-1.8l2.8-2.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 14.3v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="f-hook" viewBox="0 0 24 24"><path d="M12 3.5v8a4 4 0 0 0 8 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="3.5" r="1.6" fill="currentColor"/><path d="M4 14h4M4 17.5h7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="f-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="15.5" r="1.3" fill="currentColor"/></symbol>
+  </svg>
+
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" id="top">
+    <a class="brand" href="/" aria-label="Tripwire home">
+      <svg class="brand-mark" aria-hidden="true"><use href="#i-shield"/></svg>
+      <span>Tripwire</span>
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#numbers">Numbers</a>
+      <a href="#install">Install</a>
+    </nav>
+    <div class="nav-right">
+      <button class="btn-icon" id="theme" type="button" aria-label="Switch to dark theme" title="Light or dark">
+        <svg class="ic-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+        <svg class="ic-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+      </button>
+      <a class="btn-icon" href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener" aria-label="Source code on GitHub" title="GitHub"><svg aria-hidden="true"><use href="#i-git"/></svg></a>
+      <a class="btn btn-nav" href="/app">Open the app</a>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="aurora" aria-hidden="true" data-audit-ok><i></i><i></i><i></i></div>
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="dot" aria-hidden="true"></span>Open source · runs on your machine · free</p>
+        <h1 id="hero-title">A local guard between your AI agent and its tools.</h1>
+        <p class="lede">Every tool call is checked before it runs. Only your words count as instructions. Everything the agent reads is just data.</p>
+        <div class="cta">
+          <a class="btn btn-primary" href="/app#demo"><svg aria-hidden="true"><use href="#i-play"/></svg>Try the live demo</a>
+          <a class="btn btn-ghost" href="#install">Install</a>
+          <a class="text-link" href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener"><svg aria-hidden="true"><use href="#i-git"/></svg>GitHub</a>
+        </div>
+      </div>
+      <figure class="hero-art" aria-label="Animation: the agent's tool calls pass through Tripwire; the one carrying an address from a poisoned README is stopped, the others reach their tools">
+        <svg class="flow" viewBox="0 0 640 340" aria-hidden="true">
+          <!-- lanes -->
+          <path class="lane" d="M108 170H290"/>
+          <path class="lane" d="M370 170 520 74M370 170H520M370 170 520 134M370 170 520 254"/>
+          <!-- tool calls: drawn before the boxes so they slide out from under the agent and under the tools -->
+          <g class="pill pill-a">
+            <rect x="-78" y="-14" width="156" height="28" rx="14"/>
+            <text y="4" text-anchor="middle"><tspan class="fn">read_file</tspan> README.md</text>
+          </g>
+          <g class="pill pill-c">
+            <rect x="-70" y="-14" width="140" height="28" rx="14"/>
+            <text y="4" text-anchor="middle"><tspan class="fn">Bash</tspan> pytest -q</text>
+          </g>
+          <g class="pill pill-b">
+            <rect x="-88" y="-14" width="176" height="28" rx="14"/>
+            <rect class="pill-red" x="-88" y="-14" width="176" height="28" rx="14"/>
+            <text y="4" text-anchor="middle"><tspan class="fn">send_email</tspan> ops@evil.invalid</text>
+          </g>
+          <!-- agent -->
+          <rect class="node" x="8" y="135" width="100" height="70" rx="12"/>
+          <text class="t" x="58" y="166" text-anchor="middle">AI agent</text>
+          <text class="s" x="58" y="184" text-anchor="middle">any model</text>
+          <text class="s s-in" x="58" y="226" text-anchor="middle">read README.md,</text>
+          <text class="s s-in" x="58" y="241" text-anchor="middle">which hid an order</text>
+          <!-- tools -->
+          <g class="tools">
+            <rect class="node" x="520" y="52" width="104" height="44" rx="10"/><text class="t" x="572" y="79" text-anchor="middle">shell</text>
+            <rect class="node" x="520" y="112" width="104" height="44" rx="10"/><text class="t" x="572" y="139" text-anchor="middle">files</text>
+            <rect class="node" x="520" y="172" width="104" height="44" rx="10"/><text class="t" x="572" y="199" text-anchor="middle">email</text>
+            <rect class="node" x="520" y="232" width="104" height="44" rx="10"/><text class="t" x="572" y="259" text-anchor="middle">bank</text>
+          </g>
+          <!-- Tripwire -->
+          <circle class="ring ring-ok" cx="330" cy="170" r="40"/>
+          <circle class="ring ring-no" cx="330" cy="170" r="40"/>
+          <circle class="hub" cx="330" cy="170" r="40"/>
+          <svg class="hub-mark" x="306" y="146" width="48" height="48" viewBox="0 0 24 24"><path d="M12 2.2 4.2 5.1v5.8c0 4.9 3.3 9.2 7.8 10.9 4.5-1.7 7.8-6 7.8-10.9V5.1L12 2.2z" fill="currentColor"/><path d="M7.6 12.2h8.8" stroke="var(--bar-bg)" stroke-width="2" stroke-linecap="round"/></svg>
+          <text class="t t-hub" x="330" y="236" text-anchor="middle">Tripwire</text>
+          <!-- verdicts -->
+          <text class="v v-ok" x="330" y="290" text-anchor="middle">Allowed · part of your task</text>
+          <text class="v v-no" x="330" y="290" text-anchor="middle">Blocked · that address came from README.md, not from you</text>
+          <text class="v v-no2" x="330" y="310" text-anchor="middle">Stopped before it ran. Your task carries on.</text>
+        </svg>
+        <figcaption>Every tool call goes through the guard. The one carrying a value you never typed is stopped; the rest run.</figcaption>
+      </figure>
+    </section>
+
+    <section class="band" id="how" data-reveal aria-labelledby="how-title">
+      <div class="wrap">
+        <p class="kicker">How it works</p>
+        <h2 id="how-title">One tool call in, one verdict out.</h2>
+        <div class="how">
+          <ol class="steps">
+            <li>
+              <span class="n" aria-hidden="true">1</span>
+              <h3>Your words are the instructions</h3>
+              <p>The task you type is the only trusted text in a session.</p>
+            </li>
+            <li>
+              <span class="n" aria-hidden="true">2</span>
+              <h3>Everything the agent reads is data</h3>
+              <p>Files, web pages, emails, tool descriptions. Tripwire records every address, host, path and command they contain, and where it came from.</p>
+            </li>
+            <li>
+              <span class="n" aria-hidden="true">3</span>
+              <h3>Every tool call is checked</h3>
+              <p>If a send, pay, fetch or run uses something you never typed, that is the injection. Allow, ask, or block, with a one-line reason.</p>
+            </li>
+          </ol>
+          <svg class="diagram" viewBox="0 0 520 300" role="img" aria-label="Diagram: the agent's tool calls pass through Tripwire, which checks them against your task and lets only the allowed ones reach the tools">
+            <defs>
+              <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="var(--line-strong)"/></marker>
+            </defs>
+            <!-- you -->
+            <rect x="14" y="20" width="150" height="54" rx="10" class="d-you"/>
+            <text x="89" y="43" class="d-t d-you-t" text-anchor="middle">You</text>
+            <text x="89" y="61" class="d-s d-you-t" text-anchor="middle">"Fix the failing test"</text>
+            <!-- content -->
+            <rect x="14" y="226" width="150" height="54" rx="10" class="d-data"/>
+            <text x="89" y="249" class="d-t" text-anchor="middle">What it reads</text>
+            <text x="89" y="267" class="d-s" text-anchor="middle">files · web · email · MCP</text>
+            <!-- agent -->
+            <rect x="14" y="123" width="150" height="54" rx="10" class="d-box"/>
+            <text x="89" y="146" class="d-t" text-anchor="middle">AI agent</text>
+            <text x="89" y="164" class="d-s" text-anchor="middle">any model</text>
+            <!-- tripwire -->
+            <rect x="214" y="96" width="140" height="108" rx="12" class="d-tw"/>
+            <text x="284" y="128" class="d-t d-tw-t" text-anchor="middle">Tripwire</text>
+            <text x="284" y="150" class="d-s d-tw-t" text-anchor="middle">provenance · shell AST</text>
+            <text x="284" y="166" class="d-s d-tw-t" text-anchor="middle">roles · secrets · policy</text>
+            <text x="284" y="188" class="d-s d-tw-t" text-anchor="middle">audit chain</text>
+            <!-- tools -->
+            <rect x="404" y="96" width="102" height="108" rx="10" class="d-box"/>
+            <text x="455" y="128" class="d-t" text-anchor="middle">Tools</text>
+            <text x="455" y="150" class="d-s" text-anchor="middle">shell</text>
+            <text x="455" y="166" class="d-s" text-anchor="middle">files</text>
+            <text x="455" y="182" class="d-s" text-anchor="middle">email · money</text>
+            <!-- arrows -->
+            <path d="M89 74v49" class="d-arrow"/>
+            <path d="M89 226v-49" class="d-arrow d-arrow-data"/>
+            <path d="M164 150h50" class="d-arrow"/>
+            <path d="M354 150h50" class="d-arrow d-arrow-ok"/>
+            <path d="M164 47c60 0 70 40 110 49" class="d-arrow d-arrow-you" fill="none"/>
+            <text x="190" y="36" class="d-s d-you-t">trusted</text>
+            <text x="189" y="141" class="d-s" text-anchor="middle">tool call</text>
+            <text x="379" y="140" class="d-s d-ok-t" text-anchor="middle">allowed</text>
+            <text x="102" y="206" class="d-s" >untrusted</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap" id="features" data-reveal aria-labelledby="features-title">
+      <p class="kicker">Features</p>
+      <h2 id="features-title">Built for real agents, not just the demo.</h2>
+      <ul class="cards">
+        <li><svg aria-hidden="true"><use href="#f-trace"/></svg><h3>Provenance tracking</h3><p>Every value that shows up in tool output is tagged with its source. Use one you never typed, and the reason names the file it came from.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-shell"/></svg><h3>Shell analysis that decodes payloads</h3><p>Commands are parsed into an AST, not regex-matched. Base64, hex, <code>bash -c</code>, <code>eval</code>, pipes to a shell and nested runners are unwrapped and judged.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-role"/></svg><h3>Permission roles</h3><p>Each agent gets a tool list in plain YAML. An inbox assistant that asks for a shell is blocked, unknown tools go to a human.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-ask"/></svg><h3>Asks only when it matters</h3><p>Balanced autonomy decides the obvious cases on its own. Money, passwords, risky commands and anything after hidden instructions still stop for you.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-learn"/></svg><h3>Learned "always allow"</h3><p>One click teaches a narrow rule: same tool, same action, same target. Never for money, credentials, or in a session that saw hidden instructions.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-pair"/></svg><h3>Paired dashboard, no admin key</h3><p>A browser is paired only through a person at the terminal. There is no control credential on disk for an agent to find and use.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-chain"/></svg><h3>Tamper-evident audit chain</h3><p>Every task, output, verdict and click is one hash-chained, signed row. Edit one and <code>tripwire audit verify</code> names it. Sub-agents land in one tree.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-pin"/></svg><h3>MCP gateway with signed tool pins</h3><p>Put any MCP server behind the proxy. Tool descriptions are pinned on first use, so a rug-pull or a poisoned description is caught.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-hook"/></svg><h3>Claude Code hooks</h3><p><code>tripwire install claude</code> adds a PreToolUse hook. It never widens Claude Code's own permissions, and it denies when the daemon is down.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-lock"/></svg><h3>Hardened mode</h3><p><code>tripwire harden</code> runs the daemon as its own OS user. That is a real boundary: code running as you can no longer stop or replace the guard.</p></li>
+      </ul>
+    </section>
+
+    <section class="band band-ink" id="numbers" data-reveal aria-labelledby="numbers-title">
+      <div class="wrap">
+        <p class="kicker">Numbers you can quote</p>
+        <h2 id="numbers-title">Measured, not promised.</h2>
+        <p class="sub">Every tile links to the exact result file in the repo and the command that made it. Rerun before quoting. "Stopped" means a hard block or an ask; "hard block" means nobody was asked.</p>
+        <ul class="stats">
+          <li>
+            <span class="big" data-n="96.2" data-d="1" data-t="{n}%">96.2%</span>
+            <span class="label">AgentDojo attacks stopped</span>
+            <span class="def">609 attack pairs, 4 suites. 92.1% hard-blocked, with the phrase list on.</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/summary.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>summary.md</a>
+            <span class="meta">31 Oct 2026 05:40 <code>uv run python bench/run_all.py</code></span>
+          </li>
+          <li>
+            <span class="big" data-n="92.0" data-d="1" data-t="{n}%">92.0%</span>
+            <span class="label">Stopped without the phrase list</span>
+            <span class="def">Same 609 pairs, injection-phrase detector off. Provenance alone. 45.3% hard-blocked.</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/matrix.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>matrix.md</a>
+            <span class="meta">31 Oct 2026 05:40 <code>bench/agentdojo_replay.py --no-markers</code></span>
+          </li>
+          <li>
+            <span class="big" data-n="95.9" data-d="1" data-t="{n}%">95.9%</span>
+            <span class="label">Normal tasks allowed</span>
+            <span class="def">97 AgentDojo user tasks with no hard block (92.9% of their 339 calls untouched).</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/agentdojo.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>agentdojo.md</a>
+            <span class="meta">31 Oct 2026 05:40 <code>uv run python bench/agentdojo_replay.py</code></span>
+          </li>
+          <li>
+            <span class="big" data-n="96" data-d="0" data-t="{n} of 96">96 of 96</span>
+            <span class="label">Shell attacks caught, our own corpus</span>
+            <span class="def">12 categories, cold context. 94.8% hard-blocked cold, 100% after a poisoned read. 0 of 90 normal developer commands flagged.</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/shell.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>shell.md</a>
+            <span class="meta">31 Oct 2026 <code>uv run python bench/run_shell.py --show-misses</code></span>
+          </li>
+          <li>
+            <span class="big" data-n="13" data-d="0" data-t="{n} of 13">13 of 13</span>
+            <span class="label">Hard floor on the stage scenarios</span>
+            <span class="def">Four attack scenarios, the human clicks Allow on everything. Every attack step stopped on its own; the attacker got nothing.</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/README.md#hard-floor-what-tripwire-stops-when-the-human-allows-everything" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: README.md, hard floor</a>
+            <span class="meta">31 Oct 2026 <code>demo/run_demo.py --scenario all --offline --approve all</code></span>
+          </li>
+          <li>
+            <span class="big" data-n="1400" data-d="0" data-t="{n}">1,400</span>
+            <span class="label">Tests, all green</span>
+            <span class="def">Plus one expected failure. Red-team rounds each left a test behind.</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/tree/main/tests" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: tests/<wbr></a>
+            <span class="meta">31 Oct 2026 <code>uv run pytest -q</code></span>
+          </li>
+          <li>
+            <span class="big">&lt;1 ms</span>
+            <span class="label">Median decision time</span>
+            <span class="def">0.143 ms median on AgentDojo (p95 0.486 ms), 0.509 ms on the shell corpus. No model in the loop.</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/summary.json" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>summary.json</a>
+            <span class="meta">31 Oct 2026 05:40 <code>uv run python bench/run_all.py</code></span>
+          </li>
+          <li>
+            <span class="big" data-n="100" data-d="0" data-t="{n}%">100%</span>
+            <span class="label">Identical across hash seeds</span>
+            <span class="def">Every verdict is the same under <code>PYTHONHASHSEED</code> 0, 1 and 2. A test checks three seeds; full benchmark runs under 0 and 2 print identical tables.</span>
+            <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/tests/test_redteam4.py" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: tests/<wbr>test_redteam4.py</a>
+            <span class="meta">31 Oct 2026 <code>PYTHONHASHSEED=0 uv run python bench/run_all.py</code></span>
+          </li>
+        </ul>
+        <div class="limits" aria-labelledby="limits-title">
+          <h3 id="limits-title">Known limits</h3>
+          <ul>
+            <li><b>The hijacked agent in the demo is scripted.</b> Real models we tried refused the injections on their own. Tripwire's verdicts are real; the "agent fell for it" part is staged.</li>
+            <li><b>Default mode runs as you.</b> A program running as your user outside the agent can stop the daemon. <code>tripwire harden</code> moves it to its own OS user; that is the real boundary.</li>
+            <li><b>The phrase list is one signal.</b> It knows AgentDojo's template. A wording it has not seen gets the provenance-only number: 92.0% stopped, 45.3% hard-blocked.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap" id="install" data-reveal aria-labelledby="install-title">
+      <p class="kicker">Install</p>
+      <h2 id="install-title">Four commands. Python 3.12 and uv.</h2>
+      <ol class="cmds">
+        <li><code>git clone https://github.com/sakshath7408/tripwire-agent-shield<br>cd tripwire-agent-shield</code><button type="button" class="copy" data-copy="git clone https://github.com/sakshath7408/tripwire-agent-shield && cd tripwire-agent-shield" aria-label="Copy the clone command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
+        <li><code>uv sync</code><button type="button" class="copy" data-copy="uv sync" aria-label="Copy uv sync"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
+        <li><code>uv run tripwire serve</code><span class="note">prints a one-time dashboard link</span><button type="button" class="copy" data-copy="uv run tripwire serve" aria-label="Copy the serve command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
+        <li><code>uv run tripwire install claude</code><span class="note">Claude Code hooks; <code>mcp-proxy</code> for any MCP server</span><button type="button" class="copy" data-copy="uv run tripwire install claude" aria-label="Copy the install command"><svg aria-hidden="true"><use href="#i-copy"/></svg></button></li>
+      </ol>
+      <p class="install-foot">Nothing leaves your machine. The daemon listens on 127.0.0.1 only and never does a DNS lookup. <a href="https://github.com/sakshath7408/tripwire-agent-shield#readme" rel="noopener">Full README</a></p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-in">
+      <p>Built from scratch at PARALLAX 2026, BMSCE IEEE Computer Society. Track 1, Agent Shield.</p>
+      <p class="foot-links">
+        <a href="/app">Open the app</a>
+        <a href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener">GitHub</a>
+        <a href="https://github.com/sakshath7408/tripwire-agent-shield#credits" rel="noopener">Credits</a>
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var h = document.documentElement, t = document.getElementById("theme");
+      function label() { t.setAttribute("aria-label", h.dataset.theme === "dark" ? "Switch to light theme" : "Switch to dark theme"); }
+      label();
+      t.addEventListener("click", function () {
+        h.dataset.theme = h.dataset.theme === "dark" ? "light" : "dark";
+        try { localStorage.setItem("tw-theme", h.dataset.theme); } catch (e) {}
+        label();
+      });
+      var still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      // Sections fade up as they enter the viewport (transform and opacity only); counters count up once.
+      var seen = new Set();
+      function countUp(el) {
+        var n = parseFloat(el.dataset.n), d = +el.dataset.d, t = el.dataset.t, t0 = performance.now(), dur = 1100;
+        function fmt(v) { return t.replace("{n}", d ? v.toFixed(d) : Math.round(v).toLocaleString("en-US")); }
+        (function tick(now) {
+          var k = Math.min(1, (now - t0) / dur); k = 1 - Math.pow(1 - k, 3);
+          el.textContent = fmt(n * k);
+          if (k < 1) requestAnimationFrame(tick);
+        })(t0);
+      }
+      if ("IntersectionObserver" in window) {
+        var io = new IntersectionObserver(function (es) {
+          es.forEach(function (e) {
+            if (!e.isIntersecting) return;
+            e.target.classList.add("in");
+            io.unobserve(e.target);
+            if (e.target.id === "numbers" && !still) e.target.querySelectorAll(".big[data-n]").forEach(countUp);
+          });
+        }, { rootMargin: "0px 0px -12% 0px" });
+        document.querySelectorAll("[data-reveal]").forEach(function (el) { io.observe(el); });
+      } else {
+        document.querySelectorAll("[data-reveal]").forEach(function (el) { el.classList.add("in"); });
+      }
+      // Feature cards tilt toward the pointer, with a soft glow where it is (hover devices only).
+      if (!still && matchMedia("(hover: hover)").matches) {
+        document.querySelectorAll(".cards li").forEach(function (card) {
+          card.addEventListener("pointermove", function (e) {
+            var r = card.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+            card.style.setProperty("--rx", ((.5 - y) * 6).toFixed(2) + "deg");
+            card.style.setProperty("--ry", ((x - .5) * 6).toFixed(2) + "deg");
+            card.style.setProperty("--gx", (x * 100).toFixed(1) + "%");
+            card.style.setProperty("--gy", (y * 100).toFixed(1) + "%");
+          });
+          card.addEventListener("pointerleave", function () { card.style.removeProperty("--rx"); card.style.removeProperty("--ry"); });
+        });
+      }
+      document.querySelectorAll(".copy").forEach(function (b) {
+        b.addEventListener("click", function () {
+          b.classList.add("is-done"); setTimeout(function () { b.classList.remove("is-done"); }, 1400);
+          if (navigator.clipboard) navigator.clipboard.writeText(b.dataset.copy).catch(function () {});
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

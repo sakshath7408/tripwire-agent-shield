@@ -7,6 +7,7 @@ Each check is a bug a person found by hand once. It fails loudly so the bug can'
   TRIPWIRE_HOME=<home> uv run --with playwright python scripts/ui_smoke.py --base http://127.0.0.1:7790
   # hosted page: web/build.sh output served with /api/run (or the live site)
   uv run --with playwright python scripts/ui_smoke.py --web https://tripwire-agent-shield.vercel.app
+  (the hosted site: / is the landing page, /app the dashboard with the Demo tab)
 Exit code 1 when anything fails.
 """
 
@@ -14,8 +15,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+from urllib.parse import unquote
 
 from playwright.sync_api import Page, sync_playwright
+
+REPO = Path(__file__).resolve().parent.parent
+GITHUB = "https://github.com/sakshath7408/tripwire-agent-shield/"
 
 FAILS: list[str] = []
 
@@ -83,6 +89,10 @@ def demo_cookie(base: str) -> str | None:
     import os as _os
     import urllib.request as _rq
     home = _os.environ.get("TRIPWIRE_HOME") or _os.path.expanduser("~/.tripwire")
+    # Once a session has seen hidden instructions the daemon refuses new pairings, even with the demo key. A cookie
+    # paired before the demo was fed (TRIPWIRE_DASH_COOKIE) keeps the scripts working on a fed daemon.
+    if _os.environ.get("TRIPWIRE_DASH_COOKIE"):
+        return _os.environ["TRIPWIRE_DASH_COOKIE"]
     try:
         key = open(_os.path.join(home, "demo-admin.key")).read().strip()
         req = _rq.Request(f"{base}/v1/pair/new", data=b"", method="POST", headers={"X-Tripwire-Demo-Admin": key})
@@ -135,11 +145,56 @@ def dashboard(browser, eng: str, base: str) -> None:
     c.close()
 
 
-def web(browser, eng: str, base: str, live: bool) -> None:
+def landing(browser, eng: str, base: str) -> None:
+    """The landing page at /: loads, every quoted number has a proof link to a file that exists in this repo, the
+    buttons go to the app's Demo tab and to #install, and the app's old deep links on / land on /app."""
     c = browser.new_context(viewport={"width": 1280, "height": 800})
     p = c.new_page()
     log = errors(p)
     p.goto(base + "/")
+    p.wait_for_timeout(300)
+    check(p.locator("h1").count() == 1 and "guard" in p.inner_text("h1"), f"{eng}: landing has one h1 with the promise")
+    check(p.locator("#tour").count() == 0, f"{eng}: no first-open guide on the landing page")
+    check(p.locator("a.btn-primary[href='/app#demo']").count() == 1, f"{eng}: 'Try the live demo' goes to /app#demo")
+    check(p.locator("a.btn-ghost[href='#install']").count() == 1 and p.locator("#install").count() == 1, f"{eng}: 'Install' goes to #install")
+    hrefs = [a.get_attribute("href") or "" for a in p.locator("#numbers a.proof").all()]
+    missing = []
+    for h in hrefs:
+        if not h.startswith(GITHUB + "blob/main/") and not h.startswith(GITHUB + "tree/main/"):
+            missing.append(h)
+            continue
+        rel = unquote(h.split("/main/", 1)[1].split("#", 1)[0])
+        if not (REPO / rel).exists():
+            missing.append(rel)
+    check(len(hrefs) >= 8 and not missing, f"{eng}: every proof link ({len(hrefs)}) points at a file in the repo {missing[:3]}")
+    stats = p.locator("#numbers .stats > li")
+    check(stats.count() == len(hrefs), f"{eng}: every stat tile has a proof link")
+    for sel in ("#how", "#features", "#numbers", "#install"):
+        check(p.locator(f"nav a[href='{sel}']").count() == 1, f"{eng}: nav links to {sel}")
+    p.click("#theme")
+    check(p.evaluate("document.documentElement.dataset.theme") in ("dark", "light") and p.evaluate("localStorage.getItem('tw-theme')") == p.evaluate("document.documentElement.dataset.theme"),
+          f"{eng}: the theme switch saves the same key the app reads")
+    p.click(".cmds .copy >> nth=0")
+    check(p.locator(".cmds .copy.is-done").count() == 1, f"{eng}: a copy button shows it copied")
+    check(not p.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth + 1"), f"{eng}: landing has no sideways scroll")
+    check(not log, f"{eng}: no console errors on the landing page {log[:2]}")
+    c.close()
+    # The app's old deep links on / go to /app (JS on the page; Vercel also redirects the query forms).
+    for entry, want in (("/#demo", "/app#demo"), ("/?scenario=legit", "/app?scenario=legit#demo"), ("/?tab=demo", "/app?tab=demo#demo"), ("/?scenario=custom&floor=1", "/app?scenario=custom&floor=1#demo")):
+        c = browser.new_context(viewport={"width": 1280, "height": 800})
+        p = c.new_page()
+        p.goto(base + entry)
+        p.wait_for_timeout(1200)
+        check(p.url.endswith(want) and p.locator("#demo-panel").is_visible(), f"{eng}: {entry} lands on {want} with the demo open ({p.url})")
+        c.close()
+
+
+def web(browser, eng: str, base: str, live: bool) -> None:
+    landing(browser, eng, base)
+    c = browser.new_context(viewport={"width": 1280, "height": 800})
+    p = c.new_page()
+    log = errors(p)
+    p.goto(base + "/app")
     guide(p, eng)
     done = "!document.getElementById('run-on').disabled"
     # Leaving the Demo tab mid-run stops the run and clears it (both tabs used to stay selected).
@@ -194,7 +249,7 @@ def web(browser, eng: str, base: str, live: bool) -> None:
     # A ?scenario= deep link goes straight to the demo with no guide on top.
     c = browser.new_context(viewport={"width": 1280, "height": 800})
     p = c.new_page()
-    p.goto(base + "/?scenario=legit")
+    p.goto(base + "/app?scenario=legit")
     p.wait_for_timeout(1200)
     check(p.locator("#demo-panel").is_visible() and step(p) == "closed", f"{eng}: ?scenario= opens the demo without the guide")
     if live:
@@ -205,7 +260,7 @@ def web(browser, eng: str, base: str, live: bool) -> None:
 
 # Every way into the Demo tab. "#demo" once matched the panel's id, so the browser scrolled the feed to it and the
 # card opened with its first line under the sticky tabs (desktop) or the header off screen (phone).
-ENTRIES = ("/#demo", "/?scenario=injected-doc", "/?tab=demo", "/?scenario=injected-doc&floor=1", "click")
+ENTRIES = ("/app#demo", "/app?scenario=injected-doc", "/app?tab=demo", "/app?scenario=injected-doc&floor=1", "/#demo", "/?scenario=injected-doc", "click")
 WIDTHS = ((320, 640), (390, 844), (820, 1180), (1024, 768), (1280, 800), (1440, 900), (1920, 1080))
 AT_TOP = """() => {
   const d = document.getElementById('demo-panel').getBoundingClientRect(), v = document.querySelector('.views').getBoundingClientRect();
@@ -224,7 +279,7 @@ def demo_opens_at_top(browser, eng: str, base: str) -> None:
         p = c.new_page()
         for entry in ENTRIES:
             if entry == "click":
-                p.goto(base + "/")
+                p.goto(base + "/app")
                 p.wait_for_timeout(700)
                 if p.locator("#tour").is_visible():
                     p.click("#tour-skip")
@@ -257,7 +312,7 @@ def custom(browser, eng: str, base: str, widths=((1280, 800), (390, 844))) -> No
         c = browser.new_context(viewport={"width": w, "height": h})
         p = c.new_page()
         log = errors(p)
-        p.goto(base + "/?scenario=custom")
+        p.goto(base + "/app?scenario=custom")
         p.wait_for_selector("#custom:not([hidden])", timeout=5000)
         check(p.locator("#c-text").input_value().strip() != "", f"{eng} {w}: the attack box starts with an example")
         for place, text in CUSTOM.items():
@@ -291,7 +346,7 @@ def custom(browser, eng: str, base: str, widths=((1280, 800), (390, 844))) -> No
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base", help="dashboard daemon, e.g. http://127.0.0.1:7790")
-    ap.add_argument("--web", help="hosted page, e.g. http://127.0.0.1:7798 or the live URL")
+    ap.add_argument("--web", help="hosted site, e.g. http://127.0.0.1:7798 or the live URL (/ landing, /app dashboard)")
     ap.add_argument("--engines", default="chromium,webkit")
     a = ap.parse_args()
     if not a.base and not a.web:

@@ -80,7 +80,8 @@ const RAWNOTE = `        <div class="raw-note" id="raw-note" hidden>
           <p>Press <b>Run with Tripwire</b> to see the same agent, same world, with every call checked first.</p>
         </div>
 `;
-const LINKS = `        <a class="btn-quiet top-link" href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener" title="Source code on GitHub"><svg aria-hidden="true"><use href="#i-git"/></svg><span>GitHub</span></a>
+const LINKS = `        <a class="btn-quiet top-link" href="/" title="About Tripwire, features and numbers"><span>Home</span></a>
+        <a class="btn-quiet top-link" href="https://github.com/sakshath7408/tripwire-agent-shield" rel="noopener" title="Source code on GitHub"><svg aria-hidden="true"><use href="#i-git"/></svg><span>GitHub</span></a>
 `;
 // The main view is honest: a website cannot reach a daemon on your machine, so it says how to connect one.
 // The Demo tab has its own empty copy.
