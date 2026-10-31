@@ -46,6 +46,25 @@ SEND_WRITE_MSG = re.compile(r"\bwrite\w*\s+(?:back\b|(?:to\s+)?(?:them|him|her|e
 SEND_TO_NAME = re.compile(r"\b(?:[Ee]mail|[Mm]essage|[Tt]ext|[Ss]lack|DM|[Ww]rite to|[Ss]hare\b[^.!?\n;]{0,60}?\bwith|[Ss]end\b[^.!?\n;]{0,60}?\bto)\s+(?!The\b|A\b|An\b|My\b)[A-Z][a-z]{1,30}\b")
 
 
+# You handed the content the controls: "do the actions in David's email", "do the tasks on my TODO list at <url>",
+# "follow the instructions in the README", "adjust my payment accordingly", "do what the note says". Orders in content
+# are then partly yours, so following one asks instead of blocking.
+DELEGATE = re.compile(
+    r"\b(?:do|perform|complete|carry out|follow|execute|handle|action|take care of|work through|go through|finish)\b"
+    r"[^.!?\n]{0,30}?\b(?:actions?|tasks?|instructions?|steps?|to-?dos?|requests?|items?|directions?)\b"
+    r"(?:\s+[\w']{1,20}){0,3}?\s+(?:specified\s+|listed\s+|described\s+|written\s+|mentioned\s+|given\s+|found\s+)?"
+    r"(?:in|on|at|from|inside)\s+(?:[\w'.-]{1,40}\s+){0,3}?(?:e-?mails?|messages?|files?|docs?|documents?|lists?|pages?|"
+    r"sites?|websites?|notes?|url|links?|channels?|inbox|tickets?|issues?|threads?|posts?|dms?|readme|www\.|https?://)|"
+    r"\bfollow\w*\s+(?:the\s+|any\s+|all\s+|its\s+|their\s+)?(?:instructions|directions|steps)\b|"
+    r"\bdo\s+(?:what|whatever)\b[^.!?\n]{0,40}\b(?:says?|asks?|wants?|requests?|tells?)\b|"
+    r"\b(?:as|like)\s+(?:it|they|he|she|the\s+\w+)\s+(?:says?|asks?|instructs?|requests?)\b|\baccordingly\b|"
+    r"\b(?:in|on|from|at)\s+(?:the|my|our|his|her|their|this|that)\s+to-?do\s+lists?\b",
+    re.I)
+# Paying a document you name hands it the payee: "pay the bill", "settle this invoice".
+DELEGATE_MONEY = re.compile(r"\b(?:pay|settle|process)\w*\s+(?:the\s+|this\s+|that\s+|my\s+|our\s+)?(?:\w+\s+){0,2}?"
+                            r"(?:bill|invoice|statement|dues|fee|fine)s?\b", re.I)
+
+
 @dataclass
 class Session:
     id: str
@@ -91,6 +110,12 @@ class Session:
             return True
         return cap == Capability.SEND and bool(SEND_WEAK.search(self.task) or SEND_TO_NAME.search(self.task)
                                                or SEND_WRITE_MSG.search(self.task) or ANSWER_MSG.search(self.task))
+
+    def delegates(self, money: bool = False) -> bool:
+        """Did you tell the agent to do what some content says (so orders found in it are partly yours)?"""
+        if not self.task:
+            return False
+        return bool(DELEGATE.search(self.task) or (money and DELEGATE_MONEY.search(self.task)))
 
     def asked_to_reply(self) -> bool:
         return bool(self.task and REPLY_WORDS.search(self.task))
@@ -152,7 +177,8 @@ def session_to_dict(s: Session) -> dict:
                   "untrusted_lines": [[n, _src(src, sv)] for n, src in t.untrusted_lines[-1000:] if _clean(n, sv)],
                   "injection_seen": [_src(x, sv) for x in t.injection_seen[-50:]], "seen": t.seen,
                   "senders": t.senders, "listed": t.listed, "unverified": sorted(t.unverified)[:500],
-                  "messages": t.messages[-500:], "reply_to": t.reply_to, "in_orders": sorted(t.in_orders)[:2000]},
+                  "messages": t.messages[-500:], "reply_to": t.reply_to, "in_orders": sorted(t.in_orders)[:2000],
+                  "orders": [[n, list(k), _src(src, sv)] for n, k, src in t.orders[-500:] if _clean(n, sv)]},
     }
 
 
@@ -166,7 +192,8 @@ def session_from_dict(d: dict) -> Session:
         senders=dict(t.get("senders") or {}), listed=dict(t.get("listed") or {}),
         unverified=set(t.get("unverified") or []),
         messages=[[str(r[0]), [str(x) for x in r[1]], bool(r[2]), int(r[3])] for r in t.get("messages") or []],
-        reply_to=dict(t.get("reply_to") or {}), in_orders=set(t.get("in_orders") or []))
+        reply_to=dict(t.get("reply_to") or {}), in_orders=set(t.get("in_orders") or []),
+        orders=[[str(r[0]), [str(x) for x in r[1]], _unsrc(r[2])] for r in t.get("orders") or []])
     s = Session(id=d["id"], cwd=d.get("cwd"), task=d.get("task") or "", profile=d.get("profile"), taint=taint,
                 secrets_read=list(d.get("secrets_read") or []),
                 pending_secrets={k: (v[0], v[1]) for k, v in (d.get("pending_secrets") or {}).items()},

@@ -545,6 +545,8 @@ class Engine:
         if cap == Capability.AGENT and not any(x.rule.startswith("taint.agent") for x in f):
             f += _agent_paraphrase(blob, s, injected)
 
+        f += self._followed_order(args, cap, s, invite)
+
         if cap == Capability.CREDENTIAL:
             f.append(Finding(rule="impact.credential", severity=ASK_AT if s.intends(cap) else HIGH, category="secrets",
                              message="Changes a password, key or login setting." if s.intends(cap)
@@ -711,6 +713,33 @@ class Engine:
                                    message=f"Fills in a web address from {tmpl[1].where} with extra data ({tmpl[0][:80]}), "
                                            "a common way to sneak data out."))
         return out
+
+    def _followed_order(self, args: dict, cap: Capability, s: Session, invite: bool) -> list[Finding]:
+        """The action does what a sentence in content ordered ("Send the code to x@y.com", "Delete file 13", "Visit
+        z.com"): its own target sits inside an imperative sentence the agent read, you never named that target, and
+        you never told the agent to do what that content says. That is the agent taking orders from data, whatever
+        words the order used, so it is stopped. A plain visit only asks (a GET carries no data). Files inside your
+        project and file writes are left to the usual checks: READMEs are full of "create a .env file"."""
+        kinds = ORDER_CAP_KINDS.get(cap, ())
+        if invite:
+            kinds = kinds + ("send", "write")
+        if not kinds or not s.taint.orders or s.delegates(money=cap == Capability.MONEY):
+            return []
+        if cap == Capability.WRITE and not invite and _first(args, PATH_KEYS):
+            return []  # a file: left to the file checks
+        vals = _order_values(args)
+        if cap == Capability.DELETE and s.cwd:
+            vals = [v for v in vals if not (("/" in v or "." in v) and s.in_workspace(paths.expand(v, s.cwd)))]
+        hit = s.taint.ordered(vals, kinds)
+        if not hit:
+            return []
+        v, src = hit
+        if cap == Capability.FETCH:
+            return [Finding(rule="taint.followed_order", severity=MEDIUM, category="injection", evidence=src.snippet,
+                            message=f"Visits '{v[:80]}' because a sentence in {src.where} told the AI to, not because you asked.")]
+        return [Finding(rule="taint.followed_order", severity=HIGH + 5, category="injection", evidence=src.snippet,
+                        message=f"Does what a sentence in {src.where} told the AI to do: '{v[:80]}' comes from that order, "
+                                "not from you.")]
 
     def _invite(self, args: dict, blob: str, s: Session, injected: bool) -> list[Finding]:
         """Attendees of an invite or share get the recipient rules of a send. When you asked for the event, an
@@ -1014,6 +1043,34 @@ def _carries_secret(blob: str, s: Session) -> bool:
 def _guard_home():
     from pathlib import Path
     return Path(os.environ.get("TRIPWIRE_HOME") or Path.home() / ".tripwire")
+
+
+ORDER_CAP_KINDS = {Capability.SEND: ("send",), Capability.MONEY: ("money",), Capability.DELETE: ("delete",),
+                   Capability.FETCH: ("fetch",), Capability.WRITE: ("write",), Capability.CREDENTIAL: ("credential",)}
+# Free text in an action (a body, a subject, a title): only the addresses and links inside it are its targets.
+PROSE_KEY = re.compile(r"(?:^|_)(content|contents|text|body|data|subject|description|title|summary|message|note|notes|"
+                       r"comment|caption|query|location|reason|prompt)s?$")
+# Times, dates, amounts and counts are not who or what an action is aimed at.
+QUANTITY_KEY = re.compile(r"(?:^|_)(time|date|day|days|amount|duration|count|limit|page|offset|n|hours?|minutes?|start|"
+                          r"end|price|currency|max|min|size|year|month)$")
+
+
+def _order_values(args: Any, depth: int = 0, key: str = "") -> list[str]:
+    """What an action is aimed at: whole values of its target-like arguments, plus addresses and links inside free text."""
+    if depth > MAX_NEST:
+        return []
+    if isinstance(args, dict):
+        return [x for k, v in args.items() for x in _order_values(v, depth + 1, _key(k))]
+    if isinstance(args, (list, tuple)):
+        return [x for v in args for x in _order_values(v, depth + 1, key)]
+    if isinstance(args, bool) or args is None or QUANTITY_KEY.search(key):
+        return []
+    v = str(args)
+    if PROSE_KEY.search(key) or len(v) > 200:
+        # Free text counts whole only when it is a verbatim copy of a sizeable piece of the order (a title, a body).
+        whole = [v] if 8 <= len(v) <= 200 and len(re.findall(r"[^\W\d_]{2,}", v)) >= 2 else []
+        return whole + [x for vals in indicators(v[:20_000]).values() for x in vals]
+    return [v] + [x for vals in indicators(v).values() for x in vals if x != v.lower()]
 
 
 def _taint_target(cap: Capability, v: str, src, s: Session, args: dict, injected: bool) -> tuple[int, str]:

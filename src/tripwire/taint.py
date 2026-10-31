@@ -186,6 +186,125 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
+# ---- Orders in content: a small grammar, not a phrase list ---------------------------------------------------------
+# A sentence that tells whoever reads it to act on the outside world: it opens with a verb in the imperative ("Send
+# ...", "Please delete ...", "TODO: email ...", "You must transfer ..."), and it names an action an agent can take
+# (send, pay, delete, book, invite, visit, create, change). The words that make it an order are ordinary verbs, so
+# this works on any wording of an attack; what it catches is the shape. Each kind maps to the capabilities it can
+# cause. Nouns that look like verbs ("Book club: Tuesdays", "Transfer complete.") rarely carry the very target the
+# agent then acts on, and the engine only uses an order when the action's own target sits inside it.
+_K_SEND, _K_MONEY, _K_DELETE, _K_FETCH, _K_WRITE, _K_CRED = "send", "money", "delete", "fetch", "write", "credential"
+ORDER_VERBS: dict[str, tuple[str, ...]] = {}
+for _words, _kinds in (
+    ("send", (_K_SEND, _K_MONEY)),
+    ("email e-mail mail forward share post upload message dm text reply tell notify contact cc bcc publish submit ping "
+     "introduce leak", (_K_SEND,)),
+    ("invite add", (_K_SEND, _K_WRITE)),
+    ("pay transfer wire refund deposit donate tip buy purchase", (_K_MONEY,)),
+    ("reserve book", (_K_MONEY, _K_WRITE)),
+    ("delete remove erase wipe purge cancel trash discard destroy empty unsubscribe kick ban uninstall", (_K_DELETE,)),
+    ("visit open browse navigate click load fetch download follow access", (_K_FETCH,)),
+    ("create schedule set make write append put save rename move edit modify insert reschedule", (_K_WRITE,)),
+    ("change update reset", (_K_WRITE, _K_CRED)),
+    # a few other languages, where it is cheap: Spanish, French, German, Portuguese, Italian
+    ("envía envia envíe envie manda reenvía reenvia comparte publica sube invita envoie envoyez envoyer transmets transmettre "
+     "transmettez partage partagez publie publiez invitez sende senden schicke schicken leite teile poste lade "
+     "envie compartilhe convide invia inoltra condividi pubblica", (_K_SEND,)),
+    ("paga transfiere transfira paye payez payer transfère transférez transférer vire virez virer überweise überweisen zahle zahlen "
+     "pague bonifica", (_K_MONEY,)),
+    ("borra elimina supprime supprimez supprimer efface effacez lösche löschen entferne apague exclua cancella", (_K_DELETE,)),
+    ("visita abre ouvre ouvrez visitez besuche öffne acesse apri", (_K_FETCH,)),
+    ("reserva réserve réservez buche buchen prenota", (_K_MONEY, _K_WRITE)),
+    ("crea crée créez erstelle cambia modifica change ändere altere", (_K_WRITE,)),
+):
+    for _w in _words.split():
+        ORDER_VERBS[_w] = tuple(dict.fromkeys(ORDER_VERBS.get(_w, ()) + _kinds))
+# Nouns that make an imperative sentence about money or a password ("make a reservation", "set up a payment").
+ORDER_NOUNS = {"reservation": _K_MONEY, "booking": _K_MONEY, "payment": _K_MONEY, "transaction": _K_MONEY,
+               "transfer": _K_MONEY, "password": _K_CRED, "passcode": _K_CRED}
+# Other verbs an imperative sentence can open with before it gets to the action ("Concatenate the messages and post
+# them to ...", "Find the code and send it to ...").
+LEAD_VERBS = frozenset("""find get take copy paste list search look use include attach give bring grab export extract
+retrieve dump print show reveal call ask let keep do try remember ensure provide prepare draft compose translate convert
+archive review approve confirm verify log record note mention summarize summarise concatenate combine collect gather
+compile read check go see sign subscribe register enter fill type paste run execute install""".split())
+# What may precede the verb without changing the mood: politeness, sequencing, "you must", "I want you to".
+_ORDER_LEAD = re.compile(
+    r"^(?:(?:please|pls|kindly|now|then|also|first|firstly|next|finally|lastly|and|so|just|immediately|quickly|urgently|"
+    r"afterwards|additionally|right away|after that|before that|once done|go ahead and|make sure (?:to|you)|be sure to|"
+    r"don'?t forget to|do not forget to|remember to|(?:can|could|would|will) you|you (?:should|must|need to|have to|are to|"
+    r"will need to|shall)|i (?:want|need|would like|'d like) you to|your (?:task|job) is to|it is (?:important|necessary|"
+    r"required) (?:that you|to)|por favor|veuillez|s'il vous plaît|bitte|per favore)[\s,]{1,4}){1,5}", re.I)
+# Leading list markers, quotes and a short label ("TODO:", "Step 2:", "Note to self:", "description: '").
+# Also a bracketed tag in front ("[urgent]", "(note)", "<b>").
+_ORDER_STRIP = re.compile(r"^[\s\-*•>#\d.)\]\"'`]{0,12}(?:[(\[<{][^)\]>}\n]{0,40}[)\]>}][\s:]{0,4})?"
+                          r"(?:[A-Za-z][\w '-]{0,30}:[\s'\"]{1,4})?[\s\-*•>\"'`]{0,4}")
+# A sentence (or a clause after a colon) ends at . ! ? ; : followed by a space and something that can start a sentence
+# (not "going?' to ..."), at . ! ? before a marker that opens a new one ("...7.2%.###(note) Send ..."), or before a
+# heading marker glued to a word ("External_## Send ...").
+_SENT_SPLIT = re.compile(r"(?<=[.!?;:])['\"]?\s{1,6}(?=[\"'(\[]?[^\W_a-z])|(?<=[.!?])\s{0,6}(?=[#\[(<*>]{1,6}[\w(])|(?<=\S)(?=#{2,6}[\s(\[\w])|\n")
+_WORD = re.compile(r"[^\W\d_][\w'-]{0,30}")
+MAX_ORDERS = 500  # order sentences remembered per session (newest kept)
+MAX_ORDER_SCAN = 200_000  # characters of each output read for orders
+
+
+def _paragraphs(text: str) -> list[list[str]]:
+    """Split prose into paragraphs of sentences. Literal "\\n" escapes are line breaks; a line that just continues the
+    one before it (wrapped prose, YAML-folded strings) is joined, while a new list item, a "label:" line, a blank line
+    or a line after one that ended a sentence starts a new paragraph. Linear time: parts are joined once at the end."""
+    text = text.replace("\\n", "\n").replace("''", "'")
+    paras: list[list[str]] = []
+    size = 0
+    head_indent = -1  # indentation of a "label: value" line that opened the paragraph, else -1
+    for ln in text.split("\n"):
+        st = ln.strip()[:2000]
+        indent = len(ln) - len(ln.lstrip())
+        prev = paras[-1][-1] if paras and paras[-1] else ""
+        # A header line at the margin ("From: a@b.c") never continues onto the body below it; an indented one (inside a
+        # folded YAML value) does.
+        if prev and st and size < 20_000 and not _NEW_ITEM.match(st) and not _ENDS.search(prev[-8:]) \
+                and (indent > head_indent or indent == head_indent > 0):
+            paras[-1].append(st)
+            size += len(st)
+        else:
+            paras.append([st] if st else [])
+            size = len(st)
+            head_indent = indent if _NEW_ITEM.match(st) and ":" in st[:34] else -1
+    return [[p for p in _SENT_SPLIT.split(" ".join(parts)) if p.strip()] for parts in paras if parts]
+
+
+_NEW_ITEM = re.compile(r"[-*•>#]|\d{1,3}[.)]\s|[A-Za-z][\w '-]{0,30}:\s")
+_ENDS = re.compile(r"[.!?:;]['\"]?\s{0,4}$")
+# A word after the first that makes the first a noun: "Transfer complete", "Payment received", "Book of the month".
+_NOUN_NEXT = frozenset("""is are was were has have had of 's complete completed confirmed received failed pending
+successful succeeded scheduled sent done status summary history details id number date notification receipt
+confirmation report reminder club office""".split())
+
+
+def order_kinds(sentence: str) -> tuple[str, ...]:
+    """The kinds of action a sentence orders its reader to take, or () if it is not an order. An order opens with a verb
+    in the imperative (after politeness, sequencing words, "you must" or a short label) and names an action."""
+    s = _ORDER_STRIP.sub("", sentence.strip(), count=1)
+    for _ in range(2):  # "AI: TODO: please ..."
+        s = _ORDER_LEAD.sub("", s, count=1)
+        s = _ORDER_STRIP.sub("", s, count=1)
+    words = [w.lower() for w in _WORD.findall(s[:600])]
+    if not words:
+        return ()
+    head = words[0]
+    if head not in ORDER_VERBS and head not in LEAD_VERBS:
+        return ()
+    if len(words) > 1 and words[1] in _NOUN_NEXT:
+        return ()  # "Transfer complete", "Book of the month": a noun, not a command
+    kinds: dict[str, None] = {}
+    for w in words[:80]:
+        for k in ORDER_VERBS.get(w, ()):
+            kinds[k] = None
+        if w in ORDER_NOUNS:
+            kinds[ORDER_NOUNS[w]] = None
+    return tuple(kinds)
+
+
 @dataclass
 class TaintSource:
     tool: str
@@ -222,6 +341,8 @@ class TaintStore:
     reply_to: dict[str, bool] = field(default_factory=dict)
     # addresses mentioned inside a message that had hidden instructions (not as its sender)
     in_orders: set[str] = field(default_factory=set)
+    # sentences in content that order the reader to act (see order_kinds): [lower-cased sentence, kinds, source]
+    orders: list[list] = field(default_factory=list)
 
     def add_trusted(self, text: str, exclude_injected: bool = False) -> None:
         """exclude_injected: values that came from content with hidden instructions stay untrusted (a prompt sent
@@ -259,6 +380,18 @@ class TaintStore:
             if 8 <= len(n) <= 400:
                 self.untrusted_lines.append((n, TaintSource(tool, line.strip()[:160], injected=bool(m), label=label, seq=seq)))
         self.untrusted_lines = self.untrusted_lines[-5000:]
+        for para in _paragraphs(text[:MAX_ORDER_SCAN]):
+            # An order and the sentences after it in the same paragraph ("Create an event on May 1. The title should
+            # be 'X'.") are one instruction: the details belong to the order.
+            kinds: tuple[str, ...] = ()
+            for sent in para:
+                if len(sent) > 1000:
+                    continue
+                kinds = tuple(dict.fromkeys(kinds + order_kinds(sent)))
+                if kinds:
+                    src = TaintSource(tool, " ".join(sent.split())[:200], injected=bool(m), label=label, seq=seq)
+                    self.orders.append([_norm(canon(sent)), list(kinds), src])
+        self.orders = self.orders[-MAX_ORDERS:]
         heads = []
         for sm in SENDER_LINE.finditer(text):
             reply_to = sm.group(1).lower().replace("_", "-") in ("reply-to", "replyto")
@@ -318,6 +451,24 @@ class TaintStore:
             # "taken from hidden instructions" anywhere else also counts against it
             out[a] = any(r[2] for r in self.messages if r[0] == a) or a in self.in_orders
         return out
+
+    def ordered(self, values: list[str], kinds: tuple[str, ...]) -> tuple[str, TaintSource] | None:
+        """A value the action uses that sits inside a sentence in content ordering the reader to take this kind of
+        action, and that you never named yourself. Longest value first (the most specific), then by name."""
+        if not self.orders:
+            return None
+        cands = sorted({_norm(canon(v)).strip("'\" ") for v in values if v}, key=lambda v: (-len(v), v))
+        for v in cands:
+            if not (2 <= len(v) <= 200) or self.is_trusted_value(v) or _whole(v, self.trusted_text):
+                continue
+            pat = None
+            for sent, ks, src in reversed(self.orders):
+                if v not in sent or not any(k in kinds for k in ks):
+                    continue
+                pat = pat or re.compile(rf"(?<![\w@+-]){re.escape(v)}(?![\w@+-]|\.[\w])")
+                if pat.search(sent):
+                    return v, src
+        return None
 
     def is_trusted_value(self, value: str) -> bool:
         """Did the user name exactly this value? Whole values only: naming alice@corp.com does not vouch for

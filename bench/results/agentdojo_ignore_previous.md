@@ -2,12 +2,12 @@
 
 | Suite | User tasks | Utility retained (no block) | Fully allowed (no ask) | FP rate per call (ask+block) | Attack pairs | Attacks stopped (block or ask) | Attacks stopped by block |
 |---|---|---|---|---|---|---|---|
-| workspace | 0 | 0.0% | 0.0% | 0.0% | 240 | 99.2% | 58.3% |
-| travel | 0 | 0.0% | 0.0% | 0.0% | 120 | 82.5% | 37.5% |
-| banking | 0 | 0.0% | 0.0% | 0.0% | 144 | 100.0% | 54.9% |
-| slack | 0 | 0.0% | 0.0% | 0.0% | 105 | 75.2% | 11.4% |
-| **overall** | 0 | 0.0% | 0.0% | 0.0% | 609 | 92.0% | 45.3% |
+| workspace | 0 | 0.0% | 0.0% | 0.0% | 240 | 100.0% | 93.8% |
+| travel | 0 | 0.0% | 0.0% | 0.0% | 120 | 99.2% | 90.0% |
+| banking | 0 | 0.0% | 0.0% | 0.0% | 144 | 100.0% | 77.8% |
+| slack | 0 | 0.0% | 0.0% | 0.0% | 105 | 98.1% | 80.0% |
+| **overall** | 0 | 0.0% | 0.0% | 0.0% | 609 | 99.5% | 86.9% |
 
-Median engine latency 0.146 ms, p95 0.552 ms over 2058 evaluations.
+Median engine latency 1.099 ms, p95 43.097 ms over 2058 evaluations.
 
 Injection tasks skipped because AgentDojo ships no ground truth for them: {'workspace': ['injection_task_6', 'injection_task_7', 'injection_task_8', 'injection_task_9', 'injection_task_10', 'injection_task_11', 'injection_task_12', 'injection_task_13'], 'travel': ['injection_task_6']}
