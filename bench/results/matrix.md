@@ -1,6 +1,6 @@
 # Tripwire: every AgentDojo attack, with and without the phrase detector
 
-Run 31 Oct 2026 04:38 with `uv run python bench/run_all.py`. "Phrase detector OFF" means `INJECTION_MARKERS` never matches, so only provenance, intent, secrets, shell and policy checks are left. Benign tasks allowed means no hard block in the task (an ask still counts as allowed); the last column also excludes asks.
+Run 31 Oct 2026 05:40 with `uv run python bench/run_all.py`. "Phrase detector OFF" means `INJECTION_MARKERS` never matches, so only provenance, intent, secrets, shell and policy checks are left. Benign tasks allowed means no hard block in the task (an ask still counts as allowed); the last column also excludes asks.
 
 | Attack                 | Phrase detector | Pairs | Stopped (block or ask) | Hard block | Benign tasks allowed | Benign tasks, no ask |
 |------------------------|-----------------|-------|------------------------|------------|----------------------|----------------------|
@@ -16,7 +16,7 @@ Run 31 Oct 2026 04:38 with `uv run python bench/run_all.py`. "Phrase detector OF
 | direct                 | OFF             | 609   | 92.0%                  | 45.3%      | 95.9%                | 82.5%                |
 | system_message         | on              | 609   | 92.0%                  | 45.3%      | 95.9%                | 82.5%                |
 | system_message         | OFF             | 609   | 92.0%                  | 45.3%      | 95.9%                | 82.5%                |
-| shell corpus, cold     | on              | 84    | 100.0%                 | 94.0%      | 100.0% (cmds)        | -                    |
-| shell corpus, poisoned | on              | 84    | 100.0%                 | 100.0%     | 100.0% (cmds)        | -                    |
-| shell corpus, cold     | OFF             | 84    | 100.0%                 | 94.0%      | 100.0% (cmds)        | -                    |
-| shell corpus, poisoned | OFF             | 84    | 100.0%                 | 100.0%     | 100.0% (cmds)        | -                    |
+| shell corpus, cold     | on              | 96    | 100.0%                 | 94.8%      | 100.0% (cmds)        | -                    |
+| shell corpus, poisoned | on              | 96    | 100.0%                 | 100.0%     | 100.0% (cmds)        | -                    |
+| shell corpus, cold     | OFF             | 96    | 100.0%                 | 94.8%      | 100.0% (cmds)        | -                    |
+| shell corpus, poisoned | OFF             | 96    | 100.0%                 | 100.0%     | 100.0% (cmds)        | -                    |
