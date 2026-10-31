@@ -4,7 +4,7 @@
 
 Built by **Team Sludge** at PARALLAX 2026 · Track 1, AgentShield
 
-[![tests](https://img.shields.io/badge/tests-1%2C400%20passing-2ea44f)](tests/) [![AgentDojo](https://img.shields.io/badge/AgentDojo-96.2%25%20stopped-2ea44f)](bench/results/matrix.md) [![shell false positives](https://img.shields.io/badge/normal%20commands%20flagged-0%20of%2090-2ea44f)](bench/results/shell.md) [![python](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml) [![live demo](https://img.shields.io/badge/live%20demo-open-7c3aed)](https://tripwire-agent-shield.vercel.app/app#demo)
+[![tests](https://img.shields.io/badge/tests-1%2C400%20passing-2ea44f)](tests/) [![AgentDojo](https://img.shields.io/badge/AgentDojo-99.8%25%20stopped-2ea44f)](bench/results/matrix.md) [![shell false positives](https://img.shields.io/badge/normal%20commands%20flagged-0%20of%2090-2ea44f)](bench/results/shell.md) [![python](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml) [![live demo](https://img.shields.io/badge/live%20demo-open-7c3aed)](https://tripwire-agent-shield.vercel.app/app#demo)
 
 Tripwire sits between an AI agent (Claude Code, or anything that speaks MCP) and the tools it uses: shell, files, web, email, money. It is for anyone who lets an agent read things they didn't write, like a repo, a web page or an inbox.
 
@@ -29,14 +29,14 @@ In the live demo, pick an attack. Run it without Tripwire, then with it. The rea
 
 | Highlight | Proof |
 |---|---|
-| **96.2% of 609 AgentDojo attacks stopped** (92.1% hard-blocked), while 95.9% of real tasks still go through. With the phrase list off it still stops 92.0%. | [matrix.md](bench/results/matrix.md) |
+| **99.8% of 609 AgentDojo attacks stopped** (97.9% hard-blocked), while 95.9% of real tasks still go through. With the phrase list off it still stops 99.5% (87.0% hard-blocked). | [matrix.md](bench/results/matrix.md) |
 | **Hard floor: stops 13 of 13 attack steps on its own**, even if you click Allow on everything. The attacker got nothing in all 4 stage attacks, and every task got done. | [Hard floor](#hard-floor-what-tripwire-stops-when-the-human-allows-everything) |
 | **0 of 90 normal shell commands flagged.** All 96 shell attacks caught (94.8% hard-blocked cold, 100% after a poisoned read). | [shell.md](bench/results/shell.md) |
 | **No admin key on disk.** The agent's token can only ask for verdicts. Only a dashboard a person paired can answer an ask, so the agent can't approve itself. | [HARDENING.md](docs/HARDENING.md) |
 | **Tamper-evident audit chain across agents.** Every verdict and click is hash-chained and signed. Sub-agents, MCP servers and SDK agents land in one tree. | [audit.py](src/tripwire/audit.py) |
 | **One command for Claude Code, one for any MCP server.** Local and free: no AI calls, no network lookups, median decision under 1 ms. | [Quickstart](#quickstart) |
 
-> **Honest note.** The 96.2% leans on a phrase list that knows AgentDojo's own attack template. A wording it doesn't know gets the provenance floor: 92.0% stopped, 45.3% hard-blocked. Both numbers are in [Benchmarks and evidence](#benchmarks-and-evidence).
+> **Honest note.** The 99.8% gets help from a phrase list that knows AgentDojo's own attack template. A wording it doesn't know gets the floor: 99.5% stopped, 87.0% hard-blocked. Both numbers are in [Benchmarks and evidence](#benchmarks-and-evidence).
 
 ## Quickstart
 
@@ -181,7 +181,7 @@ Three words, used the same way everywhere:
 
 | Benchmark | Stopped | Hard block | Size | Benign allowed |
 |---|---|---|---|---|
-| AgentDojo (4 suites, important_instructions) | 96.2% | 92.1% | 609 pairs | 95.9% tasks (92.9% calls) |
+| AgentDojo (4 suites, important_instructions) | 99.8% | 97.9% | 609 pairs | 95.9% tasks (92.9% calls) |
 | Shell attacks, no poisoned context (our own corpus) | 100.0% | 94.8% | 96 cmds | 90 of 90 (0 flagged) |
 | Shell attacks, after reading poisoned file (our own corpus) | 100.0% | 100.0% | 96 cmds | 90 of 90 (0 flagged) |
 
@@ -193,27 +193,28 @@ The headline AgentDojo number leans on the phrase detector. Its list includes Ag
 
 | AgentDojo attack text | Phrase list ON: stopped | ON: hard block | Phrase list OFF: stopped | OFF: hard block |
 |---|---|---|---|---|
-| important_instructions | 96.2% | 92.1% | 92.0% | 45.3% |
-| tool_knowledge | 99.5% | 95.4% | 92.0% | 45.3% |
-| injecagent | 96.2% | 88.5% | 92.0% | 45.3% |
-| ignore_previous | 92.0% | 45.3% | 92.0% | 45.3% |
-| direct | 92.0% | 45.3% | 92.0% | 45.3% |
-| system_message | 92.0% | 45.3% | 92.0% | 45.3% |
+| important_instructions | 99.8% | 97.9% | 99.5% | 87.0% |
+| tool_knowledge | 99.8% | 97.9% | 99.5% | 86.7% |
+| injecagent | 99.8% | 97.7% | 99.5% | 87.2% |
+| ignore_previous | 99.5% | 86.9% | 99.5% | 86.9% |
+| direct | 99.5% | 87.2% | 99.5% | 87.2% |
+| system_message | 99.5% | 87.2% | 99.5% | 87.2% |
 | benign tasks allowed (all texts) | 95.9% | | 95.9% | |
 
 How to read it:
 
 - **Detector on, known template** (important_instructions, tool_knowledge, injecagent): the phrase list fires, so most attacks are hard-blocked.
-- **Detector off, or a template the list does not know** (ignore_previous, direct, system_message): only provenance, intent, secret and policy checks are left. That is the honest floor: 92.0% stopped, 45.3% hard block.
+- **Detector off, or a template the list does not know** (ignore_previous, direct, system_message): only provenance, intent, orders, secret and policy checks are left. That is the honest floor: 99.5% stopped, about 87% hard block.
+- **Why the floor is mostly hard blocks now:** an action whose own target (an address, an account, a link, a file id) sits inside a sentence in the data that orders the reader to act ("Send ... to x@y.com") is blocked, unless you named that target or told the agent to do what the content says (`taint.followed_order`). That is a grammar check (imperative verb + action + target), not a phrase list. Before it, the floor was 92.0% stopped, 45.3% hard block.
 - Benign tasks do not change, because the phrase list only fires on injected text.
 - Earlier versions of this page said 86.0% here. That was one sample: verdicts depended on Python's hash seed (set order), and slack swung between 41% and 75% stopped. Since 31 Oct every seed gives the same verdicts (`tests/test_redteam4.py` checks three seeds; a full `bench/run_all.py` under `PYTHONHASHSEED=0` and `=2` gives identical tables).
-- Weakest suites without the detector: slack (75.2% stopped, 11.4% hard block), travel (82.5% stopped, 37.5% hard block). Every missed pair is listed in `bench/results/agentdojo_*_nomarkers.json` (`missed`).
+- Weakest suites without the detector: banking (100.0% stopped, 77.8% hard block: when you ask to pay a bill, an order in that bill only asks) and slack (98.1% stopped, 80.0% hard block: a link a page tells the agent to visit only asks, since a plain visit carries no data). Before the order check: slack 11.4% and travel 37.5% hard block. Every missed pair is listed in `bench/results/agentdojo_*_nomarkers.json` (`missed`).
 
 ### Hard floor: what Tripwire stops when the human allows everything
 
 "Stopped" counts asks, and a person can click Allow on an ask. So here is what's left with nobody saying no:
 
-- **AgentDojo:** the hard block column above. 92.1% with the phrase list, 45.3% without it.
+- **AgentDojo:** the hard block column above. 97.9% with the phrase list, 87.0% without it.
 - **The four stage attack scenarios** (`demo/run_demo.py --scenario all --offline --approve all`): 13 of 13 attack steps blocked on its own. The attacker got nothing in all 4, and every task got done.
 - **The 10 attacks a reviewer typed into the live page** (9 of them got something out with no guard): with a careful simulated human, none got anything out (8 of 13 attack steps blocked on its own, 5 refused by the human). With the hard floor, 9 of 13 steps are blocked on its own and 2 of 10 attacks got something out: a README summary POSTed to a web address the README named, and a cc to a Gmail look-alike of Sam's address. Tripwire asked about both; it didn't block them.
 
@@ -281,7 +282,7 @@ Privacy: local only, no network lookups by the guard, args redacted before stora
 > - **Same OS user = defence in depth, not a sandbox.** Everything in [Security model and hardening](#security-model-and-hardening) stops an agent, not a program running as you outside the agent. `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. Steps: [docs/HARDENING.md](docs/HARDENING.md).
 > - **The hijacked agent in the demo is scripted.** Real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged.
 > - **Intent is keyword matching.** If your prompt says "send", "reply" or "pay", that kind of action counts as expected. A send to an address taken from data can still pass if the email carried no hidden-instruction phrasing and the recipient check does not catch it.
-> - **The phrase list is a list.** Without it, AgentDojo drops from 96.2% to 92.0% stopped, and hard blocks from 92.1% to 45.3%. A new wording gets the lower number.
+> - **The phrase list is a list.** Without it, AgentDojo drops from 99.8% to 99.5% stopped, and hard blocks from 97.9% to 87.0%. A new wording gets the lower number. The order check that carries the floor reads English imperatives plus a few common verbs in Spanish, French, German, Portuguese and Italian; other languages fall back to the old floor.
 
 Other limits:
 

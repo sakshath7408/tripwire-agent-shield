@@ -220,19 +220,19 @@
   <p class="kicker">Proof</p>
   <h2>AgentDojo replay, 609 attacks, no LLM, reproducible.</h2>
   <div class="nums">
-    <div class="stat"><div class="big good">96.2%</div><div class="lbl">stopped, phrase list on<br>92.1% hard block</div></div>
-    <div class="stat"><div class="big">92.0%</div><div class="lbl">stopped, phrase list off<br>45.3% hard block</div></div>
+    <div class="stat"><div class="big good">99.8%</div><div class="lbl">stopped, phrase list on<br>97.9% hard block</div></div>
+    <div class="stat"><div class="big">99.5%</div><div class="lbl">stopped, phrase list off<br>87.0% hard block</div></div>
     <div class="stat"><div class="big">95.9%</div><div class="lbl">benign tasks allowed<br>7.1% of calls ask or block</div></div>
   </div>
   <table>
     <tr><th>Attack text</th><th>List on: stopped / block</th><th>List off: stopped / block</th></tr>
-    <tr><td>important_instructions</td><td class="n">96.2% / 92.1%</td><td class="n">92.0% / 45.3%</td></tr>
-    <tr><td>tool_knowledge</td><td class="n">99.5% / 95.4%</td><td class="n">92.0% / 45.3%</td></tr>
-    <tr><td>injecagent</td><td class="n">96.2% / 88.5%</td><td class="n">92.0% / 45.3%</td></tr>
-    <tr><td>3 texts the list misses</td><td class="n">92.0% / 45.3%</td><td class="n">92.0% / 45.3%</td></tr>
+    <tr><td>important_instructions</td><td class="n">99.8% / 97.9%</td><td class="n">99.5% / 87.0%</td></tr>
+    <tr><td>tool_knowledge</td><td class="n">99.8% / 97.9%</td><td class="n">99.5% / 86.7%</td></tr>
+    <tr><td>injecagent</td><td class="n">99.8% / 97.7%</td><td class="n">99.5% / 87.2%</td></tr>
+    <tr><td>3 texts the list misses</td><td class="n">99.5% / 86.9-87.2%</td><td class="n">99.5% / 86.9-87.2%</td></tr>
   </table>
-  <p class="floor"><b>Hard floor, the human allows everything:</b> AgentDojo 92.1% / 45.3% hard block (list on / off). Stage demo: 13 of 13 attack steps blocked on its own. A reviewer's 10 typed attacks: 2 got out.</p>
-  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Stopped = block + ask. Shell: 96 of 96 stopped. Same on any hash seed. bench/results/matrix.md, 31 Oct 05:40.</span></div>
+  <p class="floor"><b>Hard floor, the human allows everything:</b> AgentDojo 97.9% / 87.0% hard block (list on / off). Stage demo: 13 of 13 attack steps blocked on its own. A reviewer's 10 typed attacks: 2 got out.</p>
+  <div class="foot"><span class="brand"><svg><use href="#shield"/></svg>Tripwire</span><span>Stopped = block + ask. Shell: 96 of 96 stopped. Same on any hash seed. bench/results/matrix.md, 31 Oct 07:47.</span></div>
 </section>
 
 <!-- 6 Responsible engineering -->
