@@ -4,7 +4,7 @@
 
 Built by **Team Sludge** at PARALLAX 2026 · Track 1, AgentShield
 
-[![tests](https://img.shields.io/badge/tests-1%2C400%20passing-2ea44f)](tests/) [![AgentDojo](https://img.shields.io/badge/AgentDojo-99.8%25%20stopped-2ea44f)](bench/results/matrix.md) [![shell false positives](https://img.shields.io/badge/normal%20commands%20flagged-0%20of%2090-2ea44f)](bench/results/shell.md) [![python](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml) [![live demo](https://img.shields.io/badge/live%20demo-open-7c3aed)](https://tripwire-agent-shield.vercel.app/app#demo)
+[![tests](https://img.shields.io/badge/tests-1%2C400%20passing-2ea44f)](tests/) [![AgentDojo](https://img.shields.io/badge/AgentDojo-99.8%25%20stopped-2ea44f)](bench/results/matrix.md) [![shell false positives](https://img.shields.io/badge/normal%20commands%20flagged-0%20of%2090-2ea44f)](bench/results/shell.md) [![python](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![live demo](https://img.shields.io/badge/live%20demo-open-7c3aed)](https://tripwire-agent-shield.vercel.app/app#demo)
 
 Tripwire sits between an AI agent (Claude Code, or anything that speaks MCP) and the tools it uses: shell, files, web, email, money. It is for anyone who lets an agent read things they didn't write, like a repo, a web page or an inbox.
 
@@ -30,6 +30,7 @@ In the live demo, pick an attack. Run it without Tripwire, then with it. The rea
 | Highlight | Proof |
 |---|---|
 | **99.8% of 609 AgentDojo attacks stopped** (97.9% hard-blocked), while 95.9% of real tasks still go through. With the phrase list off it still stops 99.5% (87.0% hard-blocked). | [matrix.md](bench/results/matrix.md) |
+| **A real AI model (qwen2.5:7b, run locally) followed the hidden instructions 4 of 4 times. With Tripwire, every attack step was blocked on its own, 4 of 4, and the task still finished.** The attack text sits on a web page. `uv run python demo/run_demo.py --planner ollama --model qwen2.5:7b --scenario agentdojo-web --offline --delay 0` | [ollama_demo.md](bench/results/ollama_demo.md) |
 | **Hard floor: stops 13 of 13 attack steps on its own**, even if you click Allow on everything. The attacker got nothing in all 4 stage attacks, and every task got done. | [Hard floor](#hard-floor-what-tripwire-stops-when-the-human-allows-everything) |
 | **0 of 90 normal shell commands flagged.** All 96 shell attacks caught (94.8% hard-blocked cold, 100% after a poisoned read). | [shell.md](bench/results/shell.md) |
 | **No admin key on disk.** The agent's token can only ask for verdicts. Only a dashboard a person paired can answer an ask, so the agent can't approve itself. | [HARDENING.md](docs/HARDENING.md) |
@@ -41,23 +42,26 @@ In the live demo, pick an attack. Run it without Tripwire, then with it. The rea
 ## Quickstart
 
 ```bash
-git clone https://github.com/sakshath7408/tripwire-agent-shield && cd tripwire-agent-shield
-uv sync                                   # Python 3.12+, installs everything
-uv run tripwire serve                     # daemon; in a terminal it prints a one-time dashboard link
-uv run tripwire open                      # pair another browser later (6-digit code)
+git clone --depth 1 https://github.com/sakshath7408/tripwire-agent-shield && cd tripwire-agent-shield
+uv sync                                   # Python 3.12+, runtime + pytest (about 30 packages)
+uv tool install .                         # puts `tripwire` on your PATH, for use in any folder
+tripwire serve                            # the daemon; keep it running. In a terminal it prints a one-time dashboard link
+tripwire open                             # pair another browser later (6-digit code)
 ```
 
-`tripwire open` shows 6 digits: type them into the serve terminal, or OK them in a paired dashboard.
+`--depth 1` skips the history (older commits carry re-recorded demo videos, so a full clone downloads about 57 MB of history; the shallow one about 12 MB). `tripwire open` shows 6 digits: type them into the serve terminal, or OK them in a paired dashboard.
 
-Guard a real agent:
+Guard a real agent. Hooks guard the folder you install them in, so run this **inside your own project**, not inside the Tripwire folder:
 
 ```bash
-uv run tripwire install claude            # hooks into ./.claude/settings.json
-uv run tripwire uninstall claude          # takes them out again
-uv run tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
+cd ~/your-project
+tripwire install claude                   # hooks into ./.claude/settings.json: Claude Code sessions started here are guarded
+tripwire install claude --user            # or: every Claude Code session, in any folder (~/.claude/settings.json)
+tripwire uninstall claude                 # takes them out again
+tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
 ```
 
-`install claude` takes `--project DIR`, or `--user` for all projects. `uninstall` gives back an untouched settings file byte for byte. `mcp-proxy` wraps any MCP server.
+`install claude` prints which folder is now guarded and the `tripwire serve` command (with its port) that must be running; while the daemon is down, every tool call is blocked. `uninstall` gives back an untouched settings file byte for byte. `mcp-proxy` wraps any MCP server; `--name` is how its tools show up (`mcp__fs__read_file`).
 
 Watch an attack succeed with no guard, then fail with Tripwire (second terminal):
 
@@ -73,14 +77,16 @@ More commands:
 ```bash
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 1,400 tests (plus 1 expected failure)
-uv run python bench/run_all.py            # benchmarks, about 30 s, writes bench/results/summary.md
+uv run pytest -q                          # 1,400 tests (plus 1 expected failure); AgentDojo ones skip without the bench group
+uv sync --group bench                     # AgentDojo, for the benchmarks (large, optional)
+uv run --group bench python bench/run_all.py   # benchmarks, about 30 s, writes bench/results/summary.md
 ```
 
 Good to know:
 
-- Want `tripwire` on your PATH instead of `uv run tripwire`? From the repo folder: `uv tool install .` (or `pip install .` in any Python 3.12+ virtualenv).
-- Another port: `tripwire serve --port 7800`, then `tripwire install claude --port 7800` so the hooks find it (or set `TRIPWIRE_PORT=7800` for everything).
+- No uv tool? `uv run tripwire ...` from the repo folder works too, and `uv run tripwire install claude --project ~/your-project` guards another folder from here. Or `pip install .` in any Python 3.12+ virtualenv. After you change Tripwire's code, `uv tool install --force .` updates the copy your hooks run.
+- Another port: `tripwire serve --port 7800`, then `tripwire install claude --port 7800` so the hooks find it (or set `TRIPWIRE_PORT=7800` for everything: serve, open, install, the hooks and `demo/run_demo.py`).
+- Tried the demo and now `serve` prints no link? Demo sessions are forgotten on restart, but a real session that saw hidden instructions is remembered. `tripwire serve --clear-view` clears the live view (the attack stays remembered) and prints a link.
 - Sessions survive a daemon restart (`~/.tripwire/sessions.json`, mode 0600, secret values masked). A restart does not make Tripwire forget hidden instructions it already saw.
 - Who answers when Tripwire asks: with `--approve dashboard` it's you. `--approve auto` is a careful simulated human. It sees only what a person sees: Tripwire's reason, where the call goes, the task you typed and your contacts. It never sees which steps are the attack, so it can be fooled. `--approve all` clicks Allow on everything, so what's left is what Tripwire stops on its own.
 
@@ -226,7 +232,7 @@ Before the recipient and provenance hardening of 30 Oct, the floor was 62.6% sto
 
 False positives, said plainly: on AgentDojo, 7.1% of benign ground-truth calls get an ask or a block. Half of those are in the banking suite, where paying bills always asks a human. Most of the rest are the new recipient check asking before a message goes to someone the user never named (slack and workspace). The shell corpus flags none of 90 everyday developer commands, cold or after a poisoned read.
 
-Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in the loop: we replay AgentDojo's ground-truth call sequences, so a real hijacked model might phrase calls differently. To reproduce, run `uv run python bench/run_all.py`. The end-to-end proof that an attack succeeds without the guard and fails with it is `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`.
+Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in the loop: we replay AgentDojo's ground-truth call sequences, so a real hijacked model might phrase calls differently. To reproduce, run `uv run --group bench python bench/run_all.py`. The end-to-end proof that an attack succeeds without the guard and fails with it is `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`.
 
 ## Security model and hardening
 
@@ -292,7 +298,7 @@ Privacy: local only, no network lookups by the guard, args redacted before stora
 
 > **Read this before you trust it.**
 > - **Same OS user = defence in depth, not a sandbox.** Everything in [Security model and hardening](#security-model-and-hardening) stops an agent, not a program running as you outside the agent. `tripwire install claude --sandbox` puts Claude Code's shell behind an OS sandbox without root; `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary for everything. Steps: [docs/HARDENING.md](docs/HARDENING.md).
-> - **The hijacked agent in the demo is scripted.** Real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged.
+> - **Most of the demo's hijacked agent is scripted.** In the five stage scenarios, real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 there uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged. One web-page scenario (`agentdojo-web`) uses a real local model, qwen2.5:7b, which does fall for it ([ollama_demo.md](bench/results/ollama_demo.md)).
 > - **Intent is keyword matching.** If your prompt says "send", "reply" or "pay", that kind of action counts as expected. A send to an address taken from data can still pass if the email carried no hidden-instruction phrasing and the recipient check does not catch it.
 > - **The phrase list is a list.** Without it, AgentDojo drops from 99.8% to 99.5% stopped, and hard blocks from 97.9% to 87.0%. A new wording gets the lower number. The order check that carries the floor reads English imperatives plus a few common verbs in Spanish, French, German, Portuguese and Italian; other languages fall back to the old floor.
 
@@ -345,4 +351,4 @@ Built by **Team Sludge** for the PARALLAX hackathon (30 to 31 Oct 2026), Track 1
 
 Everything in `src/`, `demo/`, `bench/`, `web/`, `api/`, `scripts/` and `tests/` was written from scratch in 24 hours during the hackathon, with AI coding tools (allowed by the rules).
 
-Libraries. Runtime: FastAPI, uvicorn, pydantic, PyYAML, httpx, sse-starlette, bashlex, SQLite (Python standard library). Dev only: pytest, pytest-asyncio, agentdojo. Recording the backup video only: Playwright (Chromium) and imageio-ffmpeg. The hosted demo runs on Vercel (free Hobby plan).
+Libraries. Runtime: FastAPI, uvicorn, pydantic, PyYAML, httpx, sse-starlette, bashlex, SQLite (Python standard library). Dev only: pytest, pytest-asyncio. Benchmarks only (`uv sync --group bench`): agentdojo. UI scripts and the backup video only (`--group ui` or `uv run --with playwright`): Playwright (Chromium) and imageio-ffmpeg. The hosted demo runs on Vercel (free Hobby plan).
