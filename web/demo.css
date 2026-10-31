@@ -250,3 +250,12 @@ body.floor-on .human-note { color: var(--ask); }
   .c-task select { flex: 1; }
 }
 .scenarios button[data-scn="custom"]:not([aria-checked="true"]) { border-style: dashed; border-color: var(--you); color: var(--you); font-weight: 600; }
+
+/* the mini attack path under the climax: where the stopped value came from, in four lines */
+.climax { flex-wrap: wrap; }
+.climax-path { flex-basis: 100%; min-width: 0; margin-top: .4rem; padding-top: .6rem; border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent); color: var(--ink); }
+.climax-path:empty { display: none; }
+.climax-path-title { font-size: .733rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.climax-path .path-mini { margin-top: .5rem; }
+.climax-path .path-dot { box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent) inset; }
+.climax-path .path-step.is-block .path-dot { box-shadow: none; }

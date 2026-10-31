@@ -82,6 +82,9 @@
       }
       emit(kind, data);
     },
+    /** What this page holds right now, for the Demo tab's outcome (the mini attack path). */
+    verdicts: () => store.verdicts.slice(),
+    sessions: () => store.sessions.slice(),
     /** The simulated human answered an ASK. */
     resolved(id, decision, by) {
       const v = store.verdicts.find((x) => x.id === id);

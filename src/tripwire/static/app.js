@@ -291,6 +291,89 @@
     return out;
   }
 
+  // ---- attack path: provenance at a glance -----------------------------------
+  // Tripwire's core idea is where a value came from. For a blocked or asked action this draws the chain the
+  // verdict already holds: your task (trusted) -> what the agent read (untrusted, with the snippet) -> the value
+  // it carried -> the tool call it tried -> Tripwire's decision. Built only from findings, args and the session.
+  const CARRIER = /taken from|came from|written inside content|copied from|a name taken from/;
+  const QUOTED = /'([^']{2,160})'/;
+  function markSnippet(text, needle) {
+    let out = esc(text || "");
+    if (needle && needle.length >= 3 && text && text.toLowerCase().includes(needle.toLowerCase())) {
+      const re = new RegExp(esc(needle).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+      out = out.replace(re, (m) => `<mark>${m}</mark>`);
+    } else {
+      out = out.replace(/(IMPORTANT!*|ignore (?:all |any )?(?:previous|prior|above) instructions|do not tell the user|new instructions?:|you must now|assistant[,:])/gi, "<mark>$1</mark>");
+    }
+    return out;
+  }
+  /** The steps of the path, or null when the verdict has nothing to draw (an allow, or no reason at all). */
+  function attackPath(v, sess) {
+    if (!v || v.decision === "allow") return null;
+    const fs = (v.findings || []).slice().sort((a, b) => b.severity - a.severity);
+    if (!fs.length) return null;
+    const a = v.action.args || {};
+    const task = (sess && sess.task) || "";
+    const ctx = fs.find((f) => f.rule === "taint.injection_context");
+    let carrier = fs.find((f) => CARRIER.test(f.message) && f.rule !== "taint.injection_context") || null;
+    let value = null, source = null, injected = false, snippet = null;
+    if (carrier) {
+      const q = carrier.message.match(QUOTED);
+      value = q ? q[1] : carrier.rule === "taint.command_from_data" ? first(a, ["command", "cmd"]) : null;
+      source = evidenceSource(carrier);
+      injected = /hidden instructions/i.test(carrier.message);
+      snippet = carrier.evidence || (ctx && ctx.evidence) || null;
+    } else if (ctx) {
+      const sec = fs.find((f) => f.rule === "secrets.read");
+      const m = sec && sec.message.match(/:\s*(\S+)\s*$/);
+      value = m ? m[1] : null;
+      source = evidenceSource(ctx);
+      injected = true;
+      snippet = ctx.evidence;
+      carrier = ctx;
+    }
+    const trusted = !!(value && task && task.toLowerCase().includes(value.toLowerCase()));
+    const steps = [];
+    if (source) {
+      steps.push({ k: "task", trust: "trusted", kicker: "Your task", text: task || "No task was given", empty: !task });
+      steps.push({ k: "source", trust: injected ? "injected" : "untrusted", kicker: injected ? "Hidden instructions in" : "Content the agent read",
+        text: source, snippet, value });
+      if (value) steps.push({ k: "value", trust: trusted ? "trusted" : "carried", kicker: trusted ? "You named this" : "It carried", text: value });
+    }
+    steps.push({ k: "tool", trust: "tool", kicker: "The agent tried", text: toolLabel(v.action.tool), sub: renderAct(v) });
+    // The decision and one short reason: the strongest finding that is not the carrier or the context line.
+    const reason = fs.find((f) => f !== carrier && f.rule !== "taint.injection_context" && !/^Blocked on its own/.test(f.message))
+      || carrier || fs[0];
+    const pending = isPending(v);
+    steps.push({ k: "verdict", trust: v.decision, kicker: "Tripwire", text: pending ? "Needs your OK" : v.decision === "ask" ? (wentToHuman(v) ? "Asked you first" : WORD[v.decision]) : WORD[v.decision],
+      sub: reason ? reason.message : cleanSummary(v), rules: [...new Set(fs.map((f) => f.rule))] });
+    return { steps, value, source, injected, trusted, simple: !source };
+  }
+  const PATH_ICON = { task: "user", source: "doc", value: "pin", tool: "agent", verdict: "shield" };
+  function pathStepHtml(s, opt) {
+    const cls = `path-step path-${s.k} is-${s.trust}${s.empty ? " is-empty" : ""}`;
+    const text = s.k === "value" || s.k === "tool" ? `<code class="path-text">${esc(s.text)}</code>` : `<span class="path-text">${esc(s.text)}</span>`;
+    const pill = s.trust === "trusted" ? `<span class="path-pill">trusted</span>` : s.trust === "injected" ? `<span class="path-pill">untrusted</span>` : s.trust === "untrusted" ? `<span class="path-pill">untrusted</span>` : "";
+    const snippet = s.snippet && !opt.mini ? `<div class="path-snippet">…${markSnippet(s.snippet, s.value)}…</div>` : "";
+    const sub = s.sub ? `<div class="path-sub">${esc(s.sub)}</div>` : "";
+    const rules = s.rules && !opt.mini && !simple() ? `<div class="path-rules">${s.rules.map((r) => `<span class="rule">${esc(r)}</span>`).join("")}</div>` : "";
+    return `<li class="${cls}"><span class="path-dot" aria-hidden="true">${icon(s.trust === "block" ? "block" : s.trust === "ask" ? "ask" : PATH_ICON[s.k])}</span>
+      <div class="path-body"><div class="path-kicker">${esc(s.kicker)}${pill}</div>${text}${sub}${snippet}${rules}</div></li>`;
+  }
+  /** One sentence for screen readers and the audit of the eye. */
+  function pathSentence(p) {
+    return p.steps.map((s) => `${s.kicker}: ${s.text}${s.sub ? ` (${s.sub})` : ""}`).join(" → ");
+  }
+  function pathHtml(v, sess, opt = {}) {
+    const p = attackPath(v, sess);
+    if (!p) return "";
+    const cls = `path${opt.mini ? " path-mini" : ""}${p.simple ? " path-short" : ""}${opt.fresh ? " is-live" : ""}`;
+    const title = opt.mini ? "" : `<h3>${p.source ? "How it got here" : "What stopped it"}</h3>`;
+    const body = `<ol class="${cls}" aria-label="${esc(pathSentence(p))}" style="--n:${p.steps.length}">${p.steps.map((s, i) => pathStepHtml({ ...s }, opt).replace('class="path-step', `style="--i:${i}" class="path-step`)).join("")}</ol>`;
+    return opt.mini ? body : `<div class="d-section d-path">${title}${body}</div>`;
+  }
+  window.TWPath = { html: (v, sess, opt) => pathHtml(v, sess, opt), steps: attackPath };
+
   function countdownText(id) {
     const dl = S.deadlines.get(id);
     if (!dl) return S.held.has(id) ? "The agent is paused until you answer" : "";
@@ -610,7 +693,11 @@
     const findings = (v.findings || []).filter((f) => f.message !== headline || f.evidence).sort((a, b) => ctx(a) - ctx(b) || b.severity - a.severity);
     const cd = pending ? countdownText(v.id) : "";
     const t = toolParts(v.action.tool);
-    if (el.detailBody.dataset.id !== v.id) { el.detail.scrollTop = 0; el.detailBody.dataset.id = v.id; }
+    const fresh = el.detailBody.dataset.id !== v.id;
+    if (fresh) { el.detail.scrollTop = 0; el.detailBody.dataset.id = v.id; }
+    const sess = S.sessions.find((x) => x.id === v.action.session_id);
+    const path = attackPath(v, sess);
+    const pathSection = pathHtml(v, sess, { fresh });
 
     if (simple()) {
       // Simple: what happened, why, where it came from, and the buttons. No numbers, ids or hashes.
@@ -622,12 +709,13 @@
           <button type="button" class="d-close" data-close aria-label="Close details">${icon("close")}</button></div>
         <p class="d-sum">${esc(headline)}</p>
         ${pending ? `<div class="d-decide">${decideButtons(v.id)}${cd ? `<span class="countdown${isUrgent(v.id) ? " is-urgent" : ""}" data-cd="${v.id}">${cd}</span>` : ""}</div>` : ""}</div>
+        ${pathSection}
         <div class="d-section"><h3>What happened</h3>
           <p class="d-plain">${agentOf(v) ? `<b>${esc(agentOf(v).short)}</b> wanted to ` : "The agent wanted to "}${esc(plainAction(v))}.</p>
-          <div class="d-act">${esc(renderAct(v))}</div></div>
+          ${path ? "" : `<div class="d-act">${esc(renderAct(v))}</div>`}</div>
         ${why.length ? `<div class="d-section"><h3>Why</h3><ul class="d-why">${why.map((f) => `<li>${esc(f.message)}</li>`).join("")}</ul></div>`
           : v.decision === "allow" ? `<div class="d-section"><h3>Why</h3><p class="d-plain">${wentToHuman(v) ? "It needed an OK first, and got one." : "Nothing risky found. It fits what you asked."}</p></div>` : ""}
-        ${evidence.length ? `<div class="d-section"><h3>Where it came from</h3>${evidence.filter((f) => { const k = f.evidence.slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; }).map((f) =>
+        ${evidence.length && !(path && path.source) ? `<div class="d-section"><h3>Where it came from</h3>${evidence.filter((f) => { const k = f.evidence.slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; }).map((f) =>
           `<div class="evidence"><div class="ev-src">${icon("doc")}From ${esc(evidenceSource(f))}, not from you</div><div class="ev-text">…${highlight(f.evidence, v, f)}…</div></div>`).join("")}</div>` : ""}
         ${v.action.parent ? `<p class="d-plain d-spawned-note">Started by <b>${esc(agentName(v.action.parent))}</b>.</p>` : ""}`;
       return;
@@ -645,6 +733,7 @@
         <div><span>Risk</span><b>${v.risk}<small> / 100</small></b></div>
         <div><span>Decided in</span><b>${fmtMs(v.elapsed_ms)}<small> ms</small></b></div>
       </div>
+      ${pathSection}
       <div class="d-section"><h3>Why${findings.length > 1 ? `<span class="n">${findings.length} findings</span>` : ""}</h3>
         ${findings.length ? `<ol class="findings">${findings.map((f) => `
           <li class="finding${f.message === cleanSummary(v) ? " is-headline" : ""}" data-lvl="${lvl(f.severity)}">

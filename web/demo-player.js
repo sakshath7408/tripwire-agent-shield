@@ -209,6 +209,29 @@
       ? `The simulated human clicked Allow on everything, so this is Tripwire alone. ${got}`
       : `With the careful human answering: ${s.stopped_alone + s.stopped_by_human} of ${s.attack_steps}. ${got}`;
     $("climax").hidden = false;
+    climaxPath(r);
+  }
+  /** A tiny attack path under the climax: the most important step Tripwire stopped on its own, drawn from the
+      verdict itself (the dashboard's own path builder, window.TWPath). Money and sends first, then the riskiest. */
+  function climaxPath(r) {
+    let box = $("climax-path");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "climax-path";
+      box.className = "climax-path";
+      $("climax").append(box);
+    }
+    box.innerHTML = "";
+    const TWP = window.TWPath, TWS = window.TW;
+    if (!TWP || !TWS || !TWS.verdicts || !r || !r.score || !r.score.stopped_alone) return;
+    const rank = { money: 3, send: 2, exec: 1 };
+    const pick = TWS.verdicts().filter((v) => v.decision === "block" && !v.resolved_by && TWP.steps(v, null))
+      .sort((a, b) => (rank[b.capability] || 0) - (rank[a.capability] || 0) || b.risk - a.risk)[0];
+    if (!pick) return;
+    const sess = TWS.sessions().find((s) => s.id === pick.action.session_id) || null;
+    const html = TWP.html(pick, sess, { mini: true, fresh: true });
+    if (!html) return;
+    box.innerHTML = `<div class="climax-path-title">The one that mattered most</div>${html}`;
   }
   function paintCompare() {
     const c = last[current] || {};

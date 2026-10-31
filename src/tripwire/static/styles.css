@@ -1186,3 +1186,75 @@ html.stage #settings-btn { width: 1.867rem; height: 1.867rem; padding: .267rem; 
 .finding.is-headline .f-tags .sev { margin: 0; }
 /* narrower screens: the session is already in the strip above, so that column goes first; the agent stays */
 @media (max-width: 1500px) { .audit-table th:nth-child(2), .audit-table td:nth-child(2) { display: none; } .audit-table .why { max-width: 15rem; } }
+
+/* ---- attack path: provenance at a glance ---------------------------------
+   your task (teal, trusted) -> what the agent read (amber, untrusted, with the snippet) -> the value it carried
+   -> the tool call -> Tripwire's decision (red block / amber ask). A vertical rail in the narrow detail panel
+   and on phones; left-to-right when the panel is wide (presenter mode on a big screen). */
+.d-path { container-type: inline-size; }
+.path { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; position: relative; }
+.path-step { position: relative; display: grid; grid-template-columns: 1.4rem minmax(0, 1fr); gap: .667rem; padding: 0 0 .933rem; --c: var(--muted); --c-soft: var(--surface-3); }
+.path-step:last-child { padding-bottom: 0; }
+.path-step::before { content: ""; position: absolute; left: .7rem; top: 1.5rem; bottom: -.1rem; width: 1px; background: var(--line-strong); opacity: .7; transform-origin: top; }
+.path-step:last-child::before { display: none; }
+.path-dot { width: 1.4rem; height: 1.4rem; border-radius: 50%; display: grid; place-items: center; background: var(--c-soft); color: var(--c); box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent) inset, 0 0 0 3px var(--surface); flex: none; }
+.path-dot svg { width: .867rem; height: .867rem; }
+.path-body { min-width: 0; padding-top: .05rem; }
+.path-kicker { font-size: .733rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--c); display: flex; align-items: center; gap: .4rem; line-height: 1.4rem; margin-bottom: .2rem; }
+.path-pill { font-size: .667rem; letter-spacing: .04em; padding: 0 .4rem; border-radius: 4px; background: var(--c-soft); color: var(--c); line-height: 1.067rem; font-weight: 600; margin-left: .133rem; }
+.path-text { display: block; font-size: var(--t-m); font-weight: 500; color: var(--ink); line-height: 1.4; overflow-wrap: anywhere; text-wrap: pretty; }
+code.path-text { font-family: var(--mono); font-weight: 600; font-size: var(--t-s); background: var(--c-soft); color: var(--ink); border-radius: 6px; padding: .15rem .5rem; display: inline-block; max-width: 100%; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent); }
+.path-value code.path-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.path-sub { font-family: var(--mono); font-size: var(--t-xs); color: var(--ink-2); margin-top: .4rem; line-height: 1.5; overflow-wrap: anywhere; }
+.path-verdict .path-kicker { margin-bottom: 0; }
+.path-verdict .path-text { display: inline-block; font-size: var(--t-xs); font-weight: 650; letter-spacing: .01em; padding: 0 .467rem; border-radius: 999px; background: var(--c-soft); line-height: 1.333rem; }
+.path-verdict .path-sub { font-family: var(--sans); font-size: var(--t-s); color: var(--ink-2); margin-top: .333rem; max-width: 60ch; }
+.path-snippet { margin-top: .533rem; font-family: var(--mono); font-size: var(--t-xs); line-height: 1.55; color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--line); border-left: 3px solid var(--c); border-radius: var(--r-s); padding: .467rem .667rem; overflow-wrap: anywhere; }
+.path-snippet mark { background: var(--c-soft); color: var(--c); border-radius: 3px; padding: .05rem .267rem; font-weight: 650; box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 60%, transparent); }
+.path-rules { display: flex; flex-wrap: wrap; gap: .3rem .6rem; margin-top: .4rem; }
+.path-rules .rule { color: var(--faint); }
+.path-step.is-trusted { --c: var(--you); --c-soft: var(--you-soft); }
+.path-step.is-injected, .path-step.is-untrusted, .path-step.is-carried, .path-step.is-ask { --c: var(--ask); --c-soft: var(--ask-soft); }
+.path-step.is-carried code.path-text { color: var(--ask); }
+.path-step.is-tool { --c: var(--ink-2); --c-soft: var(--surface-3); }
+.path-step.is-block { --c: var(--block); --c-soft: var(--block-soft); }
+.path-step.is-block .path-text { color: var(--block); }
+.path-step.is-ask .path-text { color: var(--ask); }
+.path-step.is-allow { --c: var(--allow); --c-soft: var(--allow-soft); }
+.path-step.is-empty .path-text { color: var(--muted); font-weight: 500; font-style: italic; }
+.path-step.is-block .path-dot { background: var(--block); color: #fff; box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--block-soft); }
+
+/* the path draws itself in when a row is picked: the rail grows, nodes pop in, the verdict lands last */
+.path.is-live .path-step { animation: path-node .45s var(--ease) both; animation-delay: calc(var(--i) * 140ms); }
+.path.is-live .path-step::before { animation: path-rail .4s var(--ease) both; animation-delay: calc(var(--i) * 140ms + 160ms); }
+.path.is-live .path-verdict.is-block .path-dot { animation: path-shake .5s var(--ease) both; animation-delay: calc(var(--i) * 140ms + 120ms); }
+@keyframes path-node { from { opacity: 0; transform: translateY(6px); } }
+@keyframes path-rail { from { transform: scaleY(0); } }
+@keyframes path-shake { 0%, 100% { transform: none; } 20% { transform: translateX(-3px); } 45% { transform: translateX(3px); } 70% { transform: translateX(-2px); } }
+
+/* wide panel: left to right, the rail runs under the dots */
+@container (min-width: 46rem) {
+  .path:not(.path-short) { grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: .8rem; }
+  .path:not(.path-short) .path-step { grid-template-columns: 1fr; padding: 0; }
+  .path:not(.path-short) .path-step::before { left: 2rem; right: -.8rem; top: .75rem; bottom: auto; height: 2px; width: auto; margin: 0; transform-origin: left; }
+  .path:not(.path-short) .path-body { padding-top: .4rem; }
+  .path:not(.path-short) .path-kicker { line-height: 1.3; min-height: 2.2em; align-items: flex-start; flex-wrap: wrap; }
+  .path.is-live:not(.path-short) .path-step::before { animation-name: path-rail-x; }
+}
+@keyframes path-rail-x { from { transform: scaleX(0); } }
+
+/* mini path: the hosted demo's climax, one line per step, no snippet */
+.path-mini { margin-top: .6rem; }
+.path-mini .path-step { padding-bottom: .467rem; grid-template-columns: 1.2rem minmax(0, 1fr); gap: .5rem; }
+.path-mini .path-step::before { left: .6rem; top: 1.2rem; }
+.path-mini .path-dot { width: 1.2rem; height: 1.2rem; }
+.path-mini .path-dot svg { width: .733rem; height: .733rem; }
+.path-mini .path-kicker { line-height: 1.2rem; font-size: .667rem; margin-bottom: .067rem; }
+.path-mini .path-text { font-size: var(--t-s); }
+.path-mini code.path-text { font-size: var(--t-xs); padding: .1rem .4rem; }
+.path-mini .path-sub { display: none; }
+.path-mini .path-verdict .path-sub { display: block; font-size: var(--t-xs); }
+html.stage .path-text { font-size: var(--t-l); }
+html.stage code.path-text { font-size: var(--t-m); }
+html.stage .path-snippet { font-size: var(--t-s); }
+html.stage .path-rules { display: none; }
