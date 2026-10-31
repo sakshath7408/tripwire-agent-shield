@@ -579,18 +579,54 @@
       el.story.classList.toggle("story-good", !!story.good);
       el.story.classList.toggle("story-warn", !!story.warn);
       el.story.querySelector("use").setAttribute("href", story.good ? "#i-allow" : "#i-hidden");
-      el.storyText.innerHTML = story.html;
+      if (el.storyText.innerHTML !== story.html) {
+        el.storyText.innerHTML = story.html;
+        el.story.classList.remove("is-update");
+        void el.story.offsetWidth;
+        el.story.classList.add("is-update");
+      }
+      celebrate(sess, story);
     }
   }
+  const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  /** Numbers tick up to their new value (transform-free, just text), unless motion is reduced. */
+  const counting = new WeakMap();
+  function countTo(node, from, to, ms = 450) {
+    cancelAnimationFrame(counting.get(node));
+    if (reducedMotion() || !(to > from) || to - from > 400) { node.textContent = to; return; }
+    const t0 = performance.now();
+    const tick = (t) => {
+      const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+      node.textContent = Math.round(from + (to - from) * e);
+      if (k < 1) counting.set(node, requestAnimationFrame(tick));
+    };
+    counting.set(node, requestAnimationFrame(tick));
+  }
   function setStat(node, n) {
-    const was = node.textContent;
-    node.textContent = n;
+    const was = Number(node.textContent) || 0;
     node.parentElement.classList.toggle("is-zero", !n);
-    if (was !== String(n) && Number(was) < n) {
+    if (was !== n && was < n) {
+      countTo(node, was, n);
       node.parentElement.classList.remove("is-bump");
       void node.offsetWidth;
       node.parentElement.classList.add("is-bump");
+    } else {
+      cancelAnimationFrame(counting.get(node));
+      node.textContent = n;
     }
+  }
+  /** Once per session: the run ended with everything stopped and nothing waiting. The shield pulses green once. */
+  const won = new Set();
+  function celebrate(sess, story) {
+    const key = sess ? sess.id : "all";
+    if (!story || story.good || story.warn || won.has(key) || !/blocked (?:all|it)\b/.test(story.html) || /waiting for you/.test(story.html)) return;
+    won.add(key);
+    const mark = document.querySelector(".brand-mark");
+    if (!mark) return;
+    mark.classList.remove("is-win");
+    void mark.offsetWidth;
+    mark.classList.add("is-win");
+    setTimeout(() => mark.classList.remove("is-win"), 1600);
   }
 
   function decideButtons(id) {
@@ -694,7 +730,7 @@
     const cd = pending ? countdownText(v.id) : "";
     const t = toolParts(v.action.tool);
     const fresh = el.detailBody.dataset.id !== v.id;
-    if (fresh) { el.detail.scrollTop = 0; el.detailBody.dataset.id = v.id; }
+    if (fresh) { el.detail.scrollTop = 0; el.detailBody.dataset.id = v.id; el.detailBody.classList.remove("is-fresh"); void el.detailBody.offsetWidth; el.detailBody.classList.add("is-fresh"); }
     const sess = S.sessions.find((x) => x.id === v.action.session_id);
     const path = attackPath(v, sess);
     const pathSection = pathHtml(v, sess, { fresh });
@@ -1102,9 +1138,13 @@
     S.view = view;
     el.tabLive.setAttribute("aria-selected", view === "live");
     el.tabAudit.setAttribute("aria-selected", view === "audit");
+    const was = S.view;
     el.live.hidden = view !== "live";
     el.audit.hidden = view !== "audit";
     document.body.dataset.view = view;
+    const panel = view === "live" ? el.live : el.audit;
+    panel.classList.remove("is-in");
+    if (was !== undefined) { void panel.offsetWidth; panel.classList.add("is-in"); }
     if (view === "audit") { el.empty.hidden = true; loadTree(0); verifyChain(0); }
     render();
   }

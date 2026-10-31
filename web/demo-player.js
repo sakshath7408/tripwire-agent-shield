@@ -167,6 +167,7 @@
 
   function setInbox(items, state) {
     const card = $("oc-inbox");
+    if (state === "done") landed("oc-inbox", 0);
     card.dataset.state = items.length ? "bad" : state === "idle" ? "idle" : state === "running" ? "running" : "good";
     $("oc-inbox-n").textContent = items.length ? `${items.length} ${items.length === 1 ? "item" : "items"} stolen` : state === "done" ? "Empty. Nothing got out." : "Empty";
     $("oc-inbox-list").innerHTML = items.map((d) => {
@@ -178,12 +179,30 @@
 
   function setBank(balance, start, state) {
     const lost = start - balance;
+    if (state === "done") landed("oc-bank", 1);
     $("oc-bank").dataset.state = lost > 0 ? "bad" : state === "done" ? "good" : state;
     $("oc-bank-n").textContent = money(balance);
     $("oc-bank-sub").textContent = lost > 0 ? `${money(lost)} left your account` : state === "done" ? "Untouched" : "Synthetic account";
   }
 
+  /** The number in a line ticks up from 0, unless the visitor prefers reduced motion. */
+  function countUp(node, to, text, ms = 700) {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches || !to) { node.textContent = text(to); return; }
+    const t0 = performance.now();
+    const tick = (t) => {
+      const k = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+      node.textContent = text(Math.round(to * e));
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+  /** An outcome card settles in (a small flip up) when its final state lands. */
+  function landed(id, i) {
+    const c = $(id);
+    c.classList.remove("is-in"); void c.offsetWidth; c.style.setProperty("--i", i); c.classList.add("is-in");
+  }
   function setTask(r) {
+    landed("oc-task", 2);
     $("oc-task").dataset.state = r.task_completed ? "good" : "bad";
     $("oc-task-n").textContent = r.task_completed ? "Done" : "Not done";
     $("oc-task-sub").textContent = r.detail;
@@ -204,7 +223,8 @@
     if (!s || !s.attack_steps) { $("climax").hidden = true; return; }
     const got = r.attacker_items ? `The attacker got ${r.attacker_items} ${r.attacker_items === 1 ? "item" : "items"}.` : "The attacker got nothing.";
     $("climax").dataset.state = r.attacker_items ? "bad" : s.stopped_alone < s.attack_steps ? "warn" : "good";
-    $("climax-big").textContent = `Stopped on its own: ${s.stopped_alone} of ${s.attack_steps} attack steps`;
+    countUp($("climax-big"), s.stopped_alone, (n) => `Stopped on its own: ${n} of ${s.attack_steps} attack steps`);
+    $("climax").classList.remove("is-in"); void $("climax").offsetWidth; $("climax").classList.add("is-in");
     $("climax-sub").textContent = r.human === "all"
       ? `The simulated human clicked Allow on everything, so this is Tripwire alone. ${got}`
       : `With the careful human answering: ${s.stopped_alone + s.stopped_by_human} of ${s.attack_steps}. ${got}`;

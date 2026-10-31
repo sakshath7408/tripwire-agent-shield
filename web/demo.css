@@ -259,3 +259,11 @@ body.floor-on .human-note { color: var(--ask); }
 .climax-path .path-mini { margin-top: .5rem; }
 .climax-path .path-dot { box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent) inset; }
 .climax-path .path-step.is-block .path-dot { box-shadow: none; }
+
+/* motion: the climax lands, outcome cards flip up one after another (transform and opacity only) */
+.climax.is-in { animation: climax-land .6s var(--spring, cubic-bezier(.34, 1.4, .4, 1)); }
+@keyframes climax-land { from { transform: translateY(10px) scale(.985); } }
+.oc { transform-origin: 50% 100%; }
+.oc.is-in { animation: oc-in .55s var(--ease) both; animation-delay: calc(var(--i, 0) * 90ms); }
+@keyframes oc-in { from { opacity: 0; transform: perspective(800px) rotateX(-18deg) translateY(10px); } }
+@media (prefers-reduced-motion: reduce) { .climax.is-in, .oc.is-in { animation: none; } }
