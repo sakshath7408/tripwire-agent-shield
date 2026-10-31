@@ -1080,7 +1080,7 @@
     const typing = e.target.matches("input, textarea, select, [contenteditable]");
     if (e.key === "Escape" && el.detail.classList.contains("is-open")) closeDetail();
     if ((e.key === "Enter" || e.key === " ") && e.target.matches(".row, .q-item, .audit-table tbody tr")) { e.preventDefault(); e.target.click(); return; }
-    if (typing || tour.open || !el.settingsPop.hidden) return;
+    if (typing || tour.open || tips.open || !el.settingsPop.hidden) return;
     // A / B answer the first waiting item. Shown as hints on its buttons.
     if ((e.key === "a" || e.key === "A" || e.key === "b" || e.key === "B") && S.view === "live") {
       const top = topPending();
@@ -1353,6 +1353,7 @@
     document.querySelector(".app").inert = false;
     try { if (tourEl("tour-again").checked) localStorage.setItem(TOUR_SEEN, "1"); else localStorage.removeItem(TOUR_SEEN); } catch (_) { /* private mode */ }
     if (tour.restore && tour.restore.focus) tour.restore.focus({ preventScroll: true });
+    if (typeof tipsAfterGuide === "function") tipsAfterGuide();
   }
   function goTour(n) { tour.step = Math.max(0, Math.min(STEPS.length - 1, n)); paintTour(); }
   el.tour.addEventListener("click", async (e) => {
@@ -1399,13 +1400,171 @@
       f[next].focus();
     }
   }, true);
-  el.help.addEventListener("click", openTour);
+  // The "?" menu: replay the guide, or show the tips that point at the real controls.
+  const helpMenu = document.createElement("div");
+  helpMenu.className = "pop pop-menu"; helpMenu.id = "help-menu"; helpMenu.hidden = true; helpMenu.setAttribute("role", "menu");
+  helpMenu.innerHTML = `<button type="button" role="menuitem" id="help-guide">${icon("help")}Replay the guide<span>The five-step welcome</span></button>
+    <button type="button" role="menuitem" id="help-tips">${icon("spark")}Show tips<span>Short pointers at each control</span></button>`;
+  el.help.parentElement.insertBefore(helpMenu, el.help.nextSibling);
+  el.help.setAttribute("aria-haspopup", "menu"); el.help.setAttribute("aria-expanded", "false"); el.help.setAttribute("aria-controls", "help-menu");
+  function openHelp(open) {
+    helpMenu.hidden = !open;
+    el.help.setAttribute("aria-expanded", open);
+    if (open) helpMenu.querySelector("button").focus({ preventScroll: true });
+  }
+  el.help.addEventListener("click", () => openHelp(helpMenu.hidden));
+  helpMenu.addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    openHelp(false);
+    if (b.id === "help-guide") openTour(); else startTips(tipsFor(), { force: true });
+  });
+  document.addEventListener("click", (e) => { if (!helpMenu.hidden && !e.target.closest("#help, #help-menu")) openHelp(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !helpMenu.hidden) { openHelp(false); el.help.focus({ preventScroll: true }); } });
   // First open: show the guide, unless this is the projector (?stage=1) or it was dismissed before.
   // Not on the projector, not when a deep link asks for a specific view (#demo), and not after "Don't show again".
   // The #demo check runs when the timer fires: the hosted page's ?scenario= link only switches to #demo after this file loads.
   if (!tourSeen() && !root.classList.contains("stage") && !new URLSearchParams(location.search).has("notour")) {
-    setTimeout(() => { if (location.hash !== "#demo" && !tourSeen()) openTour(); }, 400);
+    setTimeout(() => { if (location.hash !== "#demo" && !tourSeen()) { tour.firstOpen = true; openTour(); } }, 400);
   }
+
+  // ---- tips: short pointers at the real controls, once after the guide -----------------------------------
+  // Each tip is one sentence anchored to an element on the page. A spotlight cutout and a small card with an
+  // arrow; on a phone the card is a bottom sheet. Tips whose target is not on screen are skipped. Keys: ← → Enter
+  // Esc, Tab cycles inside the card. Never auto-shown on the projector; "?" > Show tips brings them back.
+  const TIPS_SEEN = "tw-tips-seen", TIPS_DEMO_SEEN = "tw-tips-demo-seen";
+  const tipsSeen = (k) => { try { return localStorage.getItem(k) === "1"; } catch (_) { return true; } };
+  const DASH_TIPS = [
+    { sel: "#story:not([hidden])", text: "One sentence says what happened: where hidden instructions were, what was blocked, what went through." },
+    { sel: "#timeline .row", text: "Every tool call lands here the moment it happens, newest first." },
+    { sel: "#timeline .row .badge", text: "Allowed, Needs your OK or Blocked. Every one comes with a plain reason." },
+    { sel: "#detail-body:not([hidden]) .d-path, #detail", text: "Pick a row: this shows where a value came from and why Tripwire decided the way it did." },
+    { sel: "#queue-list .btn-allow", text: "Allow or Block waits for you. The A and B keys answer the first one.", alt: "#queue-list .q-item" },
+    { sel: "#mode-seg", text: "Simple for plain words. Detailed adds every number, rule id and hash." },
+    { sel: "#settings-btn", text: "How much Tripwire decides on its own, and the rules it learned from your answers." },
+    { sel: "#tab-audit", text: "Every decision, tamper-evident and exportable." },
+  ];
+  const DEMO_TIPS = [
+    { sel: "#scenarios", text: "Pick an attack: poisoned files, a web page, an email with hidden orders." },
+    { sel: "#run-on", text: "Run it without Tripwire, then with. Hard floor makes the human allow everything, so you see what Tripwire stops alone." },
+    { sel: "#scenarios [data-scn='custom']", text: "Write your own attack text and watch the engine judge it live." },
+  ];
+  const tipsFor = () => (document.body.contains(document.getElementById("demo-panel")) && !document.getElementById("demo-panel").hidden ? DEMO_TIPS : DASH_TIPS);
+  const tips = { open: false, i: 0, list: [], el: null, hole: null, restore: null, key: TIPS_SEEN };
+  function tipTarget(t) {
+    for (const sel of [t.sel, t.alt].filter(Boolean)) {
+      for (const n of document.querySelectorAll(sel)) {
+        if (n.offsetParent === null && getComputedStyle(n).position !== "fixed") continue;
+        const r = n.getBoundingClientRect();
+        if (r.width > 2 && r.height > 2) return n;
+      }
+    }
+    return null;
+  }
+  function buildTips() {
+    if (tips.el) return;
+    tips.hole = document.createElement("div"); tips.hole.className = "coach-hole"; tips.hole.setAttribute("aria-hidden", "true");
+    tips.el = document.createElement("div"); tips.el.className = "coach"; tips.el.id = "coach"; tips.el.tabIndex = -1;
+    tips.el.setAttribute("role", "dialog"); tips.el.setAttribute("aria-live", "polite");
+    tips.el.innerHTML = `<div class="coach-arrow" aria-hidden="true"></div>
+      <div class="coach-top"><span class="coach-count" id="coach-count"></span><button type="button" class="coach-skip" id="coach-skip">Skip all</button></div>
+      <p class="coach-text" id="coach-text"></p>
+      <div class="coach-foot"><label class="coach-again"><input type="checkbox" id="coach-again" checked> Don't show tips again</label>
+        <div class="coach-actions"><button type="button" class="tour-btn tour-ghost" id="coach-back">Back</button><button type="button" class="tour-btn tour-primary" id="coach-next">Next</button></div></div>`;
+    document.body.append(tips.hole, tips.el);
+    tips.el.addEventListener("click", (e) => {
+      if (e.detail > 1 && e.target.closest("#coach-next, #coach-back")) return;
+      if (e.target.closest("#coach-skip")) endTips();
+      else if (e.target.closest("#coach-back")) goTip(tips.i - 1);
+      else if (e.target.closest("#coach-next")) goTip(tips.i + 1);
+    });
+    window.addEventListener("resize", () => tips.open && placeTip());
+    window.addEventListener("scroll", () => tips.open && placeTip(), true);
+  }
+  function startTips(list, opt = {}) {
+    if (tips.open || tour.open) return;
+    tips.key = list === DEMO_TIPS ? TIPS_DEMO_SEEN : TIPS_SEEN;
+    if (!opt.force && (tipsSeen(tips.key) || root.classList.contains("stage"))) return;
+    tips.list = list.filter(tipTarget);
+    if (!tips.list.length) return;
+    buildTips();
+    tips.open = true; tips.restore = document.activeElement; tips.i = -1;
+    document.body.classList.add("coach-open");
+    goTip(0);
+  }
+  function goTip(n) {
+    if (n >= tips.list.length) { endTips(); return; }
+    n = Math.max(0, n);
+    const t = tips.list[n], target = tipTarget(t);
+    if (!target) { tips.list.splice(n, 1); if (!tips.list.length) { endTips(); return; } goTip(Math.min(n, tips.list.length - 1)); return; }
+    tips.i = n; tips.target = target;
+    tips.el.querySelector("#coach-count").textContent = `Tip ${n + 1} of ${tips.list.length}`;
+    tips.el.querySelector("#coach-text").textContent = t.text;
+    tips.el.querySelector("#coach-back").disabled = n === 0;
+    tips.el.querySelector("#coach-next").textContent = n === tips.list.length - 1 ? "Done" : "Next";
+    tips.el.setAttribute("aria-label", `Tip ${n + 1} of ${tips.list.length}`);
+    tips.el.hidden = false; tips.hole.hidden = false;
+    tips.el.classList.remove("is-in"); void tips.el.offsetWidth; tips.el.classList.add("is-in");
+    target.scrollIntoView({ block: "center", inline: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+    placeTip();
+    setTimeout(placeTip, 350);
+    const a = document.activeElement;
+    if (!a || !tips.el.contains(a)) tips.el.focus({ preventScroll: true });
+  }
+  function placeTip() {
+    if (!tips.open || !tips.target) return;
+    const r = tips.target.getBoundingClientRect(), pad = 6;
+    Object.assign(tips.hole.style, { left: `${r.left - pad}px`, top: `${r.top - pad}px`, width: `${r.width + pad * 2}px`, height: `${r.height + pad * 2}px` });
+    const card = tips.el, arrow = card.querySelector(".coach-arrow");
+    if (phone.matches) { card.dataset.side = "sheet"; card.style.left = card.style.top = ""; return; }
+    const W = card.offsetWidth, H = card.offsetHeight, vw = window.innerWidth, vh = window.innerHeight, gap = 14;
+    const side = r.bottom + gap + H < vh ? "below" : r.top - gap - H > 0 ? "above"
+      : r.right + gap + W < vw ? "right" : r.left - gap - W > 0 ? "left" : "over";
+    let left, top;
+    if (side === "below" || side === "above") {
+      left = Math.min(Math.max(12, r.left + r.width / 2 - W / 2), vw - W - 12);
+      top = side === "below" ? r.bottom + gap : r.top - gap - H;
+      arrow.style.left = `${Math.max(16, Math.min(W - 16, r.left + r.width / 2 - left))}px`; arrow.style.top = "";
+    } else if (side === "right" || side === "left") {
+      left = side === "right" ? r.right + gap : r.left - gap - W;
+      top = Math.min(Math.max(12, r.top + r.height / 2 - H / 2), vh - H - 12);
+      arrow.style.top = `${Math.max(16, Math.min(H - 16, r.top + r.height / 2 - top))}px`; arrow.style.left = "";
+    } else { // the target fills the screen (a panel): sit over its middle, no arrow
+      left = Math.min(Math.max(12, r.left + r.width / 2 - W / 2), vw - W - 12);
+      top = Math.min(Math.max(12, r.top + r.height / 2 - H / 2), vh - H - 12);
+    }
+    card.dataset.side = side;
+    card.style.left = `${left}px`; card.style.top = `${top}px`;
+  }
+  function endTips() {
+    if (!tips.open) return;
+    tips.open = false;
+    tips.el.hidden = true; tips.hole.hidden = true;
+    document.body.classList.remove("coach-open");
+    try { if (tips.el.querySelector("#coach-again").checked) localStorage.setItem(tips.key, "1"); else localStorage.removeItem(tips.key); } catch (_) { /* private mode */ }
+    if (tips.restore && tips.restore.focus) tips.restore.focus({ preventScroll: true });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (!tips.open || e.metaKey || e.ctrlKey || e.altKey) return;
+    const inButton = e.target.closest("button, input, a");
+    const handled = ["Escape", "ArrowRight", "ArrowLeft", "Tab"].includes(e.key) || (e.key === "Enter" && !inButton);
+    if (!handled) return;
+    e.stopPropagation(); e.preventDefault();
+    if (e.repeat) return;
+    if (e.key === "Escape") endTips();
+    else if (e.key === "ArrowRight" || e.key === "Enter") goTip(tips.i + 1);
+    else if (e.key === "ArrowLeft") goTip(tips.i - 1);
+    else if (e.key === "Tab") {
+      const f = [...tips.el.querySelectorAll("button, input")].filter((n) => !n.disabled);
+      const i = f.indexOf(document.activeElement);
+      f[i < 0 ? (e.shiftKey ? f.length - 1 : 0) : (i + (e.shiftKey ? -1 : 1) + f.length) % f.length].focus();
+    }
+  }, true);
+  // A click anywhere outside the card skips the rest (the page under a tip stays usable).
+  document.addEventListener("click", (e) => { if (tips.open && !tips.el.contains(e.target)) endTips(); }, true);
+  // Once after the first-open guide closes; the Demo tab gets its own three the first time it opens.
+  const tipsAfterGuide = () => { if (tour.firstOpen) { tour.firstOpen = false; setTimeout(() => startTips(tipsFor()), 500); } };
+  document.addEventListener("click", (e) => { if (e.target.closest("#tab-demo")) setTimeout(() => startTips(DEMO_TIPS), 600); });
+  window.TWTips = { start: (which) => startTips(which === "demo" ? DEMO_TIPS : DASH_TIPS, { force: true }), end: endTips };
 
   // ---- live feed ------------------------------------------------------------
   function setConn(state) {

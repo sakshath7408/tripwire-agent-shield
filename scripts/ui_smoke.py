@@ -74,12 +74,35 @@ def guide(p: Page, eng: str) -> None:
     p.reload()
     p.wait_for_timeout(900)
     check(step(p) == "closed", f"{eng}: the guide stays closed after a reload")
+    check(p.locator("#coach").count() == 0 or not p.locator("#coach").is_visible(), f"{eng}: tips don't come back after a reload")
     p.click("#help")
     p.wait_for_timeout(200)
-    check(step(p) == "1 / 5", f"{eng}: ? reopens the guide at step 1")
+    check(p.locator("#help-menu").is_visible(), f"{eng}: ? opens its menu")
+    p.click("#help-guide")
+    p.wait_for_timeout(200)
+    check(step(p) == "1 / 5", f"{eng}: 'Replay the guide' reopens it at step 1")
     p.keyboard.press("Escape")
     p.wait_for_timeout(150)
     check(step(p) == "closed", f"{eng}: Escape closes the guide")
+    # Tips: "?" > Show tips points at the real controls; keys, clicks and Skip all end them; focus stays inside.
+    p.click("#help")
+    p.click("#help-tips")
+    p.wait_for_timeout(700)
+    check(p.locator("#coach").is_visible() and p.inner_text("#coach-count").lower().startswith("tip 1 of"), f"{eng}: Show tips opens tip 1")
+    p.keyboard.press("ArrowRight")
+    p.wait_for_timeout(500)
+    check(p.inner_text("#coach-count").lower().startswith("tip 2 of"), f"{eng}: → moves to tip 2")
+    inside = True
+    for _ in range(6):
+        p.keyboard.press("Tab")
+        inside = inside and p.evaluate("document.getElementById('coach').contains(document.activeElement)")
+    check(inside, f"{eng}: Tab stays inside the tip")
+    p.click("#coach-back")
+    p.wait_for_timeout(400)
+    check(p.inner_text("#coach-count").lower().startswith("tip 1 of"), f"{eng}: Back returns to tip 1")
+    p.click("#coach-skip")
+    p.wait_for_timeout(300)
+    check(not p.locator("#coach").is_visible(), f"{eng}: Skip all closes the tips")
 
 
 def demo_cookie(base: str) -> str | None:
