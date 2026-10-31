@@ -1003,7 +1003,7 @@ html[data-mode="simple"] .chain .n { display: none; }
   position: fixed; left: 50%; bottom: 1.467rem; transform: translateX(-50%);
   background: var(--bar-bg); color: var(--bar-ink);
   padding: .6rem 1rem; border-radius: 10px; font-size: var(--t-s); font-weight: 500; box-shadow: var(--shadow-pop), inset 0 1px 0 rgba(255, 255, 255, .12);
-  z-index: 50;
+  z-index: 50; max-width: min(38rem, calc(100vw - 2rem)); line-height: 1.45;
   animation: toast-in .25s var(--ease);
 }
 :root[data-theme="dark"] .toast { background: #e7ebf4; color: #0f1627; }

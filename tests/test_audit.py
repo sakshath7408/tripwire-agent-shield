@@ -388,3 +388,27 @@ def test_evaluate_latency_with_audit(client):
     check_fast(t[100], 20, "p50 (ms)")
     assert client.audit.flush(5)
     assert client.get("/v1/audit/verify").json()["checked"] >= 202
+
+
+def test_tamper_drill_catches_a_flipped_block_and_leaves_the_log_alone(log):
+    log.append("verdict", ref="vb", id="vb", session="s", agent="main", trace="main", tool="send_email",
+               decision="block", risk=95, body={"id": "vb", "decision": "block"})
+    assert log.flush(10)
+    before = log.path.read_bytes()
+    r = A.tamper_drill(log.path, log.key)
+    assert r["ok"] and r["caught"] and r["tool"] == "send_email"
+    assert (r["was"], r["now"]) == ("block", "allow")
+    assert "changed after it was written" in r["problem"]
+    assert log.path.read_bytes() == before and check(log).ok
+
+
+def test_tamper_drill_on_an_empty_log(tmp_path):
+    assert A.tamper_drill(tmp_path / "none.db", None)["ok"] is False
+
+
+def test_tamper_drill_endpoint_needs_the_dashboard(tmp_path):
+    app = create_app(Engine(), audit_path=tmp_path / "audit.db")
+    with TestClient(app, base_url="http://127.0.0.1", headers={"X-Tripwire-Token": app.state.token}) as c:
+        assert c.get("/v1/audit/tamper-drill").status_code == 403  # the agent's hook token can't use it
+    with local_client(app) as c:
+        assert c.get("/v1/audit/tamper-drill").status_code == 200

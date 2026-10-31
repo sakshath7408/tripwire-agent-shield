@@ -36,7 +36,7 @@
     empty: $("empty"), queue: $("queue"), queueList: $("queue-list"), queueTitle: $("queue-title"),
     detail: $("detail"), detailBody: $("detail-body"), detailEmpty: $("detail-empty"), toast: $("toast"),
     tabLive: $("tab-live"), tabAudit: $("tab-audit"), live: $("live"), audit: $("audit"),
-    auditRows: $("audit-rows"), auditNote: $("audit-note"), exportBtn: $("export"), auditCount: $("audit-count"),
+    auditRows: $("audit-rows"), auditNote: $("audit-note"), exportBtn: $("export"), drillBtn: $("tamper-drill"), auditCount: $("audit-count"),
     nAllow: $("n-allow"), nAsk: $("n-ask"), nBlock: $("n-block"), msNote: $("ms-note"),
     story: $("story"), storyText: $("story-text"), offline: $("offline"), announce: $("announce"),
     theme: $("theme"), stage: $("stage"),
@@ -1183,6 +1183,21 @@
   }
   el.tabLive.addEventListener("click", () => setView("live"));
   el.tabAudit.addEventListener("click", () => setView("audit"));
+
+  // Proof the seal works: the server edits an in-memory copy (newest BLOCK -> ALLOW) and runs the normal check on it.
+  el.drillBtn.addEventListener("click", async () => {
+    el.drillBtn.disabled = true;
+    try {
+      const r = await api("/v1/audit/tamper-drill");
+      if (!r.ok) toast(r.problem || "Nothing to test yet.", 5200);
+      else if (r.caught) toast(`We faked an edit to a copy: record #${r.seq} (${r.tool}) changed from ${r.was.toUpperCase()} to ${r.now.toUpperCase()}. The check caught it: "${r.problem}" Your real log was not touched.`, 9000);
+      else toast(`An edit to record #${r.seq} was NOT caught. Run tripwire audit verify.`, 9000);
+    } catch (e) {
+      toast(`Couldn't run the test. ${e.message}`);
+    } finally {
+      el.drillBtn.disabled = false;
+    }
+  });
 
   el.exportBtn.addEventListener("click", async () => {
     try {

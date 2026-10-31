@@ -549,6 +549,37 @@ def verify_db(path: Path, key: bytes | None) -> VerifyResult:
     return r
 
 
+def tamper_drill(path: Path, key: bytes | None) -> dict:
+    """Show the seal working without touching the log: copy the records into memory, flip the newest BLOCK to ALLOW
+    in the copy (what an attacker covering their tracks would do), and run the normal check on the copy."""
+    if not Path(path).exists():
+        return {"ok": False, "problem": "There is no audit log yet."}
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        cols_ = (*CHAIN_FIELDS, "prev_hash", "hash", "hmac")
+        rows = [dict(zip(cols_, r)) for r in
+                db.execute(f"select {', '.join(cols_)} from verdicts where seq is not null order by seq")]
+        h = db.execute("select seq, hash, hmac from audit_head where id = 1").fetchone()
+    finally:
+        db.close()
+    head = {"seq": h[0], "hash": h[1], "hmac": h[2]} if h is not None else None
+    if not verify_rows(rows, key, head).ok:
+        return {"ok": False, "problem": "The real log already fails its check, so there is nothing to compare against."}
+    pick = next((r for r in reversed(rows) if r["kind"] == "verdict" and r["decision"] == "block"), None) \
+        or next((r for r in reversed(rows) if r["kind"] == "verdict"), None)
+    if pick is None:
+        return {"ok": False, "problem": "No decisions in the log yet. Run something first."}
+    was = pick["decision"]
+    pick["decision"] = "allow" if was != "allow" else "block"
+    body = json.loads(pick["json"] or "{}")
+    if isinstance(body, dict) and "decision" in body:
+        body["decision"] = pick["decision"]
+        pick["json"] = json.dumps(body)
+    r = verify_rows(rows, key, head)
+    return {"ok": True, "seq": pick["seq"], "tool": pick["tool"], "was": was, "now": pick["decision"],
+            "caught": not r.ok, "problem": r.problems[0] if r.problems else None}
+
+
 def export_lines(path: Path) -> Iterator[str]:
     """JSONL: one chained record per line (all fields + prev_hash, hash, hmac), then the signed head.
     Anyone can recheck the hashes; checking the HMACs needs the key."""

@@ -9,6 +9,7 @@ GET  /v1/rules      learned rules        DELETE /v1/rules/{id}  forget one
 GET  /v1/verdicts   recent verdicts      GET /v1/stats   counts
 GET  /v1/audit      audited verdicts (?agent= ?trace= ?session_id=; ?format=tree for agent trees)
 GET  /v1/audit/events  raw chained records    GET /v1/audit/verify  walk the hash chain
+GET  /v1/audit/tamper-drill  flip a BLOCK to ALLOW in an in-memory copy and show the check catch it
 GET  /v1/events     server-sent events (task | observe | verdict | resolved)
 POST /v1/pair {"code"}  swap a one-time pairing code for the dashboard cookie
 POST /v1/pair/request   `tripwire open` asks to pair; a person approves it (serve's terminal or a paired dashboard)
@@ -688,6 +689,12 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         r = auditlib.verify_db(audit.path, audit.key)
         return {"ok": r.ok, "checked": r.checked, "legacy": r.legacy, "problem": r.problems[0] if r.problems else None,
                 "notes": r.notes}
+
+    @app.get("/v1/audit/tamper-drill")
+    def audit_tamper_drill() -> dict:
+        """Edits a copy in memory only; the real log is opened read-only."""
+        audit.flush(2)
+        return auditlib.tamper_drill(audit.path, audit.key)
 
     @app.get("/healthz")
     def healthz() -> dict:

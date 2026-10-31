@@ -4,7 +4,7 @@
 
 Built by **Team Sludge** at PARALLAX 2026 · Track 1, AgentShield
 
-[![tests](https://img.shields.io/badge/tests-1%2C484%20passing-2ea44f)](tests/) [![AgentDojo](https://img.shields.io/badge/AgentDojo-99.8%25%20stopped-2ea44f)](bench/results/matrix.md) [![shell false positives](https://img.shields.io/badge/normal%20commands%20flagged-0%20of%2090-2ea44f)](bench/results/shell.md) [![python](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![live demo](https://img.shields.io/badge/live%20demo-open-7c3aed)](https://tripwire-agent-shield.vercel.app/app#demo)
+[![tests](https://img.shields.io/badge/tests-1%2C497%20passing-2ea44f)](tests/) [![AgentDojo](https://img.shields.io/badge/AgentDojo-99.8%25%20stopped-2ea44f)](bench/results/matrix.md) [![shell false positives](https://img.shields.io/badge/normal%20commands%20flagged-0%20of%2090-2ea44f)](bench/results/shell.md) [![python](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![live demo](https://img.shields.io/badge/live%20demo-open-7c3aed)](https://tripwire-agent-shield.vercel.app/app#demo)
 
 Tripwire sits between an AI agent (Claude Code, or anything that speaks MCP) and the tools it uses: shell, files, web, email, money. It is for anyone who lets an agent read things they didn't write, like a repo, a web page or an inbox.
 
@@ -77,7 +77,7 @@ More commands:
 ```bash
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 1,484 tests (plus 1 expected failure); AgentDojo ones skip without the bench group
+uv run pytest -q                          # 1,497 tests (plus 1 expected failure); AgentDojo ones skip without the bench group
 uv sync --group bench                     # AgentDojo, for the benchmarks (large, optional)
 uv run --group bench python bench/run_all.py   # benchmarks, about 30 s, writes bench/results/summary.md
 ```
@@ -149,6 +149,8 @@ Tripwire records every URL, email address, IBAN, UPI id, IP, phone number, domai
 
 There is a second, separate signal: a phrase detector (`INJECTION_MARKERS`) that spots text talking to the AI, like "ignore your previous instructions". It is one signal, not the core, and it matters a lot on benchmarks. See [With and without the phrase detector](#with-and-without-the-phrase-detector).
 
+Hidden text counts too. Instructions spelled in invisible Unicode tag characters, or wrapped in base64, are decoded and read like the visible text. Hidden text that gives orders is treated as hidden instructions, so it blocks just like the same words in plain sight ([tests/test_smuggling.py](tests/test_smuggling.py)).
+
 The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM pattern: untrusted data must never decide where data flows, and no model that reads attacker text gets to make the decision.
 
 ### Failing closed
@@ -167,7 +169,7 @@ We tested it on AgentDojo and a plain rule won. The rule: once hidden instructio
 - **MCP gateway.** `tripwire mcp-proxy` wraps any MCP server. Tool descriptions are pinned (SHA-256 per tool, HMAC-signed pin file), with rug-pull and poisoned-description checks. `tripwire pins list` shows them.
 - **Permission profiles.** `coding-assistant`, `inbox-assistant`, `finance-assistant` in `default_policy.yaml`, each with `allow`, `ask` and `deny` lists.
 - **Live dashboard.** Every verdict as it happens, an approval queue with Allow and Block, an evidence panel that draws the attack path, and an audit log with the agent tree. A first-open guide walks you through it.
-- **Tamper-evident audit trail across agents.** Every task, tool output, verdict and human click is one row in `~/.tripwire/audit.db`. Rows are hash-chained (SHA-256) and signed (HMAC). Edit, delete or reorder a row and `tripwire audit verify` names the first broken one. Agents are blocked from reading the key (`~/.tripwire/audit.key`), but same-user code outside the hooks could, so this proves tampering by anyone without the key. Every row says which agent acted and who spawned it: Claude Code sub-agents, MCP servers and SDK agents all land in one tree. Commands: `tripwire audit verify`, `tripwire audit export --format jsonl` (anyone can recheck the hashes with `verify --file`), `tripwire audit tail -f`.
+- **Tamper-evident audit trail across agents.** Every task, tool output, verdict and human click is one row in `~/.tripwire/audit.db`. Rows are hash-chained (SHA-256) and signed (HMAC). Edit, delete or reorder a row and `tripwire audit verify` names the first broken one. Want to see it work? **Test the seal** in the dashboard's Audit tab flips the newest BLOCK to ALLOW in a copy held in memory, runs the same check, and shows it caught. Your real log is never touched. Agents are blocked from reading the key (`~/.tripwire/audit.key`), but same-user code outside the hooks could, so this proves tampering by anyone without the key. Every row says which agent acted and who spawned it: Claude Code sub-agents, MCP servers and SDK agents all land in one tree. Commands: `tripwire audit verify`, `tripwire audit export --format jsonl` (anyone can recheck the hashes with `verify --file`), `tripwire audit tail -f`.
 - **Hosted app with a Demo tab.** https://tripwire-agent-shield.vercel.app/app opens the real dashboard (first-open guide, then "Connect your agent"; a website cannot reach the daemon on your machine). Its **Demo** tab (https://tripwire-agent-shield.vercel.app/app#demo) runs the same engine and the same demo world on Vercel, one act per click. The same careful simulated human answers every ASK there, and a **Hard floor** switch makes it click Allow on everything. Each run prints "Stopped on its own: N of M attack steps · with a careful human: K of M".
 - **Bring your own attack.** **Try your own attack** (the last chip, or https://tripwire-agent-shield.vercel.app/app?scenario=custom) lets you type the attacker's text (max 4 KB, plain text only), hide it in a README, an email or a web page, and run it with and without Tripwire. Anything outside the user's world counts as the attacker's and only lands in a temp file; commands are simulated, never run. The hijacked agent is scripted and only follows common phrasings; the page shows exactly what it understood.
 - **Website.** https://tripwire-agent-shield.vercel.app has what it is, the features, and numbers you can quote with proof links. The pitch deck is not part of the site; it lives in [docs/pitch/](docs/pitch/).
@@ -287,7 +289,7 @@ Privacy: local only, no network lookups by the guard, args redacted before stora
 |---|---|
 | 01 Threat relevance | [demo/THREAT_MODEL.md](demo/THREAT_MODEL.md) names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, [bench/results/](bench/results/) |
-| 03 Technical implementation | `src/tripwire/` (about 11,800 lines of Python), 1,484 tests (plus 1 expected failure), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 03 Technical implementation | `src/tripwire/` (about 11,800 lines of Python), 1,497 tests (plus 1 expected failure), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
 | 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app/app (Demo tab: `/app#demo`; the landing page at `/` has the features and quotable numbers) |
 | 06 Safety, privacy, responsible engineering | local only, no network lookups by the guard, args redacted, fail closed, no admin key on disk, pairing only through a person. See [Security model and hardening](#security-model-and-hardening) and [Known limits](#known-limits) |

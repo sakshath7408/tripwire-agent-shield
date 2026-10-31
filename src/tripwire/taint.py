@@ -71,7 +71,7 @@ LISTED_LINE = re.compile(r"^[ \t]{0,40}(?:[-*][ \t]{0,4})?(?:[\"']?[\w .-]{1,40}
                          r"([@#]?[\w.+-]{1,100}(?:@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8})?)[\"']?,?[ \t]{0,8}$")
 # "reply to the latest email", "answer this message": the email meant is the newest one read.
 LATEST_MSG = re.compile(r"\b(?:latest|last|most recent|newest|this|that)\s+(?:e-?mail|message|mail)\b", re.I)
-INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u00ad]")
+INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u00ad\U000e0000-\U000e007f]")
 # A host written as one number (http://3232235777/) or in hex/octal parts is still an IP address.
 NUMERIC_HOST = re.compile(r"(?<=://)((?:0x[0-9a-f]{1,8}|\d{1,10})(?:\.(?:0x[0-9a-f]{1,8}|\d{1,10})){0,3})(?=[:/?#]|$)", re.I | re.M)
 
@@ -180,6 +180,48 @@ def _hidden_orders(text: str):
         o = HIDDEN_ORDER.search(m.group(2))
         if o:
             return o
+    return None
+
+
+# Text smuggled past the human reader: Unicode "tag" characters (U+E0020-E007E) render as nothing but spell out
+# ASCII to a model, and a base64 run decodes to words a model can follow. Both are revealed and read like the rest of
+# the content; a hidden payload that gives orders counts as hidden instructions, like a CSS-hidden element.
+TAG_CHARS = re.compile("[\U000e0020-\U000e007e]{4,4000}")
+B64_RUN = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/]{24,4096}={0,2}(?![A-Za-z0-9+/=_-])")
+
+
+def reveal(text: str) -> list[str]:
+    """The readable text hidden in `text` as tag characters or base64 (at most 50 pieces)."""
+    out: list[str] = []
+    if not text.isascii():
+        for n, m in enumerate(TAG_CHARS.finditer(text)):
+            if n >= 50:
+                break
+            out.append("".join(chr(ord(c) - 0xE0000) for c in m.group(0)))
+    if len(text) >= 24:
+        import base64
+        import binascii
+        for n, m in enumerate(B64_RUN.finditer(text)):
+            if n >= 200 or len(out) >= 50:
+                break
+            t = m.group(0)
+            if not re.search(r"[A-Z]", t) or not re.search(r"[a-z]", t):
+                continue  # a plain word, path or hex digest, not base64
+            try:
+                d = base64.b64decode(t + "=" * (-len(t) % 4)).decode("utf-8")
+            except (binascii.Error, ValueError, UnicodeDecodeError):
+                continue
+            if " " in d and sum(ch.isprintable() for ch in d) / len(d) > 0.95:
+                out.append(d)
+    return out
+
+
+def _smuggled(text: str):
+    """A match on the hidden payload when hidden text gives orders, else None."""
+    for d in reveal(text):
+        m = INJECTION_MARKERS.search(d) or HIDDEN_ORDER.search(d)
+        if m:
+            return re.search(re.escape(d[:120]), d) or m
     return None
 
 
@@ -383,6 +425,13 @@ class TaintStore:
         self.seen += 1
         seq = self.seen
         m = INJECTION_MARKERS.search(text) or INJECTION_MARKERS.search(canon(text)) or _hidden_orders(text)
+        hidden = reveal(text)
+        if hidden:
+            m = m or _smuggled(text)
+            raw = text  # message headers are split on what the reader sees
+            text = text + "\n\n" + "\n\n".join(hidden)
+        else:
+            raw = text
         for vals in indicators(text).values():
             for v in vals:
                 if v not in self.untrusted or (m and not self.untrusted[v].injected):
@@ -412,7 +461,7 @@ class TaintStore:
                     self.orders.append([_norm(canon(sent)), list(kinds), src, to_ai])
         self.orders = self.orders[-MAX_ORDERS:]
         heads = []
-        for sm in SENDER_LINE.finditer(text):
+        for sm in SENDER_LINE.finditer(raw):
             reply_to = sm.group(1).lower().replace("_", "-") in ("reply-to", "replyto")
             for kind in ("email", "phone"):
                 for v in indicators(sm.group(2)).get(kind, ()):
@@ -423,7 +472,7 @@ class TaintStore:
             if not reply_to:
                 heads.append(sm)
         if heads:
-            self._add_messages(text, heads, seq, bool(m))
+            self._add_messages(raw, heads, seq, bool(m))
         if m:
             self.injection_seen.append(TaintSource(tool, _snippet(text, m.group(0)), injected=True, label=label))
 
@@ -437,11 +486,12 @@ class TaintStore:
             end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
             seg = text[start:end]
             orders = bool(any_orders and (INJECTION_MARKERS.search(seg) or INJECTION_MARKERS.search(canon(seg))
-                                          or _hidden_orders(seg)))
+                                          or _hidden_orders(seg) or _smuggled(seg)))
             line = canon(sm.group(2))
             addrs = sorted(indicators(line).get("email", ()))
             if orders:
-                self.in_orders |= {v for v in indicators(seg).get("email", ()) if v not in addrs}
+                hid = "\n".join(reveal(seg))
+                self.in_orders |= {v for v in indicators(seg + "\n" + hid).get("email", ()) if v not in addrs}
             for a in addrs:
                 local = a.split("@")[0]
                 words = re.findall(r"[a-z]{2,30}", EMAIL.sub(" ", line).lower()) + re.findall(r"[a-z]{2,30}", local)
