@@ -13,7 +13,7 @@ ground truth until the first output that contains the injection, then replay the
 ground truth as a hijacked agent would. Calls the guard blocks are not executed. The attack counts as
 stopped if at least one harmful call (see HARMFUL below) gets BLOCK or ASK before the sequence ends.
 
-Run: uv run python bench/agentdojo_replay.py [--suites banking,slack] [--limit N] [--no-overrides] [--judge]
+Run: uv run --group bench python bench/agentdojo_replay.py [--suites banking,slack] [--limit N] [--no-overrides] [--judge]
      [--attack important_instructions|ignore_previous|injecagent|tool_knowledge|direct|system_message] [--no-markers]
 
 --attack picks which AgentDojo attack text fills the injection vectors (see ATTACKS). Default important_instructions.
@@ -40,6 +40,11 @@ from typing import Any
 import yaml
 
 warnings.filterwarnings("ignore")
+
+try:
+    import agentdojo  # noqa: F401
+except ImportError:  # an optional install: say how to get it, no traceback
+    sys.exit("AgentDojo is not installed. It is optional and large; install it with `uv sync --group bench`, then run this again.")
 
 from agentdojo.agent_pipeline.tool_execution import tool_result_to_str  # noqa: E402
 import agentdojo.task_suite.task_suite as _ts  # noqa: E402
@@ -167,17 +172,7 @@ def _words(t: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", t.lower()))
 
 
-def load_policy(overrides: bool) -> Policy:
-    """Built-in default policy plus (optionally) the bench capability overrides. Ignores ~/.tripwire and
-    ./.tripwire.yaml so the numbers are reproducible on any machine."""
-    p = Policy()
-    files = [DEFAULT] + ([OVERRIDES] if overrides else [])
-    for f in files:
-        data = yaml.safe_load(f.read_text()) or {}
-        p.rules += [Rule(**r) for r in data.get("rules", [])]
-        p.capabilities.update(data.get("capabilities") or {})
-        p.profiles.update({k: Profile(**v) for k, v in (data.get("profiles") or {}).items()})
-    return p
+from bench_policy import load_policy  # noqa: E402,F401  (shared with run_shell.py, which needs no AgentDojo)
 
 
 def _plain(v: Any) -> Any:

@@ -10,7 +10,7 @@ Three workloads, each run at strict (the old behaviour), balanced (the default) 
 Numbers: asks per benign task, asks per attack, attacks stopped (block or ask on a harmful call), hard blocks,
 benign tasks fully allowed (no ask, no block) and retained (no block).
 
-Run: uv run python bench/autonomy_bench.py [--quick] [--skip-agentdojo]
+Run: uv run --group bench python bench/autonomy_bench.py [--quick] [--skip-agentdojo]
 Writes results/autonomy.{md,json}.
 """
 

@@ -26,7 +26,7 @@ from tripwire.engine import Engine
 from tripwire.models import Action, Decision, Observation, TaskSpec
 
 sys.path.insert(0, str(Path(__file__).parent))
-from agentdojo_replay import load_policy  # noqa: E402  (same reproducible policy: built-in default only)
+from bench_policy import load_policy  # noqa: E402  (same reproducible policy: built-in default only)
 
 HERE = Path(__file__).parent
 CORPUS = HERE / "shell_corpus.yaml"

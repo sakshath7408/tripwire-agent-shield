@@ -1,6 +1,6 @@
 """Every benchmark from scratch, no LLM, zero cost, about a minute on a laptop.
 
-Run: uv run python bench/run_all.py [--quick] [--workers N]
+Run: uv run --group bench python bench/run_all.py [--quick] [--workers N]
 
 Prints two tables:
 1. The headline (default AgentDojo attack plus the shell corpus), written to results/summary.{md,json} as before.

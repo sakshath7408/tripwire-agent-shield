@@ -2,10 +2,12 @@
 
 Everything here runs locally with no LLM and no cost. Rerun any time the engine changes:
 
+AgentDojo is an optional install (it is large), so plain `uv sync` leaves it out. `uv sync --group bench` adds it; `--group bench` on `uv run` does the same on the fly. The shell corpus needs nothing extra.
+
 ```
-uv run python bench/run_all.py              # everything: headline + attack-by-detector matrix (about 100 s)
-uv run python bench/agentdojo_replay.py     # AgentDojo only (add --no-overrides for raw classify.py)
-uv run python bench/agentdojo_replay.py --attack ignore_previous --no-markers   # one attack text, phrase detector off
+uv run --group bench python bench/run_all.py              # everything: headline + attack-by-detector matrix (about 100 s)
+uv run --group bench python bench/agentdojo_replay.py     # AgentDojo only (add --no-overrides for raw classify.py)
+uv run --group bench python bench/agentdojo_replay.py --attack ignore_previous --no-markers   # one attack text, phrase detector off
 uv run python bench/run_shell.py --show-misses
 ```
 

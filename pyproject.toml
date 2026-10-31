@@ -3,6 +3,8 @@ name = "tripwire"
 version = "0.1.0"
 description = "A local guard between AI agents and their tools: blocks prompt-injected, destructive and data-stealing actions."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Sakshath", email = "srikakulamsakshath@gmail.com" }
 ]
@@ -24,12 +26,19 @@ tripwire = "tripwire.cli:main"
 requires = ["uv_build>=0.12.7,<0.13.0"]
 build-backend = "uv_build"
 
+# `uv sync` installs the runtime plus dev (pytest) only, so a fresh install is quick.
+# Benchmarks need AgentDojo (large): `uv sync --group bench`. UI scripts need Playwright: `uv sync --group ui`
+# (or `uv run --with playwright ...`). Tests that need either skip cleanly without them.
 [dependency-groups]
 dev = [
-    "agentdojo>=0.1.35",
-    "playwright>=1.64.1",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1",
+]
+bench = [
+    "agentdojo>=0.1.35",
+]
+ui = [
+    "playwright>=1.64.1",
 ]
 
 [tool.pytest.ini_options]
