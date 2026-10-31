@@ -44453,8 +44453,8 @@
   "attack_pairs": 609,
   "attack_stopped": 99.5,
   "attack_stopped_by_block": 87.0,
-  "median_latency_ms": 0.254,
-  "p95_latency_ms": 1.15,
+  "median_latency_ms": 0.545,
+  "p95_latency_ms": 4.34,
   "evaluations": 2397
  }
 }

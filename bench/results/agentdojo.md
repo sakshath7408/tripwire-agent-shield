@@ -8,6 +8,6 @@
 | slack | 21 | 100.0% | 85.7% | 7.1% | 105 | 100.0% | 100.0% |
 | **overall** | 97 | 95.9% | 83.5% | 6.2% | 609 | 99.8% | 97.9% |
 
-Median engine latency 0.255 ms, p95 0.96 ms over 2397 evaluations.
+Median engine latency 0.584 ms, p95 4.005 ms over 2397 evaluations.
 
 Injection tasks skipped because AgentDojo ships no ground truth for them: {'workspace': ['injection_task_6', 'injection_task_7', 'injection_task_8', 'injection_task_9', 'injection_task_10', 'injection_task_11', 'injection_task_12', 'injection_task_13'], 'travel': ['injection_task_6']}

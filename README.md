@@ -4,7 +4,7 @@
 
 Built by **Team Sludge** at PARALLAX 2026 · Track 1, AgentShield
 
-[![tests](https://img.shields.io/badge/tests-1%2C400%20passing-2ea44f)](tests/) [![AgentDojo](https://img.shields.io/badge/AgentDojo-99.8%25%20stopped-2ea44f)](bench/results/matrix.md) [![shell false positives](https://img.shields.io/badge/normal%20commands%20flagged-0%20of%2090-2ea44f)](bench/results/shell.md) [![python](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![live demo](https://img.shields.io/badge/live%20demo-open-7c3aed)](https://tripwire-agent-shield.vercel.app/app#demo)
+[![tests](https://img.shields.io/badge/tests-1%2C484%20passing-2ea44f)](tests/) [![AgentDojo](https://img.shields.io/badge/AgentDojo-99.8%25%20stopped-2ea44f)](bench/results/matrix.md) [![shell false positives](https://img.shields.io/badge/normal%20commands%20flagged-0%20of%2090-2ea44f)](bench/results/shell.md) [![python](https://img.shields.io/badge/python-3.12%2B-3776ab)](pyproject.toml) [![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![live demo](https://img.shields.io/badge/live%20demo-open-7c3aed)](https://tripwire-agent-shield.vercel.app/app#demo)
 
 Tripwire sits between an AI agent (Claude Code, or anything that speaks MCP) and the tools it uses: shell, files, web, email, money. It is for anyone who lets an agent read things they didn't write, like a repo, a web page or an inbox.
 
@@ -77,7 +77,7 @@ More commands:
 ```bash
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 1,400 tests (plus 1 expected failure); AgentDojo ones skip without the bench group
+uv run pytest -q                          # 1,484 tests (plus 1 expected failure); AgentDojo ones skip without the bench group
 uv sync --group bench                     # AgentDojo, for the benchmarks (large, optional)
 uv run --group bench python bench/run_all.py   # benchmarks, about 30 s, writes bench/results/summary.md
 ```
@@ -191,7 +191,7 @@ Three words, used the same way everywhere:
 | Shell attacks, no poisoned context (our own corpus) | 100.0% | 94.8% | 96 cmds | 90 of 90 (0 flagged) |
 | Shell attacks, after reading poisoned file (our own corpus) | 100.0% | 100.0% | 96 cmds | 90 of 90 (0 flagged) |
 
-Median decision time is under 1 ms (p95 under 5 ms on AgentDojo). Files: [summary.md](bench/results/summary.md), [agentdojo.md](bench/results/agentdojo.md), [shell.md](bench/results/shell.md).
+Median decision time is under 1 ms on AgentDojo (0.58 ms on the 31 Oct 09:10 run; shell commands take about 1 ms because they are parsed). Files: [summary.md](bench/results/summary.md), [agentdojo.md](bench/results/agentdojo.md), [shell.md](bench/results/shell.md).
 
 **A real model, hijacked and stopped.** A local qwen2.5:7b (Ollama, temperature 0, seed 42) given AgentDojo's attack text on a web page emailed the fake `.env` to the attacker in 4 of 4 runs without Tripwire; with Tripwire all 3 attack steps were hard-blocked in 4 of 4 runs and the real task finished. One scenario, 4 runs, not a benchmark: [ollama_demo.md](bench/results/ollama_demo.md), test `tests/test_bench.py::test_real_local_model_hijacked_then_stopped`.
 
@@ -287,7 +287,7 @@ Privacy: local only, no network lookups by the guard, args redacted before stora
 |---|---|
 | 01 Threat relevance | [demo/THREAT_MODEL.md](demo/THREAT_MODEL.md) names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, [bench/results/](bench/results/) |
-| 03 Technical implementation | `src/tripwire/` (about 11,800 lines of Python), 1,400 tests (plus 1 expected failure), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 03 Technical implementation | `src/tripwire/` (about 11,800 lines of Python), 1,484 tests (plus 1 expected failure), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
 | 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app/app (Demo tab: `/app#demo`; the landing page at `/` has the features and quotable numbers) |
 | 06 Safety, privacy, responsible engineering | local only, no network lookups by the guard, args redacted, fail closed, no admin key on disk, pairing only through a person. See [Security model and hardening](#security-model-and-hardening) and [Known limits](#known-limits) |

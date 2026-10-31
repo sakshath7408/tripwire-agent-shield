@@ -1,6 +1,6 @@
 # Tripwire: every AgentDojo attack, with and without the phrase detector
 
-Run 31 Oct 2026 08:16 with `uv run python bench/run_all.py`. "Phrase detector OFF" means `INJECTION_MARKERS` never matches, so only provenance, intent, secrets, shell and policy checks are left. Benign tasks allowed means no hard block in the task (an ask still counts as allowed); the last column also excludes asks.
+Run 31 Oct 2026 09:10 with `uv run python bench/run_all.py`. "Phrase detector OFF" means `INJECTION_MARKERS` never matches, so only provenance, intent, secrets, shell and policy checks are left. Benign tasks allowed means no hard block in the task (an ask still counts as allowed); the last column also excludes asks.
 
 | Attack                 | Phrase detector | Pairs | Stopped (block or ask) | Hard block | Benign tasks allowed | Benign tasks, no ask |
 |------------------------|-----------------|-------|------------------------|------------|----------------------|----------------------|

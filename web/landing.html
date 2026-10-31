@@ -226,25 +226,25 @@
             <span class="meta">31 Oct 2026 <code>uv run python demo/run_demo.py --planner ollama --model qwen2.5:7b --scenario agentdojo-web --offline --delay 0</code></span>
           </li>
           <li>
-            <span class="big" data-n="96.2" data-d="1" data-t="{n}%">96.2%</span>
+            <span class="big" data-n="99.8" data-d="1" data-t="{n}%">99.8%</span>
             <span class="label">AgentDojo attacks stopped</span>
-            <span class="def">609 attack pairs, 4 suites. 92.1% hard-blocked, with the phrase list on.</span>
+            <span class="def">609 attack pairs, 4 suites. 97.9% hard-blocked, with the phrase list on.</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/summary.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>summary.md</a>
-            <span class="meta">31 Oct 2026 05:40 <code>uv run --group bench python bench/run_all.py</code></span>
+            <span class="meta">31 Oct 2026 09:10 <code>uv run --group bench python bench/run_all.py</code></span>
           </li>
           <li>
-            <span class="big" data-n="92.0" data-d="1" data-t="{n}%">92.0%</span>
+            <span class="big" data-n="99.5" data-d="1" data-t="{n}%">99.5%</span>
             <span class="label">Stopped without the phrase list</span>
-            <span class="def">Same 609 pairs, injection-phrase detector off. Provenance alone. 45.3% hard-blocked.</span>
+            <span class="def">Same 609 pairs, injection-phrase detector off: where values came from, and which sentences gave orders. 87.0% hard-blocked.</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/matrix.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>matrix.md</a>
-            <span class="meta">31 Oct 2026 05:40 <code>bench/agentdojo_replay.py --no-markers</code></span>
+            <span class="meta">31 Oct 2026 09:10 <code>bench/agentdojo_replay.py --no-markers</code></span>
           </li>
           <li>
             <span class="big" data-n="95.9" data-d="1" data-t="{n}%">95.9%</span>
             <span class="label">Normal tasks finish</span>
-            <span class="def">95.9% of 97 AgentDojo user tasks finish with no hard block (82.5% with no question at all).</span>
+            <span class="def">95.9% of 97 AgentDojo user tasks finish with no hard block (83.5% with no question at all).</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/agentdojo.md" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>agentdojo.md</a>
-            <span class="meta">31 Oct 2026 05:40 <code>uv run --group bench python bench/agentdojo_replay.py</code></span>
+            <span class="meta">31 Oct 2026 09:10 <code>uv run --group bench python bench/agentdojo_replay.py</code></span>
           </li>
           <li>
             <span class="big" data-n="96" data-d="0" data-t="{n} of 96">96 of 96</span>
@@ -261,7 +261,7 @@
             <span class="meta">31 Oct 2026 <code>demo/run_demo.py --scenario all --offline --approve all</code></span>
           </li>
           <li>
-            <span class="big" data-n="1400" data-d="0" data-t="{n}">1,400</span>
+            <span class="big" data-n="1484" data-d="0" data-t="{n}">1,484</span>
             <span class="label">Tests, all green</span>
             <span class="def">Plus one expected failure. Red-team rounds each left a test behind.</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/tree/main/tests" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: tests/<wbr></a>
@@ -272,7 +272,7 @@
             <span class="label">Median decision time</span>
             <span class="def">0.143 ms median on AgentDojo (p95 0.486 ms), 0.509 ms on the shell corpus. No model in the loop.</span>
             <a class="proof" href="https://github.com/sakshath7408/tripwire-agent-shield/blob/main/bench/results/summary.json" rel="noopener"><svg aria-hidden="true"><use href="#i-link"/></svg>Proof: bench/<wbr>results/<wbr>summary.json</a>
-            <span class="meta">31 Oct 2026 05:40 <code>uv run --group bench python bench/run_all.py</code></span>
+            <span class="meta">31 Oct 2026 09:10 <code>uv run --group bench python bench/run_all.py</code></span>
           </li>
           <li>
             <span class="big" data-n="100" data-d="0" data-t="{n}%">100%</span>

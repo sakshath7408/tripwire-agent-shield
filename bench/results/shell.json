@@ -253,7 +253,7 @@
    }
   }
  },
- "median_latency_ms": 0.414,
+ "median_latency_ms": 1.267,
  "rows": [
   {
    "kind": "malicious",
@@ -1157,6 +1157,7 @@
    "decision": "block",
    "rules": [
     "shell.guard_tamper",
+    "shell.secret_read",
     "shell.upload_file"
    ],
    "summary": "Blocked: Searches for Tripwire's own files (its key, token or audit log)."
@@ -1170,6 +1171,7 @@
    "decision": "block",
    "rules": [
     "shell.guard_tamper",
+    "shell.secret_read",
     "shell.upload_file",
     "taint.command_from_data",
     "taint.exec_target",
