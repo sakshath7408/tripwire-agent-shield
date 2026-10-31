@@ -247,6 +247,7 @@ def _serve(args) -> int:
         judge = make_judge()
     engine = Engine(judge=judge, autonomy=args.autonomy)
     engine.set_guard_port(args.port)  # agent calls aimed at this port are attacks on the guard
+    engine.set_guard_process(os.getpid(), " ".join([sys.executable] + sys.argv))  # and kills that reach this process
     console = _console(args.link_fd)
     demo_admin = None
     if args.demo_admin:

