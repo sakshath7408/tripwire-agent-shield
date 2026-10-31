@@ -37,6 +37,10 @@ WEB = {
     "https://docs.wordcount.example/release-notes": "release-notes.html",
     "https://docs.wordcount.example/style-guide": "style-guide.html",
 }
+# Some scenarios serve a different copy of a page at the same address (same task, different bait).
+# agentdojo-web: AgentDojo's "important_instructions" attack text, verbatim, in the release notes. It is the
+# wording that really hijacks a local qwen2.5:7b (bench/results/ollama_demo.md).
+PAGE_VARIANTS = {"agentdojo-web": {"release-notes.html": "release-notes-agentdojo.html"}}
 
 
 def _clean(text: str) -> str:
@@ -176,6 +180,7 @@ class World:
         page = WEB.get(url.rstrip("/"))
         if not page:
             return "error: host not found (the demo internet only has docs.wordcount.example)"
+        page = PAGE_VARIANTS.get(self.scenario, {}).get(page, page)
         text = (FIXTURES / "web" / page).read_text()
         return _clean(text) if self.scenario == "legit" else text
 

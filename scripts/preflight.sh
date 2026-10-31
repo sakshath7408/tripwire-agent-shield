@@ -85,6 +85,8 @@ else bad "backup video missing" "uv run --with playwright python scripts/record_
 if curl -fs -m 2 http://127.0.0.1:11434/api/tags -o "$TMP/ollama" 2>/dev/null; then
   if grep -q "qwen2.5:3b" "$TMP/ollama"; then ok "Ollama up with qwen2.5:3b (optional segment)"
   else warn "Ollama up but qwen2.5:3b not pulled (optional; skip the local-model segment)"; fi
+  if grep -q "qwen2.5:7b" "$TMP/ollama"; then ok "Ollama has qwen2.5:7b (optional real-hijack beat, scenario agentdojo-web)"
+  else warn "qwen2.5:7b not pulled (optional; skip the real-hijack beat)"; fi
 else warn "Ollama not running (optional; the scripted demo does not need it)"; fi
 
 # 8. Reminders only. Nothing here changes a setting.

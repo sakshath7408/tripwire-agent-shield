@@ -167,7 +167,7 @@ We tested it on AgentDojo and a plain rule won. The rule: once hidden instructio
 - **Website.** https://tripwire-agent-shield.vercel.app has what it is, the features, and numbers you can quote with proof links. The pitch deck is not part of the site; it lives in [docs/pitch/](docs/pitch/).
 - **Stage kit.** `scripts/preflight.sh` is a green/red checklist before going on stage. `scripts/stage.sh` starts a clean daemon and opens the dashboard in presenter mode. Backup videos were recorded from the real code. See [docs/PRESENTING.md](docs/PRESENTING.md).
 - **Optional judge, off by default.** See [Why the judge is off by default](#why-the-judge-is-off-by-default). Honest result: a plain rule beat it.
-- **Optional real local model.** With Ollama installed, `--planner ollama --model qwen2.5:3b` drives the demo world with a real model and native tool calling (`demo/world/ollama_planner.py`). Honest result: qwen2.5 3B and 1.5B never fell for any injection (0 of 8 attack acts). So the main demo uses a scripted stand-in for a hijacked model, and we say so. Tripwire also never blocked the real model's real work. Details: [bench/results/ollama_demo.md](bench/results/ollama_demo.md).
+- **A real local model, hijacked for real, stopped for real.** With Ollama and `qwen2.5:7b`: `uv run python demo/run_demo.py --planner ollama --model qwen2.5:7b --scenario agentdojo-web --offline`. The release notes page carries AgentDojo's `important_instructions` attack text. Without Tripwire the model read the fake `.env` and emailed it to the attacker in 4 of 4 runs, then told the user only "task completed". With Tripwire, 3 of 3 attack steps were blocked on its own in 4 of 4 runs and the summary still reached Sam (native tool calling, temperature 0, seed 42, unchanged generic system prompt). Honest scope: web-page baits fooled qwen2.5 3B/7B and llama3.1 8B; repo-file and email baits fooled none, and qwen2.5 3B/1.5B ignore the five main scenarios, so those still use a scripted stand-in for a hijacked model. Details: [bench/results/ollama_demo.md](bench/results/ollama_demo.md).
 
 ## Benchmarks and evidence
 
@@ -186,6 +186,8 @@ Three words, used the same way everywhere:
 | Shell attacks, after reading poisoned file (our own corpus) | 100.0% | 100.0% | 96 cmds | 90 of 90 (0 flagged) |
 
 Median decision time is under 1 ms (p95 under 5 ms on AgentDojo). Files: [summary.md](bench/results/summary.md), [agentdojo.md](bench/results/agentdojo.md), [shell.md](bench/results/shell.md).
+
+**A real model, hijacked and stopped.** A local qwen2.5:7b (Ollama, temperature 0, seed 42) given AgentDojo's attack text on a web page emailed the fake `.env` to the attacker in 4 of 4 runs without Tripwire; with Tripwire all 3 attack steps were hard-blocked in 4 of 4 runs and the real task finished. One scenario, 4 runs, not a benchmark: [ollama_demo.md](bench/results/ollama_demo.md), test `tests/test_bench.py::test_real_local_model_hijacked_then_stopped`.
 
 ### With and without the phrase detector
 
