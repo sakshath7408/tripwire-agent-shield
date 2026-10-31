@@ -32,7 +32,8 @@ from typing import Any
 import httpx
 
 from .. import auth
-from .claude_code import base_url, flatten
+from .. import daemon_id
+from .claude_code import IMPOSTOR, _identity, base_url, flatten
 from .pins import Check, PinStore
 
 WAIT = 120
@@ -106,9 +107,20 @@ class Proxy:
 
     async def post(self, path: str, body: dict, timeout: float = 3.0) -> dict:
         assert self.http
-        r = await self.http.post(self.url + path, json=body, timeout=timeout, headers=auth.headers())
+        data = json.dumps(body).encode()
+        headers = {**auth.headers(), "Content-Type": "application/json"}
+        ident = _identity(self.url) if path.startswith("/v1/evaluate") and self.url.startswith("http://") else None
+        nonce = os.urandom(16).hex() if ident else None
+        if nonce:
+            headers[daemon_id.NONCE_HEADER] = nonce
+        r = await self.http.post(self.url + path, content=data, timeout=timeout, headers=headers)
         r.raise_for_status()
-        return r.json()
+        out = r.json()
+        if ident:  # same check as the Claude Code hook: only the real daemon's signed verdicts count
+            want = daemon_id.mac(bytes.fromhex(ident["key"]), nonce, str(out.get("decision") if isinstance(out, dict) else ""), data)
+            if not daemon_id.alive(ident) or not daemon_id.same(r.headers.get(daemon_id.MAC_HEADER, ""), want):
+                return {"decision": "block", "summary": IMPOSTOR.format(port=ident["_port"], why="its answer could not be checked")}
+        return out
 
     async def send_task(self) -> None:
         if self.task_body and not self.task_sent:

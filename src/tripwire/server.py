@@ -40,7 +40,7 @@ import time
 from collections import Counter, deque
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from typing import Literal
@@ -51,6 +51,7 @@ from sse_starlette.sse import EventSourceResponse
 from . import audit as auditlib
 from . import auth
 from . import autonomy as autolib
+from . import daemon_id
 from .analyzers.secrets import redact
 from .engine import Engine
 from .models import Action, Decision, Observation, TaskSpec, Verdict
@@ -213,6 +214,8 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     app.state.engine = engine
     app.state.audit = audit
     app.state.token = token
+    # Per-boot key for signing verdicts (daemon_id). Lives in memory; `serve` publishes it for the hook.
+    app.state.verdict_key = os.urandom(32)
     app.state.demo_admin = demo_admin
     app.state.home = home
     app.state.new_pair = new_pair
@@ -469,7 +472,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
                decision=decision.value, body={"verdict": vid, "decision": decision.value, "by": by})
 
     @app.post("/v1/evaluate", response_model=Verdict)
-    async def evaluate(action: Action, wait: float = 0) -> Verdict:
+    async def evaluate(action: Action, request: Request, response: Response, wait: float = 0) -> Verdict:
         agent, parent, trace = who(action)
         action.agent, action.parent = agent, parent
         v = engine.evaluate(action)
@@ -495,6 +498,10 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
             finally:
                 pending.pop(v.id, None)
                 deadlines.pop(v.id, None)
+        nonce = request.headers.get(daemon_id.NONCE_HEADER)
+        if nonce:  # the hook checks this, so an impostor on the port can't just answer "allow"
+            response.headers[daemon_id.MAC_HEADER] = daemon_id.mac(app.state.verdict_key, nonce[:128], v.decision.value,
+                                                                   await request.body())
         return v
 
     def record_rule(op: str, rule: autolib.LearnedRule, by: str) -> None:

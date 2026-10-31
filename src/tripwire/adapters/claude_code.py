@@ -34,6 +34,8 @@ import socket
 import sys
 from typing import Any, TextIO
 
+from .. import daemon_id
+
 DEFAULT_URL = "http://127.0.0.1:7777"
 TOKEN_HEADER = "X-Tripwire-Token"  # auth.HEADER; auth.py is not imported here to keep the hook fast
 TIMEOUT = 2.0
@@ -79,7 +81,8 @@ def _refusal(status: int, path: str) -> str:
     return f"Tripwire's daemon answered HTTP {status} for {path}, so the call was blocked to be safe."
 
 
-def _http_post(url: str, body: bytes, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+def _http_post(url: str, body: bytes, headers: dict[str, str], timeout: float, out_headers: dict | None = None
+               ) -> tuple[int, bytes]:
     """A tiny HTTP/1.1 client over a plain socket. urllib.request costs ~100 ms of imports on every tool call,
     and the daemon only ever listens on plain http on localhost."""
     rest = url.split("://", 1)[1]
@@ -113,6 +116,8 @@ def _http_post(url: str, body: bytes, headers: dict[str, str], timeout: float) -
     except (IndexError, ValueError):
         raise DaemonDown("not an HTTP response") from None
     hdrs = {k.strip().lower(): v.strip() for k, _, v in (ln.decode("latin-1").partition(":") for ln in lines[1:])}
+    if out_headers is not None:
+        out_headers.update(hdrs)
     if "chunked" in hdrs.get("transfer-encoding", "").lower():
         out, rest_b = [], payload
         while rest_b:
@@ -137,8 +142,14 @@ def post(path: str, body: dict, timeout: float = TIMEOUT) -> dict:
     tok = _token()
     if tok:
         headers[TOKEN_HEADER] = tok
+    ident, nonce, got = None, None, {}
+    if path.startswith("/v1/evaluate") and url.startswith("http://"):
+        ident = _identity(url)
+        if ident is not None:
+            nonce = os.urandom(16).hex()
+            headers[daemon_id.NONCE_HEADER] = nonce
     if url.startswith("http://"):
-        status, payload = _http_post(url, data, headers, timeout)
+        status, payload = _http_post(url, data, headers, timeout, got)
     else:  # https or anything unusual: the standard library handles it
         import urllib.error
         import urllib.request
@@ -152,7 +163,31 @@ def post(path: str, body: dict, timeout: float = TIMEOUT) -> dict:
             raise DaemonDown(str(e)) from e
     if status >= 400:  # daemon answered but refused: not "down", still an error
         raise Refused(_refusal(status, path))
-    return json.loads(payload or b"{}")
+    out = json.loads(payload or b"{}")
+    if ident is not None:
+        port = ident["_port"]
+        if not daemon_id.alive(ident):
+            raise Refused(IMPOSTOR.format(port=port, why="the Tripwire daemon that started there is no longer running"))
+        want = daemon_id.mac(bytes.fromhex(ident["key"]), nonce, str(out.get("decision") if isinstance(out, dict) else ""), data)
+        if not daemon_id.same(str(got.get(daemon_id.MAC_HEADER.lower(), "")), want):
+            raise Refused(IMPOSTOR.format(port=port, why="its answer was not signed by the Tripwire daemon"))
+    return out
+
+
+IMPOSTOR = ("Something other than Tripwire is answering on port {port} ({why}), so this call was blocked. "
+            "Restart Tripwire from your own terminal with scripts/restart_daemon.sh.")
+
+
+def _identity(url: str) -> dict | None:
+    """The real daemon's published identity for this URL's port (daemon_id). None = nothing to check against."""
+    rest = url.split("://", 1)[-1].split("/", 1)[0]
+    port = rest.rsplit(":", 1)[-1] if ":" in rest else ""
+    if not port.isdigit():
+        return None
+    e = daemon_id.lookup(int(port))
+    if e is not None:
+        e["_port"] = port
+    return e
 
 
 def flatten(value: Any, limit: int = MAX_OBSERVE) -> str:

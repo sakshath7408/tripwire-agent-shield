@@ -300,6 +300,11 @@ def _serve(args) -> int:
         if hint:
             print(hint)
     sys.stdout.flush()
+    from . import daemon_id
+    try:  # the hook only trusts verdicts signed with this boot's key, from this PID
+        daemon_id.publish(str(app.state.home), args.port, app.state.verdict_key)
+    except OSError as e:
+        print(f"Could not write {daemon_id.FILE} ({e}); hooks will not be able to check this daemon.", file=sys.stderr)
     config = uvicorn.Config(app, log_level="warning")
     uvicorn.Server(config).run(sockets=[sock])
     return 0
