@@ -138,7 +138,16 @@
     if (pattern) return `"${pattern}"${path ? " in " + (relPath(path, cwd) || ".") : ""}`;
     if (path) return relPath(path, cwd);
     const json = JSON.stringify(a);
-    return json === "{}" ? "(no arguments)" : json.length > 160 ? json.slice(0, 157) + "..." : json;
+    if (json === "{}") return NO_ARGS[String(v.action.tool || "").toLowerCase()] || humanTool(v.action.tool);
+    return json.length > 160 ? json.slice(0, 157) + "..." : json;
+  }
+
+  // Tools that take no arguments read better as what they do than as "(no arguments)".
+  const NO_ARGS = { read_inbox: "Read your inbox", get_inbox: "Read your inbox", list_emails: "Read your inbox",
+    get_balance: "Check your balance", get_unread_emails: "Read your unread emails" };
+  function humanTool(tool) {
+    const n = toolParts(String(tool || "tool")).name.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim().toLowerCase();
+    return n ? n[0].toUpperCase() + n.slice(1) : "Tool call";
   }
 
   const CAPWORD = { read: "file read", write: "file edit", exec: "command", fetch: "web fetch", send: "message",
@@ -152,7 +161,9 @@
     s = s.replace(/^(?:Blocked|Allowed) on its own:\s*(\S)/, (_, c) => c.toUpperCase());
     s = s.replace(/\s*Judge:\s.*$/, "");
     const m = s.match(/^Looks like a normal (\w+) action\.(.*)$/);
-    if (m) s = `Normal ${CAPWORD[m[1]] || m[1]}, nothing risky found.${m[2]}`;
+    // "file read" is wrong for an inbox or a balance: say "read" when the call names no file.
+    const fileless = m && m[1] === "read" && !first(v.action.args || {}, ["file_path", "path", "notebook_path", "filename", "file", "pattern"]);
+    if (m) s = `Normal ${fileless ? "read" : CAPWORD[m[1]] || m[1]}, nothing risky found.${m[2]}`;
     return s;
   }
 
@@ -352,7 +363,7 @@
   const PATH_ICON = { task: "user", source: "doc", value: "pin", tool: "agent", verdict: "shield" };
   function pathStepHtml(s, opt) {
     const cls = `path-step path-${s.k} is-${s.trust}${s.empty ? " is-empty" : ""}`;
-    const text = s.k === "value" || s.k === "tool" ? `<code class="path-text">${esc(s.text)}</code>` : `<span class="path-text">${esc(s.text)}</span>`;
+    const text = s.k === "value" || s.k === "tool" ? `<code class="path-text" title="${esc(s.text)}">${esc(s.text)}</code>` : `<span class="path-text">${esc(s.text)}</span>`;
     const pill = s.trust === "trusted" ? `<span class="path-pill">trusted</span>` : s.trust === "injected" ? `<span class="path-pill">untrusted</span>` : s.trust === "untrusted" ? `<span class="path-pill">untrusted</span>` : "";
     const snippet = s.snippet && !opt.mini ? `<div class="path-snippet">…${markSnippet(s.snippet, s.value)}…</div>` : "";
     const sub = s.sub ? `<div class="path-sub">${esc(s.sub)}</div>` : "";
@@ -739,7 +750,7 @@
       // Simple: what happened, why, where it came from, and the buttons. No numbers, ids or hashes.
       const why = (v.findings || []).filter((f) => f.message !== headline).sort((a, b) => ctx(a) - ctx(b) || b.severity - a.severity);
       const evidence = (v.findings || []).filter((f) => f.evidence).sort((a, b) => ctx(a) - ctx(b) || b.severity - a.severity);
-      const seen = new Set();
+      const uniq = uniqEvidence();
       el.detailBody.innerHTML = `
         <div class="d-top"><div class="d-head"><div>${badge(v.decision)}${byHtml(v)}</div>
           <button type="button" class="d-close" data-close aria-label="Close details">${icon("close")}</button></div>
@@ -751,12 +762,15 @@
           ${path ? "" : `<div class="d-act">${esc(renderAct(v))}</div>`}</div>
         ${why.length ? `<div class="d-section"><h3>Why</h3><ul class="d-why">${why.map((f) => `<li>${esc(f.message)}</li>`).join("")}</ul></div>`
           : v.decision === "allow" ? `<div class="d-section"><h3>Why</h3><p class="d-plain">${wentToHuman(v) ? "It needed an OK first, and got one." : "Nothing risky found. It fits what you asked."}</p></div>` : ""}
-        ${evidence.length && !(path && path.source) ? `<div class="d-section"><h3>Where it came from</h3>${evidence.filter((f) => { const k = f.evidence.slice(0, 80); if (seen.has(k)) return false; seen.add(k); return true; }).map((f) =>
+        ${evidence.length && !(path && path.source) ? `<div class="d-section"><h3>Where it came from</h3>${evidence.filter((f) => uniq(f.evidence)).map((f) =>
           `<div class="evidence"><div class="ev-src">${icon("doc")}From ${esc(evidenceSource(f))}, not from you</div><div class="ev-text">…${highlight(f.evidence, v, f)}…</div></div>`).join("")}</div>` : ""}
         ${v.action.parent ? `<p class="d-plain d-spawned-note">Started by <b>${esc(agentName(v.action.parent))}</b>.</p>` : ""}`;
       return;
     }
 
+    // The same snippet often backs two findings (and the attack path above): show it once.
+    const uniqD = uniqEvidence(path && path.steps ? path.steps.map((x) => x.snippet).filter(Boolean) : []);
+    const showEv = new Set(findings.filter((f) => f.evidence && uniqD(f.evidence)));
     el.detailBody.innerHTML = `
       <div class="d-top"><div class="d-head"><div>${badge(v.decision)}${byHtml(v)}</div>
         <button type="button" class="d-close" data-close aria-label="Close details">${icon("close")}</button></div>
@@ -774,7 +788,7 @@
         ${findings.length ? `<ol class="findings">${findings.map((f) => `
           <li class="finding${f.message === cleanSummary(v) ? " is-headline" : ""}" data-lvl="${lvl(f.severity)}">
             <div class="f-msg"><span class="sev" data-lvl="${lvl(f.severity)}" title="Severity ${Math.min(100, f.severity)} of 100">${Math.min(100, f.severity)}</span><span>${esc(f.message)}</span></div>
-            ${f.evidence ? `<div class="evidence"><div class="ev-src">${icon("doc")}From ${esc(evidenceSource(f))}, not from you</div><div class="ev-text">…${highlight(f.evidence, v, f)}…</div></div>` : ""}
+            ${showEv.has(f) ? `<div class="evidence"><div class="ev-src">${icon("doc")}From ${esc(evidenceSource(f))}, not from you</div><div class="ev-text">…${highlight(f.evidence, v, f)}…</div></div>` : ""}
             <div class="f-tags">${f.message === cleanSummary(v) ? `<span class="sev" data-lvl="${lvl(f.severity)}" title="Severity ${Math.min(100, f.severity)} of 100">${Math.min(100, f.severity)}</span>` : ""}<span class="tag">${esc(f.category)}</span><span class="rule">${esc(f.rule)}</span></div>
           </li>`).join("")}</ol>` : `<p class="muted-p">Nothing risky found. It matches a normal ${esc(CAPWORD[v.capability] || "action")} for what you asked.</p>`}
       </div>
@@ -784,6 +798,18 @@
       <details class="d-more"><summary>Full arguments</summary><pre class="json">${esc(JSON.stringify(v.action.args, null, 2))}</pre></details>
       <div class="d-id">${fmtTime(v.ts)} · session ${esc(v.action.session_id)} · via ${esc(v.action.source)} · id ${esc(v.id)}</div>`;
     loadHistory(v);
+  }
+
+  /** A filter that passes each evidence snippet once: a snippet already shown (or contained in one) is dropped. */
+  function uniqEvidence(already = []) {
+    const norm = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const seen = already.map(norm).filter(Boolean);
+    return (text) => {
+      const n = norm(text);
+      if (!n || seen.some((s) => s.includes(n) || n.includes(s))) return false;
+      seen.push(n);
+      return true;
+    };
   }
 
   /** "read a file", "run a command"... for the Simple view's one-liner. */
@@ -1134,6 +1160,11 @@
     setTimeout(() => { el.announce.textContent = `${WORD[v.decision]}: ${cleanSummary(v)}`; }, 50);
   }
 
+  function sayAloud(text) {
+    el.announce.textContent = "";
+    setTimeout(() => { el.announce.textContent = text; }, 50);
+  }
+
   function setView(view) {
     S.view = view;
     el.tabLive.setAttribute("aria-selected", view === "live");
@@ -1176,13 +1207,16 @@
     const label = el.reset.querySelector("span");
     if (!el.reset.dataset.armed) {
       el.reset.dataset.armed = "1";
-      label.textContent = "Click again to clear";
-      armT = setTimeout(() => { delete el.reset.dataset.armed; label.textContent = "Reset"; }, 3000);
+      label.textContent = "Confirm";
+      el.reset.setAttribute("aria-label", "Click again to clear the live view");
+      sayAloud("Click Reset again to clear the live view.");
+      armT = setTimeout(() => { delete el.reset.dataset.armed; label.textContent = "Reset"; el.reset.removeAttribute("aria-label"); }, 3000);
       return;
     }
     clearTimeout(armT);
     delete el.reset.dataset.armed;
     label.textContent = "Reset";
+    el.reset.removeAttribute("aria-label");
     try { await api("/v1/reset", { method: "POST" }); } catch (e) { toast(`Couldn't reset. ${e.message}`); }
   });
 
@@ -1274,8 +1308,19 @@
 
   // ---- first-open guide --------------------------------------------------------
   const TOUR_SEEN = "tw-guide-seen";
-  const CMD_CLAUDE = "uv run tripwire install claude";
-  const CMD_MCP = "uv run tripwire mcp-proxy -- <your mcp server>";
+  // The commands carry this dashboard's own port when it isn't the default, or the hooks would look on 7777.
+  const PORT_ARG = !window.TW && location.port && location.port !== "7777" ? ` --port ${location.port}` : "";
+  const CMD_CLAUDE = `tripwire install claude${PORT_ARG}`;
+  const CMD_MCP = `tripwire mcp-proxy --name myserver -- <your mcp server command>`;
+  // The empty feed shows the same commands (index.html has the defaults).
+  for (const li of document.querySelectorAll(".empty-cmds li")) {
+    const code = li.querySelector("code"), btn = li.querySelector("[data-copy]");
+    if (!code) continue;
+    const cmd = /install claude/.test(code.textContent) ? CMD_CLAUDE : /mcp-proxy/.test(code.textContent) ? CMD_MCP : null;
+    if (!cmd) continue;
+    code.textContent = cmd;
+    if (btn) btn.dataset.copy = cmd;
+  }
   const T = {
     pill: (d, word) => `<span class="badge badge-${d}">${icon(d)}${word}</span>`,
     code: (cmd, label) => `<div class="tour-cmd"><code>${esc(cmd)}</code><button type="button" class="tour-copy" data-copy="${esc(cmd)}" aria-label="Copy ${esc(label)}">${icon("copy")}<span>Copy</span></button></div>`,
@@ -1292,9 +1337,9 @@
         <rect x="224" y="122" width="78" height="30" rx="9" class="tv-box"/><text x="263" y="141" class="tv-t">email, web</text>
         <text x="160" y="152" class="tv-s" text-anchor="middle">Tripwire</text></svg>` },
     { kicker: "Connect", tone: "indigo", title: "One line to connect it.",
-      body: `<p>Claude Code: installs three hooks, every tool call is checked.</p>${T.code(CMD_CLAUDE, "the Claude Code command")}<p>Any MCP agent: put the gateway in front of a server.</p>${T.code(CMD_MCP, "the MCP command")}`,
+      body: `<p>Claude Code: run this inside your project folder. It adds three hooks there, and every tool call in that folder is checked. Add <code>--user</code> to guard every project.</p>${T.code(CMD_CLAUDE, "the Claude Code command")}<p>Any MCP agent: put the gateway in front of a server.</p>${T.code(CMD_MCP, "the MCP command")}`,
       visual: `<svg viewBox="0 0 320 200" class="tv"><rect x="24" y="40" width="272" height="120" rx="14" class="tv-term"/><circle cx="44" cy="58" r="4" fill="#f37078"/><circle cx="58" cy="58" r="4" fill="#e8b35a"/><circle cx="72" cy="58" r="4" fill="#4fc38f"/>
-        <text x="40" y="92" class="tv-code"><tspan fill="#62c9c3">$</tspan> uv run tripwire install claude</text>
+        <text x="40" y="92" class="tv-code"><tspan fill="#62c9c3">$</tspan> tripwire install claude</text>
         <text x="40" y="118" class="tv-code" opacity=".75">hooks installed · 3</text><text x="40" y="140" class="tv-code" opacity=".75">dashboard  http://127.0.0.1:7777</text></svg>` },
     { kicker: "Read the feed", tone: "amber", title: "Three words you need to know.",
       body: `<ul class="tour-list"><li>${T.pill("allow", "Allowed")}<span>Part of your task. Went through.</span></li><li>${T.pill("ask", "Needs your OK")}<span>Unusual. Waits for you.</span></li><li>${T.pill("block", "Blocked")}<span>Taken from hidden instructions, or beyond the agent's permissions.</span></li></ul><p class="tour-small">Every decision has a plain-English reason and the exact text it came from.</p>`,
@@ -1368,6 +1413,7 @@
         try { ok = document.execCommand("copy"); } catch (_2) { /* no clipboard */ } ta.remove();
       }
       c.querySelector("span").textContent = ok ? "Copied" : "Select and copy";
+      sayAloud(ok ? "Copied to the clipboard." : "Could not copy. Select the command and copy it.");
       setTimeout(() => { c.querySelector("span").textContent = "Copy"; }, 1600);
       return;
     }
@@ -1504,7 +1550,8 @@
     tips.el.setAttribute("aria-label", `Tip ${n + 1} of ${tips.list.length}`);
     tips.el.hidden = false; tips.hole.hidden = false;
     tips.el.classList.remove("is-in"); void tips.el.offsetWidth; tips.el.classList.add("is-in");
-    target.scrollIntoView({ block: "center", inline: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+    // "nearest": scroll only when the control is off-screen. "center" nudged the page on every first visit.
+    target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
     placeTip();
     setTimeout(placeTip, 350);
     const a = document.activeElement;
@@ -1668,7 +1715,7 @@
     pairAsked.add(d.id);
     setTimeout(() => {
       const ok = window.confirm(`A terminal ran "tripwire open" and asks to connect a new browser to Tripwire.\n\n` +
-        `Its code: ${d.digits.slice(0, 3)} ${d.digits.slice(3)}\n\nApprove only if you ran it and this matches the code in your terminal. ` +
+        `Its code: ${d.digits.slice(0, 3)} ${d.digits.slice(3)}\n\nPress OK only if you ran it and this matches the code in your terminal. ` +
         `Otherwise press Cancel.`);
       api(`/v1/pair/requests/${encodeURIComponent(d.id)}`, { method: "POST", body: JSON.stringify({ decision: ok ? "allow" : "block" }) })
         .then(() => toast(ok ? "Approved. The new browser opens from your terminal." : "Turned down. No browser was paired."))
