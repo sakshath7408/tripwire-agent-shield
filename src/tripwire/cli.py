@@ -97,6 +97,9 @@ def _main(argv: list[str]) -> int:
         if verb == "install":
             i_.add_argument("--port", type=_port, default=None,
                             help="daemon port the hooks talk to, if not 7777 (saved in the hook command)")
+            i_.add_argument("--sandbox", action="store_true",
+                            help="also turn on Claude Code's OS sandbox for its shell, so the agent can't read Tripwire's "
+                                 "files, reach its port or switch the sandbox off (no root needed)")
     m = sub.add_parser("mcp-proxy", help="guard an MCP stdio server: tripwire mcp-proxy --name NAME -- <cmd...>")
     m.add_argument("--name", default="mcp", help="server name; tools show up as mcp__NAME__tool")
     m.add_argument("--profile", default=None, help="permission profile from the policy YAML for this session")
@@ -125,21 +128,7 @@ def _main(argv: list[str]) -> int:
         return hook_main(args.event)
 
     if args.cmd in ("install", "uninstall"):
-        from .adapters import claude_code
-        try:
-            if args.cmd == "install":
-                path = claude_code.install(project=args.project, user=args.user, port=args.port)
-            else:
-                path = claude_code.uninstall(project=args.project, user=args.user)
-        except ValueError as e:  # settings.json is not valid JSON: never overwrite it
-            print(f"Tripwire did not change anything: {e}", file=sys.stderr)
-            return 1
-        print(f"Tripwire hooks {'installed in' if args.cmd == 'install' else 'removed from'} {path}")
-        if args.cmd == "install":
-            port = args.port or default_port()
-            print(f"Start the daemon with `tripwire serve{'' if port == DEFAULT_PORT else f' --port {port}'}`. "
-                  "While it is down, tool calls are blocked.")
-        return 0
+        return _install(args)
 
     if args.cmd == "mcp-proxy":
         from .adapters import mcp_proxy
@@ -158,6 +147,78 @@ def _main(argv: list[str]) -> int:
     if args.cmd == "serve":
         return _serve(args)
     return 1
+
+
+def _serve_cmd(port: int) -> str:
+    return "tripwire serve" + ("" if port == DEFAULT_PORT else f" --port {port}")
+
+
+def _install(args) -> int:
+    """install / uninstall claude, saying exactly which folder is guarded and what must be running."""
+    from pathlib import Path
+
+    from .adapters import claude_code
+    try:
+        if args.cmd == "uninstall":
+            had = claude_code.has_hooks(project=args.project, user=args.user)
+            path = claude_code.uninstall(project=args.project, user=args.user)
+            if not had:
+                print(f"Nothing to remove: no Tripwire hooks were installed in {path}.")
+                return 0
+            print(f"Tripwire hooks removed from {path}. Claude Code there is no longer guarded.")
+            return 0
+        # A port chosen with TRIPWIRE_PORT while installing is saved too: Claude Code may start without that variable.
+        port = args.port or default_port()
+        path = claude_code.install(project=args.project, user=args.user,
+                                   port=args.port or (port if port != DEFAULT_PORT else None), sandbox=args.sandbox)
+    except ValueError as e:  # settings.json is not valid JSON: never overwrite it
+        print(f"Tripwire did not change anything: {e}", file=sys.stderr)
+        return 1
+    print(f"Tripwire hooks installed in {path}")
+    if args.user:
+        print("Guarded: every Claude Code session you start, in any folder (your user settings).")
+    else:
+        folder = path.parent.parent
+        print(f"Guarded: Claude Code sessions started in {folder}")
+        if (folder / "src" / "tripwire" / "cli.py").is_file():
+            print("Heads up: that is Tripwire's own folder, so only sessions started here are guarded. To guard your "
+                  "project, cd into it and run `tripwire install claude` there (or add --user for every project).")
+        else:
+            print("Other folders are not guarded. Run this again inside each project, or use --user for all of them.")
+    print(f"The daemon must be running for this to work: `{_serve_cmd(port)}` (port {port}). "
+          "While it is down, every tool call is blocked.")
+    hook = claude_code.hook_command(None)
+    if ".venv" in Path(hook.split()[-1] if " -m " not in hook else hook.split(" -m ")[0]).parts:
+        print("The hooks run Tripwire from this checkout's .venv. Keep that folder where it is (or use "
+              "`uv tool install .` from the Tripwire folder, then install again).")
+    if args.sandbox:
+        _sandbox_summary(claude_code, None if args.user else path.parent.parent, port)
+    else:
+        print("For an OS-enforced boundary without root, run this again with --sandbox (see docs/HARDENING.md).")
+    return 0
+
+
+def _sandbox_summary(claude_code, project, port: int) -> None:
+    g = claude_code.guard_paths(project)
+    print("\nClaude Code's OS sandbox is on for the agent's shell (Bash and everything it starts). "
+          "macOS Seatbelt / Linux bubblewrap now enforce:")
+    print("  - No reading or writing: " + ", ".join(g["guards"] + g["settings"]))
+    print("  - No writing: this project's .claude/settings*.json, and Tripwire's code (the hook runs it outside the "
+          "sandbox): " + ", ".join(g["code"]))
+    print(f"  - No direct connection to any localhost port on macOS (that includes the daemon on {port}), "
+          "and no listening on a port, so nothing can pose as the daemon")
+    print("  - No escape: dangerouslyDisableSandbox is ignored, and Claude Code refuses to start if the sandbox can't")
+    print("  - Writes only inside this project and the temp folder; TRIPWIRE_TOKEN is removed from the shell's environment")
+    print("  - No signals to processes outside the sandbox: kill/pkill of the daemon fail with 'operation not "
+          "permitted' (macOS; tested with Claude Code 2.1.314)")
+    print("Read, Edit and Write tools aren't sandboxed: permissions.deny rules block them on the same paths. "
+          "MCP tools go through `tripwire mcp-proxy`.")
+    print("Not covered: programs you run yourself, and hooks or MCP servers (they run outside the sandbox by design).")
+    print("Expect some friction: writes outside this project (e.g. ~/.cache/uv, ~/.npm) and network hosts you haven't "
+          "allowed are refused or asked about. See docs/HARDENING.md for allowWrite / allowedDomains.")
+    print("Dev servers: a sandboxed command can't reach localhost:3000 either. If you need that, set "
+          "sandbox.network.allowLocalBinding to true in .claude/settings.local.json (this re-opens every local port, "
+          "the daemon's too; the engine still blocks calls to it).")
 
 
 def _bind(port: int):

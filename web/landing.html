@@ -207,7 +207,7 @@
         <li><svg aria-hidden="true"><use href="#f-chain"/></svg><h3>Tamper-evident audit chain</h3><p>Every task, output, verdict and click is one hash-chained, signed row. Edit one and <code>tripwire audit verify</code> names it. Sub-agents land in one tree.</p></li>
         <li><svg aria-hidden="true"><use href="#f-pin"/></svg><h3>MCP gateway with signed tool pins</h3><p>Put any MCP server behind the proxy. Tool descriptions are pinned on first use, so a rug-pull or a poisoned description is caught.</p></li>
         <li><svg aria-hidden="true"><use href="#f-hook"/></svg><h3>Claude Code hooks</h3><p><code>tripwire install claude</code> adds a PreToolUse hook. It never widens Claude Code's own permissions, and it denies when the daemon is down.</p></li>
-        <li><svg aria-hidden="true"><use href="#f-lock"/></svg><h3>Hardened mode</h3><p><code>tripwire harden</code> runs the daemon as its own OS user. That is a real boundary: code running as you can no longer stop or replace the guard.</p></li>
+        <li><svg aria-hidden="true"><use href="#f-lock"/></svg><h3>Hardened mode</h3><p><code>tripwire install claude --sandbox</code> puts the agent's shell in an OS sandbox, no root needed. <code>tripwire harden</code> runs the daemon as its own OS user, so nothing running as you can stop or replace the guard.</p></li>
       </ul>
     </section>
 

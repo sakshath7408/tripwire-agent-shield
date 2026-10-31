@@ -451,24 +451,178 @@ def _backup_path(path):
     return home / "installs" / (hashlib.sha256(str(path).encode()).hexdigest()[:16] + ".json")
 
 
-def install(project: str | None = None, user: bool = False, command: str | None = None, port: int | None = None):
+# ---- OS sandbox (Claude Code's own: Seatbelt on macOS, bubblewrap on Linux) ----------------------------
+# Docs: https://code.claude.com/docs/en/sandboxing and /settings-reference (sandbox.*), /permissions (Read/Edit).
+# The sandbox wraps the Bash tool and every process it starts. Hooks run OUTSIDE it, so the hook can still read the
+# token and reach the daemon while the agent's shell can't. Read/Edit/Write/Grep/Glob are not sandboxed: they follow
+# permissions.deny, and only Read(...) and Edit(...) path rules ever match (Write/Glob path rules never do).
+
+def guard_paths(project_dir) -> dict:
+    """The folders and files the agent's shell must never read or write, as absolute paths."""
+    from pathlib import Path
+    home = Path.home()
+    guards = [home / ".tripwire", (home / ".tripwire").resolve()]
+    th = os.environ.get("TRIPWIRE_HOME")
+    if th:
+        guards.append(Path(os.path.abspath(os.path.expanduser(th))))
+    settings = [home / ".claude" / "settings.json", home / ".claude" / "settings.local.json"]
+    # The project's own settings files: write-denied only. Denying reads broke `git add -A` and `git status` in every
+    # repo that commits .claude/settings.json (live run 31 Oct), and they hold no secret (the hook command and port).
+    project = []
+    if project_dir is not None:  # --user installs guard every project; each one's own files are protected paths anyway
+        for proj in (Path(os.path.abspath(os.path.expanduser(str(project_dir)))), Path(project_dir).expanduser().resolve()):
+            project += [proj / ".claude" / "settings.json", proj / ".claude" / "settings.local.json"]
+    # The hook runs Tripwire's code outside the sandbox, so that code (venv + package) must not be writable either.
+    import tripwire as _pkg
+    code = [Path(sys.prefix).resolve(), Path(_pkg.__file__).resolve().parent]
+    uniq = lambda xs: list(dict.fromkeys(str(x) for x in xs))  # noqa: E731
+    return {"guards": uniq(guards), "settings": uniq(settings), "project": uniq(project), "code": uniq(code)}
+
+
+def sandbox_settings(project_dir, port: int | None = None) -> dict:
+    """What `install claude --sandbox` merges into the project's settings (lists are added to, scalars set)."""
+    port = int(port or os.environ.get("TRIPWIRE_PORT") or 7777)
+    g = guard_paths(project_dir)
+    no_read = g["guards"] + g["settings"]
+    deny = []
+    for p in g["guards"]:
+        deny += [f"Read(/{p})", f"Read(/{p}/**)", f"Edit(/{p})", f"Edit(/{p}/**)"]
+    for p in g["settings"]:
+        deny += [f"Read(/{p})", f"Edit(/{p})"]
+    for p in g["project"]:
+        deny += [f"Edit(/{p})"]
+    for p in g["code"]:
+        deny += [f"Edit(/{p}/**)"]
+    deny.append("Bash(dangerouslyDisableSandbox:true)")
+    return {
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,          # no sandbox = Claude Code refuses to start, never runs unsandboxed
+            "allowUnsandboxedCommands": False,  # dangerouslyDisableSandbox is ignored
+            "autoAllowBashIfSandboxed": False,  # Tripwire never widens what Claude Code allows without asking
+            "filesystem": {"denyRead": no_read, "denyWrite": no_read + g["project"] + g["code"]},
+            "network": {
+                "allowLocalBinding": False,  # macOS: no listening, no direct connection to any localhost port
+                "deniedDomains": [f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}", f"0.0.0.0:{port}"],
+            },
+            "credentials": {"envVars": [{"name": "TRIPWIRE_TOKEN", "mode": "deny"}]},
+        },
+        "permissions": {"deny": deny},
+    }
+
+
+def _walk(add: dict, prefix: tuple = ()):
+    """(key path, value) for every leaf of a settings fragment; lists are leaves."""
+    for k, v in add.items():
+        if isinstance(v, dict):
+            yield from _walk(v, prefix + (k,))
+        else:
+            yield prefix + (k,), v
+
+
+def merge_sandbox(settings: dict, add: dict) -> dict:
+    """Merge `add` into settings. Returns a record of exactly what changed, so uninstall can undo only that:
+    {"lists": [[path, [entries we added]]], "scalars": [[path, had_before, old_value]]}."""
+    record: dict = {"lists": [], "scalars": []}
+    for path, value in _walk(add):
+        node = settings
+        for k in path[:-1]:
+            if not isinstance(node.get(k), dict):
+                node[k] = {}
+            node = node[k]
+        key = path[-1]
+        if isinstance(value, list):
+            cur = node.get(key) if isinstance(node.get(key), list) else []
+            new = [x for x in value if x not in cur]
+            node[key] = cur + new
+            if new:
+                record["lists"].append([list(path), new])
+        else:
+            had = key in node
+            old = node.get(key)
+            if had and old == value:
+                continue
+            node[key] = value
+            record["scalars"].append([list(path), had, old])
+    return record
+
+
+def strip_sandbox(settings: dict, record: dict) -> dict:
+    """Undo a merge_sandbox record: drop the list entries we added, put scalars back, prune what became empty."""
+    def parent(path):
+        node = settings
+        for k in path[:-1]:
+            node = node.get(k) if isinstance(node, dict) else None
+            if not isinstance(node, dict):
+                return None
+        return node
+    for path, added in record.get("lists", []):
+        node = parent(path)
+        if node is not None and isinstance(node.get(path[-1]), list):
+            node[path[-1]] = [x for x in node[path[-1]] if x not in added]
+            if not node[path[-1]]:
+                del node[path[-1]]
+    for path, had, old in record.get("scalars", []):
+        node = parent(path)
+        if node is None:
+            continue
+        if had:
+            node[path[-1]] = old
+        else:
+            node.pop(path[-1], None)
+    for path, *_ in record.get("lists", []) + record.get("scalars", []):  # prune empty dicts we created
+        for depth in range(len(path) - 1, 0, -1):
+            node = parent(path[:depth])
+            if node is not None and node.get(path[depth - 1]) == {}:
+                del node[path[depth - 1]]
+    return settings
+
+
+def install(project: str | None = None, user: bool = False, command: str | None = None, port: int | None = None,
+            sandbox: bool = False):
     path = settings_path(project, user)
     existed = path.exists()
     original = path.read_text() if existed else None
     claude_dir_existed = path.parent.exists()
-    data = merge(_load(path), command or hook_command(port))
+    bp = _backup_path(path)
+    try:
+        prev = json.loads(bp.read_text()) if bp.exists() else None
+    except (OSError, ValueError):
+        prev = None
+    if prev is not None and prev.get("path") != str(path):
+        prev = None
+    data = _load(path)
+    if prev and prev.get("sandbox"):  # an earlier --sandbox install: undo it first, so re-running is idempotent
+        strip_sandbox(data, prev["sandbox"])
+    data = merge(data, command or hook_command(port))
+    record = merge_sandbox(data, sandbox_settings(None if user else path.parent.parent, port)) \
+        if sandbox else None
     _save(path, data)
     try:
-        bp = _backup_path(path)
-        prev = json.loads(bp.read_text()) if bp.exists() else None
-        if prev is None or prev.get("path") != str(path):
+        if prev is None:
             prev = {"path": str(path), "existed": existed, "text": original, "dir_existed": claude_dir_existed}
         prev["installed"] = data  # what the file holds right after install; uninstall restores only if unchanged
+        prev["sandbox"] = record
         bp.parent.mkdir(parents=True, exist_ok=True)
         bp.write_text(json.dumps(prev))
     except (OSError, ValueError):
         pass  # no backup: uninstall still removes exactly our hooks, just not the original formatting
     return path
+
+
+def has_hooks(project: str | None = None, user: bool = False) -> bool:
+    """True if this settings file holds any Tripwire hook."""
+    path = settings_path(project, user)
+    if not path.exists():
+        return False
+    try:
+        hooks = _load(path).get("hooks")
+    except ValueError:
+        return False
+    if not isinstance(hooks, dict):
+        return False
+    return any(_is_ours(h) for groups in hooks.values() if isinstance(groups, list) for g in groups
+               if isinstance(g, dict) and isinstance(g.get("hooks"), list) for h in g["hooks"])
 
 
 def uninstall(project: str | None = None, user: bool = False):
@@ -493,6 +647,8 @@ def uninstall(project: str | None = None, user: bool = False):
                 except OSError:
                     pass
     else:
+        if backup and backup.get("path") == str(path) and backup.get("sandbox"):
+            strip_sandbox(current, backup["sandbox"])
         _save(path, _strip(current))
     try:
         bp.unlink()

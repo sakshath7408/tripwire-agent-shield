@@ -236,7 +236,17 @@ Only a paired dashboard can. A browser is paired only through a person: a one-ti
 
 This stops an agent that can read every file in `~/.tripwire` and talk to the daemon directly. It does not stop a process running as your OS user that reads your browser's cookies, attaches a debugger to the daemon, or kills it and puts its own server on the port.
 
-The engine blocks the agent's kills that can reach the daemon and anything it starts on the daemon's port, and the hook denies verdicts that aren't signed with the daemon's per-boot key or whose daemon PID is gone. A program running as you outside the agent can still read that key, so this raises the bar, not a wall. For that, `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary.
+The engine blocks the agent's kills that can reach the daemon and anything it starts on the daemon's port, and the hook denies verdicts that aren't signed with the daemon's per-boot key or whose daemon PID is gone. A program running as you outside the agent can still read that key, so this raises the bar, not a wall.
+
+There are three levels. Pick the strongest one you can:
+
+| Level | What enforces it | Needs root | Command |
+|---|---|---|---|
+| 1. Engine rules | Tripwire's checks on every tool call (pattern and provenance) | No | `tripwire install claude` |
+| 2. OS sandbox for Claude Code (recommended) | macOS Seatbelt / Linux bubblewrap, through Claude Code's own sandbox | No | `tripwire install claude --sandbox` |
+| 3. Separate OS user | The daemon runs as `_tripwire`; you can't touch its files or process | Yes (sudo) | `tripwire harden` |
+
+**Level 2** turns on Claude Code's sandbox for the agent's shell and adds deny rules for its file tools. Tested with real Claude Code 2.1.314 on macOS, with Tripwire's hooks removed so only the OS was in the way: a disguised Python read of the token, writes into `~/.tripwire` and the settings files, a TCP connect to the daemon's port, a listener on any port, `kill`/`pkill` of the daemon and `dangerouslyDisableSandbox` all failed with "Operation not permitted" or were refused. With the hooks back on, the engine missed the disguised token read and the OS stopped it. A normal task (write code, run unittest, git commit) still worked. It covers the Bash tool only: Read/Edit/Write/Grep are held by `permissions.deny`, MCP tools by `tripwire mcp-proxy`. Details and the honest gaps: [docs/HARDENING.md](docs/HARDENING.md#level-2-os-sandbox-for-claude-code-no-root).
 
 A session that saw hidden instructions can't be re-tasked over the API, and a reset never forgets what it saw. On top of that, the engine blocks the routes to the guard that reviews found (each is a test in `tests/test_redteam*.py` and `tests/test_guard4.py`), but the control above doesn't depend on catching every one.
 
@@ -281,7 +291,7 @@ Privacy: local only, no network lookups by the guard, args redacted before stora
 ## Known limits
 
 > **Read this before you trust it.**
-> - **Same OS user = defence in depth, not a sandbox.** Everything in [Security model and hardening](#security-model-and-hardening) stops an agent, not a program running as you outside the agent. `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. Steps: [docs/HARDENING.md](docs/HARDENING.md).
+> - **Same OS user = defence in depth, not a sandbox.** Everything in [Security model and hardening](#security-model-and-hardening) stops an agent, not a program running as you outside the agent. `tripwire install claude --sandbox` puts Claude Code's shell behind an OS sandbox without root; `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary for everything. Steps: [docs/HARDENING.md](docs/HARDENING.md).
 > - **The hijacked agent in the demo is scripted.** Real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged.
 > - **Intent is keyword matching.** If your prompt says "send", "reply" or "pay", that kind of action counts as expected. A send to an address taken from data can still pass if the email carried no hidden-instruction phrasing and the recipient check does not catch it.
 > - **The phrase list is a list.** Without it, AgentDojo drops from 99.8% to 99.5% stopped, and hard blocks from 97.9% to 87.0%. A new wording gets the lower number. The order check that carries the floor reads English imperatives plus a few common verbs in Spanish, French, German, Portuguese and Italian; other languages fall back to the old floor.
@@ -294,7 +304,7 @@ Other limits:
 - Scripts the agent runs (`bash x.sh`, `./x`, `make`, `pytest`'s conftest, `npm test`, `pip install -e .`) are read from disk and judged when they run, and text written through `>`, heredocs, `tee` or `sed -i` is judged like a Write. Code reached only through deeper imports (a test file importing a planted module) is not followed.
 - The MCP poisoned-description check looks for fixed shapes (orders to the AI, "don't tell the user", quiet recipients, key paths, a few languages). A description that dodges all of them is still pinned on first use.
 - Tool calls that do not pass through a hook or the proxy are invisible.
-- A host the attacker already runs code on can stop Tripwire. In default mode that includes a program running as you outside the agent: it can kill the daemon and, after reading `~/.tripwire/daemon.json`, sign verdicts like it. `tripwire harden` closes that.
+- A host the attacker already runs code on can stop Tripwire. In default mode that includes a program running as you outside the agent: it can kill the daemon and, after reading `~/.tripwire/daemon.json`, sign verdicts like it. `tripwire install claude --sandbox` closes that for Claude Code's shell; `tripwire harden` closes it for everything.
 - Commands that run other commands are unwrapped for the common runners (`find -exec`, `xargs`, `awk system()`, `git -c core.pager`/`sshCommand`/`alias`, `GIT_SSH_COMMAND`, `make -f -`, `sed e`, `vim -c '!'`, `parallel`, `env -S`, `timeout`, `sudo`). A runner not on that list is judged only by its own name and arguments.
 - Shell tricks and secret patterns are finite. With no poisoned context, 5 of 96 shell attacks get an ask, not a block. The corpus is ours; review 5 added rows for nested commands and for stopping the guard. Every verdict is in `bench/results/shell.json`.
 - The Claude Code adapter never widens Claude Code's own permissions. An "allow" from Tripwire still goes through Claude Code's normal prompt unless `TRIPWIRE_AUTO_APPROVE=1`.
