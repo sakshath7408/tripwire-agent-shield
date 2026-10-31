@@ -33,7 +33,7 @@ import httpx
 
 from .. import auth
 from .. import daemon_id
-from .claude_code import IMPOSTOR, _identity, base_url, flatten
+from .claude_code import IMPOSTOR, _identity, base_url, flatten, not_running
 from .pins import Check, PinStore
 
 WAIT = 120
@@ -179,7 +179,7 @@ class Proxy:
             if self.fail_open:
                 _log("daemon unreachable, TRIPWIRE_FAIL_OPEN=1 so forwarding")
                 return None
-            return NOT_RUNNING
+            return not_running()
         if v.get("decision") == "allow":
             return None
         if v.get("decision") in ("block", "ask"):

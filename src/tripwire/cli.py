@@ -326,7 +326,9 @@ def _serve(args) -> int:
         return 1
     base = f"http://127.0.0.1:{args.port}"
     app.state.base_url = base + "/" + args.link_path.lstrip("/")  # the one-time link is this + "#pair=<code>"
-    later = f"tripwire open{'' if args.port == default_port() else f' --port {args.port}'}"
+    later = f"tripwire open{'' if args.port == DEFAULT_PORT else f' --port {args.port}'}"
+    app.state.open_cmd = later
+    app.state.serve_cmd = _serve_cmd(args.port)
     if app.state.removed_admin_key:
         print(f"Deleted the old admin key ({auth.legacy_admin_path()}). Tripwire no longer keeps one on disk: an agent "
               f"running as you could read it. Pair browsers with a one-time link from your terminal or `{later}`.")
@@ -340,11 +342,16 @@ def _serve(args) -> int:
         if code:
             console.say(f"Dashboard (one-time link, works once for 10 minutes): {app.state.base_url}#pair={code}")
         else:
-            console.say("Hidden instructions were seen in a saved session, so no link is printed. Open a dashboard "
-                        f"you already paired, or run `{later}` and approve its code"
+            # One clear next step. Enter would only refuse here, so it isn't offered.
+            console.say("No link this time: a saved session saw hidden instructions, and while it is live Tripwire "
+                        "won't hand out new dashboard links.\n"
+                        f"Next step: press Ctrl-C, then run `{_serve_cmd(args.port)} --clear-view` (clears the live "
+                        "view; the attack stays remembered) and it prints a link. Or open a dashboard you already "
+                        f"paired, or run `{later}` and approve its 6 digits"
                         + (" here." if console.interactive else " in that dashboard."))
         if console.interactive:
-            console.say(f"Press Enter here for another one-time link. To approve `{later}`, type the 6 digits it shows.")
+            if code:
+                console.say(f"Press Enter here for another one-time link. To approve `{later}`, type the 6 digits it shows.")
             _read_console(app)
         elif console.out is not sys.stdout:
             # --link-fd: a background daemon must not keep your terminal open (or wait on it) after its one line.
@@ -352,8 +359,8 @@ def _serve(args) -> int:
                 console.out.close()
             console.out = None
     else:
-        print(f"No terminal to show a pairing link in. Run `{later}` (a paired dashboard approves it), or restart "
-              "from your own terminal with scripts/restart_daemon.sh to get a one-time link.")
+        print(f"No terminal to show a pairing link in. Run `{later}` (a paired dashboard approves it), or start "
+              f"`{_serve_cmd(args.port)}` in your own terminal to get a one-time link.")
     if args.port != DEFAULT_PORT:
         print(f"Agents look for port {DEFAULT_PORT} by default. Point them here with TRIPWIRE_PORT={args.port}, "
               f"or `tripwire install claude --port {args.port}`.")
@@ -408,7 +415,7 @@ def _open(port: int, print_only: bool) -> int:
             req = post("/v1/pair/request", {})
             d = req["digits"]
             where = " or ".join({"console": "type them into the terminal running `tripwire serve`",
-                                 "dashboard": "click Approve in a dashboard you already paired (check the digits match)"
+                                 "dashboard": "press OK in the prompt a paired dashboard shows (check the digits match)"
                                  }[w] for w in req["approve_in"])
             print(f"\n    {d[:3]} {d[3:]}\n\nTo pair a new browser, {where}. Waiting up to 5 minutes (Ctrl-C cancels).")
             deadline = time.time() + req["expires_in"]
@@ -423,7 +430,7 @@ def _open(port: int, print_only: bool) -> int:
                     print("Turned down. No browser was paired.")
                     return 1
             if not code:
-                print("Nobody approved it in time. Run `tripwire open` again.")
+                print(f"Nobody approved it in time. Run `tripwire open{'' if port == DEFAULT_PORT else f' --port {port}'}` again.")
                 return 1
     except urllib.error.HTTPError as e:
         print(detail(e))
@@ -485,7 +492,8 @@ def _audit(args) -> int:
                 print(f"note: {n}")
             return 0
         print(f"TAMPERED: {r.problems[0]}")
-        print(f"({r.checked} records before that point are intact.)")
+        if not r.head_missing:
+            print(f"({r.checked} records before that point are intact.)")
         return 1
 
     if not db.exists():

@@ -41,6 +41,17 @@ TOKEN_HEADER = "X-Tripwire-Token"  # auth.HEADER; auth.py is not imported here t
 TIMEOUT = 2.0
 MAX_OBSERVE = 200_000  # characters of tool output sent to the daemon
 NOT_RUNNING = "Tripwire is not running, so this tool call was blocked. Start it with `tripwire serve`."
+
+
+def _serve_hint() -> str:
+    """`tripwire serve`, with the port the hook looks on when it isn't 7777."""
+    url = base_url()
+    port = url.rsplit(":", 1)[-1].split("/", 1)[0] if url.count(":") >= 2 else ""
+    return "tripwire serve" + (f" --port {port}" if port.isdigit() and port != "7777" else "")
+
+
+def not_running() -> str:
+    return f"Tripwire is not running, so this tool call was blocked. Start it with `{_serve_hint()}`."
 EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse")
 
 
@@ -175,7 +186,8 @@ def post(path: str, body: dict, timeout: float = TIMEOUT) -> dict:
 
 
 IMPOSTOR = ("Something other than Tripwire is answering on port {port} ({why}), so this call was blocked. "
-            "Restart Tripwire from your own terminal with scripts/restart_daemon.sh.")
+            "Stop whatever holds that port, then start Tripwire again from your own terminal: `tripwire serve --port {port}` "
+            "(in a Tripwire checkout, scripts/restart_daemon.sh does both).")
 
 
 def _identity(url: str) -> dict | None:
@@ -299,12 +311,12 @@ def run(event: str, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
     except DaemonDown:
         if not pre:
             # Nothing to block here; the next PreToolUse will deny. Tell the user once.
-            stderr.write("Tripwire is not running (start it with `tripwire serve`).\n")
+            stderr.write(f"Tripwire is not running (start it with `{_serve_hint()}`).\n")
             return 0
         if _truthy("TRIPWIRE_FAIL_OPEN"):
             stderr.write("Tripwire is not running; TRIPWIRE_FAIL_OPEN=1 so the call goes through.\n")
             return 0
-        code, out = 0, _pre_output("deny", NOT_RUNNING)
+        code, out = 0, _pre_output("deny", not_running())
     except Refused as e:
         if not pre:
             stderr.write(f"{e}\n")

@@ -464,6 +464,7 @@ class VerifyResult:
         self.checked = 0
         self.legacy = 0
         self.notes: list[str] = []
+        self.head_missing = False
 
     def fail(self, msg: str) -> "VerifyResult":
         self.ok = False
@@ -531,12 +532,16 @@ def verify_db(path: Path, key: bytes | None) -> VerifyResult:
             return r.fail("This audit database has no tamper-evident chain yet (old format). Start `tripwire serve` once to add it.")
         r.legacy = db.execute("select count(*) from verdicts where seq is null").fetchone()[0]
         h = db.execute("select seq, hash, hmac from audit_head where id = 1").fetchone()
-        if h is None:
-            return r.fail("The signed end-of-log marker is missing: it was deleted.")
-        head = {"seq": h[0], "hash": h[1], "hmac": h[2]}
+        head = {"seq": h[0], "hash": h[1], "hmac": h[2]} if h is not None else None
         cur = db.execute(f"select {', '.join(CHAIN_FIELDS)}, prev_hash, hash, hmac from verdicts where seq is not null order by seq")
         cols_ = (*CHAIN_FIELDS, "prev_hash", "hash", "hmac")
         verify_rows((dict(zip(cols_, row)) for row in cur), key, head, r)
+        if h is None and r.ok:
+            # Only the marker is gone: say what still holds (every record checks out) and what can't be ruled out.
+            r.head_missing = True
+            r.notes.clear()
+            r.fail(f"The signed end-of-log marker is missing: it was deleted. All {r.checked} records still check out, "
+                   "but without the marker, deleting the newest records cannot be ruled out.")
     finally:
         db.close()
     if r.legacy:

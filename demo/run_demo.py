@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from world.agent import NaivePlanner, Planner, Step, ToolCall  # noqa: E402
 from world.world import World, _fetches_or_runs  # noqa: E402
 
-DEFAULT_URL = "http://127.0.0.1:7777"
+DEFAULT_URL = f"http://127.0.0.1:{os.environ.get('TRIPWIRE_PORT', '').strip() or 7777}"  # same port as serve, open and the hooks
 NO_COLOR = not sys.stdout.isatty() or os.environ.get("NO_COLOR")
 
 

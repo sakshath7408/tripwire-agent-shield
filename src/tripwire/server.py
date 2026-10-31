@@ -112,6 +112,7 @@ HOOK_ENDPOINTS = {("POST", "/v1/task"), ("POST", "/v1/observe"), ("POST", "/v1/e
 # Open to anyone local: they only ask; a person decides.
 PAIR_OPEN = {"/v1/pair", "/v1/pair/request", "/v1/pair/poll"}
 MAX_PAIR_REQUESTS = 3
+DEMO_PREFIX = "demo-"  # scripted demo sessions: not remembered across a restart
 
 
 def create_app(engine: Engine | None = None, audit_path: Path | None = None, home: Path | None = None,
@@ -153,6 +154,17 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     # attacker's next call was allowed (QA 31 Oct).
     sessions_path = home / "sessions.json"
     restored = engine.sessions.load(sessions_path) if not engine.sessions.all() else 0
+    # Scripted demo runs (`demo/run_demo.py`, `scripts/seed_demo.py`: session ids "demo-...") see hidden instructions
+    # on purpose. Their memory must not outlive the daemon, or trying the README demo once locks a new user out of
+    # pairing links and looser levels after every restart. Real sessions (Claude Code's ids, MCP proxies) keep theirs.
+    demo_ids = [sid for sid in list(engine.sessions._s) if sid.startswith(DEMO_PREFIX)]
+    for sid in demo_ids:
+        engine.sessions._s.pop(sid, None)
+    for sid in [k for k in engine.sessions.tombstones if k.startswith(DEMO_PREFIX)]:
+        engine.sessions.tombstones.pop(sid, None)
+    if demo_ids:
+        restored = max(0, restored - len(demo_ids))
+        engine.sessions.changes += 1  # saved again without them
     if restored:
         log.warning("restored %d session(s) from %s", restored, sessions_path)
     saved_at = {"changes": engine.sessions.changes, "error": None}
@@ -211,6 +223,13 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         save_sessions()  # a clean stop (Ctrl-C, restart script) writes the latest state
 
     app = FastAPI(title="Tripwire", version="0.1.0", lifespan=lifespan)
+    app.state.open_cmd, app.state.serve_cmd = "tripwire open", "tripwire serve"  # serve sets these with its --port
+
+    def open_cmd() -> str:
+        return app.state.open_cmd
+
+    def serve_cmd() -> str:
+        return app.state.serve_cmd
     app.state.engine = engine
     app.state.audit = audit
     app.state.token = token
@@ -254,10 +273,10 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
                 if (request.method, path) not in HOOK_ENDPOINTS:
                     return JSONResponse({"detail": "The agent hook's token can only send tasks, tool outputs and "
                                                    "actions to check. This needs the paired dashboard: run "
-                                                   "`tripwire open` in your terminal."}, 403)
+                                                   f"`{open_cmd()}` in your terminal."}, 403)
                 request.state.actor = "hook-token"
             else:
-                return JSONResponse({"detail": "Not connected. Run `tripwire open` in your terminal to pair this "
+                return JSONResponse({"detail": f"Not connected. Run `{open_cmd()}` in your terminal to pair this "
                                                "browser; agent hooks send the token from ~/.tripwire/token."}, 401)
         return await call_next(request)
 
@@ -271,20 +290,21 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     def any_injected() -> bool:
         return any(s.taint.injection_seen for s in engine.sessions.all())
 
-    INJECTED_PAIR = ("Hidden instructions were seen in a live session, so a new browser needs a person's OK: run "
-                     "`tripwire open` and approve its code in the `tripwire serve` terminal or a paired dashboard.")
+    def injected_pair() -> str:
+        return ("Hidden instructions were seen in a live session, so a new browser needs a person's OK: run "
+                f"`{open_cmd()}` and approve its code in the `{serve_cmd()}` terminal or a paired dashboard.")
 
     @app.post("/v1/pair")
     def pair(body: Pair) -> JSONResponse:
         with pair_lock:
             entry = pair_codes.pop(body.code, None) if isinstance(body.code, str) else None
         if entry is None or entry[0] < time.time():
-            return JSONResponse({"detail": "That pairing code is used up or expired. Run `tripwire open` for a new one."},
+            return JSONResponse({"detail": f"That pairing code is used up or expired. Run `{open_cmd()}` for a new one."},
                                 403)
         origin = entry[1]
         if origin not in ("handshake", "console") and any_injected():
             # A link minted before the attack (or by a demo daemon) can't add a browser after it.
-            return JSONResponse({"detail": INJECTED_PAIR}, 403)
+            return JSONResponse({"detail": injected_pair()}, 403)
         resp = JSONResponse({"ok": True})
         resp.set_cookie(auth.COOKIE, dashboards.add(), httponly=True, samesite="strict", path="/",
                         max_age=auth.COOKIE_DAYS * 86400)
@@ -297,9 +317,9 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
     def pair_new(request: Request) -> dict:
         by = actor(request)
         if by not in ("console", "demo-admin"):
-            raise HTTPException(403, "Pairing links come from a person: run `tripwire open` in your terminal.")
+            raise HTTPException(403, f"Pairing links come from a person: run `{open_cmd()}` in your terminal.")
         if by == "demo-admin" and any_injected():
-            raise HTTPException(403, INJECTED_PAIR)
+            raise HTTPException(403, injected_pair())
         code = new_pair(by)
         record("pair_code", body={"by": by, "note": "a one-time pairing code was minted"})
         return {"code": code, "expires_in": auth.PAIR_TTL}
@@ -335,7 +355,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         if not who_:
             return JSONResponse({"detail": "Nobody can approve a new browser right now: the daemon runs in the "
                                            "background and no browser is paired. Restart it from your own terminal "
-                                           "(`scripts/restart_daemon.sh`, or `tripwire serve`): it prints a one-time "
+                                           f"(`{serve_cmd()}`, or scripts/restart_daemon.sh in a checkout): it prints a one-time "
                                            "link there."}, 409)
         pending_requests()
         rid, secret, digits = auth.new_pair_code()[:12], auth.new_pair_code(), auth.new_digits()
@@ -357,7 +377,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
         with pair_lock:
             r = pair_requests.get(body.id)
             if not r or not auth.same(body.secret, r["secret"]) or r["expires"] < time.time():
-                raise HTTPException(404, "That pairing request expired. Run `tripwire open` again.")
+                raise HTTPException(404, f"That pairing request expired. Run `{open_cmd()}` again.")
             if r["status"] == "pending":
                 return {"status": "pending"}
             pair_requests.pop(body.id, None)
@@ -391,10 +411,12 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
                 console.say("No waiting `tripwire open` has those digits. Run it again for a fresh code.")
             return
         if text:
-            console.say("Type the 6 digits `tripwire open` shows, or press Enter alone for a one-time link.")
+            console.say(f"Type the 6 digits `{open_cmd()}` shows"
+                        + ("." if any_injected() else ", or press Enter alone for a one-time link."))
             return
         if any_injected():
-            console.say(INJECTED_PAIR)
+            console.say(injected_pair() + f" Or press Ctrl-C and run `{serve_cmd()} --clear-view`: it clears the live "
+                        "view (the attack stays remembered) and prints a link.")
             return
         code = new_pair("console")
         record("pair_code", body={"by": "console", "note": "a one-time pairing code was minted in serve's terminal"})
@@ -554,7 +576,7 @@ def create_app(engine: Engine | None = None, audit_path: Path | None = None, hom
             # The attack this stops: a hijacked agent that got hold of any credential switches Tripwire to
             # autonomous. Not even the dashboard loosens while an attack is live; reset the view first.
             raise HTTPException(403, "Hidden instructions were seen in a live session, so Tripwire won't loosen "
-                                     "now. Reset the view first (the attack stays remembered), then change it.")
+                                     "now. Press Reset first (the attack stays remembered), then change it.")
         engine.set_autonomy(body.autonomy)
         data = autolib.load_settings(home)
         data["autonomy"] = engine.autonomy
