@@ -9,7 +9,8 @@ import re
 SECRET_PATHS = re.compile(
     r"(^|/)(\.ssh(/|$)|id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$|\.aws/|\.gnupg/|\.netrc$|\.npmrc$|\.pypirc$|"
     r"\.docker/config\.json$|\.kube/config$|\.config/gcloud/|\.git-credentials$|\.env(\.[\w-]+)?$|"
-    r"credentials(\.json)?$|secrets?\.(ya?ml|json|toml)$|\.pem$|\.key$|\.p12$|keychain|\.bash_history$|\.zsh_history$|"
+    # Key files by extension: "server.key" must match, not only a file literally named ".key".
+    r"credentials(\.json)?$|secrets?\.(ya?ml|json|toml)$|[^/]*\.(pem|key|p12|pfx|jks|keystore)$|keychain|\.bash_history$|\.zsh_history$|"
     # CLI token stores: GitHub CLI and hub, Terraform Cloud, 1Password CLI, Azure, Vault, Postgres, Cargo, rclone, boto
     r"\.config/gh/|\.config/hub$|\.terraform\.d/credentials|\.config/op/|\.op/|\.azure/|\.vault-token$|\.pgpass$|"
     r"\.my\.cnf$|\.cargo/credentials|\.config/rclone/rclone\.conf$|\.boto$|\.s3cfg$|\.claude/\.credentials\.json$|"

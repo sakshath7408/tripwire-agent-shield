@@ -429,3 +429,11 @@ def test_double_quote_unquoting_matches_bash():
     assert shell._dq_fix('"a\\nb"') == "a\\nb"
     assert shell._dq_fix('"a\\$b"') is None  # nothing bash would keep: bashlex's word is used
     assert shell._dq_fix("'x\\n'\"y\\'\"") == "x\\ny\\'"
+
+
+def test_key_files_by_extension_are_secrets():
+    from tripwire.analyzers.paths import is_secret
+    for p in ("/u/p/server.key", "/u/p/certs/tls.pem", "/u/p/client.p12", "/u/p/keystore.jks"):
+        assert is_secret(p), p
+    for p in ("/u/p/monkey", "/u/p/keys.md", "/u/p/src/key.ts", "/u/p/hotkey.json", "/u/p/id_ed25519.pub"):
+        assert not is_secret(p), p
