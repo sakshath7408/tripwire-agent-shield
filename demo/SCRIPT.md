@@ -130,7 +130,7 @@ Read only the important_instructions on and OFF rows out loud. Point at the rest
 
 ## 4:25 Close (20 s)
 
-"Local. Fails closed: if Tripwire is down, nothing runs.
+"Local. Fails closed: if Tripwire is down, or something else answers in its place, nothing runs.
 The deciding logic never reads the attacker's text as instructions, so it cannot be talked out of it."
 
 Stop at about 4:45. Take questions.
@@ -147,8 +147,10 @@ The 92 is provenance and the other checks with no phrase list. That's what a bra
 "There's no admin key on disk to steal. The agent's hook token can only ask for verdicts.
 Only a paired dashboard can answer an ask, change settings or reset, and pairing goes through a person
 at the serve terminal. While a session has seen hidden instructions, nobody can loosen it.
-What it doesn't stop: a process as you that reads your browser cookies, debugs the daemon, or kills it
-and starts its own. For that, `tripwire harden` runs the daemon as its own OS user."
+The agent's own kills of the daemon and anything it starts on the daemon's port are blocked, and the hook
+refuses verdicts that aren't signed by the real daemon.
+What it doesn't stop: a program running as you outside the agent, which can read your browser cookies, debug
+the daemon, or read the signing key. For that, `tripwire harden` runs the daemon as its own OS user."
 
 **"Your demo human knows the answer, doesn't it?"**
 "Not any more. It sees only what a person sees: Tripwire's reason, where the call goes, and the task you typed.

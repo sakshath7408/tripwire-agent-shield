@@ -40,7 +40,7 @@ uv run tripwire uninstall claude          # takes them out again; an untouched s
 uv run tripwire mcp-proxy --name fs --profile coding-assistant -- npx -y @modelcontextprotocol/server-filesystem .
 uv run tripwire pins list                 # signed MCP tool pins
 uv run tripwire audit verify              # check the audit log was not edited
-uv run pytest -q                          # 1,283 tests (plus 1 expected failure)
+uv run pytest -q                          # 1,400 tests (plus 1 expected failure)
 uv run python bench/run_all.py            # benchmarks, about 20 s, writes bench/results/summary.md
 ```
 
@@ -89,7 +89,7 @@ The pipeline, in order (`src/tripwire/engine.py`):
 
    We tested it on AgentDojo and a plain rule won. The rule: once hidden instructions have shown up, a high-impact action you never asked for is blocked, not just asked about (`chain.injected_unrequested`). That rule lifted hard blocks from 85.9% to 92.1% with no loss on real tasks. The judge (qwen2.5:3b) stopped nothing the rules missed. It wrongly blocked 7 real tool calls, so real tasks allowed fell from 95.9% to 90.7%. So it stays off unless you turn it on. Numbers: `bench/results/agentdojo_judge.md`.
 
-If the engine itself crashes on an action, the verdict is block. If the daemon is down, the adapters deny. A session with no task asks before any send, payment or fetch. Both adapters have an opt-in `TRIPWIRE_FAIL_OPEN=1` that lets calls through when the daemon is down. It is off by default.
+If the engine itself crashes on an action, the verdict is block. If the daemon is down, the adapters deny. If something else answers on the daemon's port (say, after a kill), the adapters deny too: every verdict is signed with a per-boot key the daemon publishes in `~/.tripwire/daemon.json`, and the PID that published it must still be alive. A program running as you outside the agent can read that file, so this raises the bar; `tripwire harden` is the real boundary. A session with no task asks before any send, payment or fetch. Both adapters have an opt-in `TRIPWIRE_FAIL_OPEN=1` that lets calls through when the daemon is down. It is off by default.
 
 ### The key idea: only your words are instructions
 
@@ -130,16 +130,16 @@ The idea follows CaMeL (Debenedetti et al., 2025) and Simon Willison's dual-LLM 
 |---|---|
 | 01 Threat relevance | `demo/THREAT_MODEL.md` names what is at risk and who the attacker is |
 | 02 Verified effectiveness | `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `demo/run_demo.py` Act 1 vs Act 2, `bench/results/` |
-| 03 Technical implementation | `src/tripwire/` (about 10,800 lines of Python), 1,283 tests (plus 1 expected failure), `docs/ARCHITECTURE.md` |
+| 03 Technical implementation | `src/tripwire/` (about 11,800 lines of Python), 1,400 tests (plus 1 expected failure), `docs/ARCHITECTURE.md` |
 | 04 Innovation | provenance at the tool boundary (`taint.py`), signed MCP pins (`pins.py`), AST-based shell analysis (`shell.py`), tamper-evident cross-agent audit chain (`audit.py`) |
 | 05 UI/UX | `src/tripwire/static/` dashboard: live feed, approval queue, evidence panel, audit log with agent tree; hosted copy at https://tripwire-agent-shield.vercel.app (Demo tab: `/#demo`) |
-| 06 Safety, privacy, responsible engineering | local only, no network lookups by the guard, args redacted before storage (`secrets.redact`), fail closed. Control: Tripwire keeps no admin key on disk. The token your agent's hooks use can only send a task, tool outputs and actions to check. It can't answer an ASK, change settings, reset, or pair a browser. Only a paired dashboard can, and a browser is paired only through a person: a one-time link printed straight to the terminal running `tripwire serve` (never to a log), or a 6-digit code from `tripwire open` that you type into that terminal or approve in a dashboard you already paired. While a session has seen hidden instructions, nobody can loosen autonomy and no new link is printed. This stops an agent that can read every file in ~/.tripwire and talk to the daemon directly. It does not stop a process running as your OS user that reads your browser's cookies, attaches a debugger to the daemon, or kills it and starts its own copy. For that, `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. Details: [docs/HARDENING.md](docs/HARDENING.md). Plain "Known limits" below |
+| 06 Safety, privacy, responsible engineering | local only, no network lookups by the guard, args redacted before storage (`secrets.redact`), fail closed. Control: Tripwire keeps no admin key on disk. The token your agent's hooks use can only send a task, tool outputs and actions to check. It can't answer an ASK, change settings, reset, or pair a browser. Only a paired dashboard can, and a browser is paired only through a person: a one-time link printed straight to the terminal running `tripwire serve` (never to a log), or a 6-digit code from `tripwire open` that you type into that terminal or approve in a dashboard you already paired. While a session has seen hidden instructions, nobody can loosen autonomy and no new link is printed. This stops an agent that can read every file in ~/.tripwire and talk to the daemon directly. It does not stop a process running as your OS user that reads your browser's cookies, attaches a debugger to the daemon, or kills it and puts its own server on the port. The engine blocks the agent's own kills and port grabs, and the hook refuses unsigned verdicts, but a program running as you can read the signing key. For that, `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. Details: [docs/HARDENING.md](docs/HARDENING.md). Plain "Known limits" below |
 | 07 Feasibility and real-world impact | `tripwire install claude` works on a real Claude Code today; `mcp-proxy` works with any MCP server |
 | 08 Presentation and live demo | `demo/SCRIPT.md`, `docs/PRESENTING.md` (preflight, stage, backup video), `docs/pitch/index.html` |
 
 ## Benchmark numbers
 
-Run on 31 Oct 2026 04:38 with `uv run python bench/run_all.py` (about 30 s, no LLM, no cost). Same numbers under any `PYTHONHASHSEED`. Rerun before quoting.
+Run on 31 Oct 2026 05:40 with `uv run python bench/run_all.py` (about 30 s, no LLM, no cost). Same numbers under any `PYTHONHASHSEED`. Rerun before quoting.
 
 Three words, used the same way everywhere:
 - **Hard block**: the call is refused. Nobody is asked.
@@ -149,8 +149,8 @@ Three words, used the same way everywhere:
 | Benchmark | Stopped | Hard block | Size | Benign allowed |
 |---|---|---|---|---|
 | AgentDojo (4 suites, important_instructions) | 96.2% | 92.1% | 609 pairs | 95.9% tasks (92.9% calls) |
-| Shell attacks, no poisoned context (our own corpus) | 100.0% | 94.0% | 84 cmds | 82 of 82 (0 flagged) |
-| Shell attacks, after reading poisoned file (our own corpus) | 100.0% | 100.0% | 84 cmds | 82 of 82 (0 flagged) |
+| Shell attacks, no poisoned context (our own corpus) | 100.0% | 94.8% | 96 cmds | 90 of 90 (0 flagged) |
+| Shell attacks, after reading poisoned file (our own corpus) | 100.0% | 100.0% | 96 cmds | 90 of 90 (0 flagged) |
 
 Median decision time is under 1 ms (p95 under 5 ms on AgentDojo).
 
@@ -185,14 +185,14 @@ How to read it:
 
 Before the recipient and provenance hardening of 30 Oct, the floor was 62.6% stopped and 36.1% hard block ([bench/results/matrix_baseline.md](bench/results/matrix_baseline.md)).
 
-False positives, said plainly: on AgentDojo, 7.1% of benign ground-truth calls get an ask or a block. Half of those are in the banking suite, where paying bills always asks a human. Most of the rest are the new recipient check asking before a message goes to someone the user never named (slack and workspace). The shell corpus flags none of 82 everyday developer commands, cold or after a poisoned read.
+False positives, said plainly: on AgentDojo, 7.1% of benign ground-truth calls get an ask or a block. Half of those are in the banking suite, where paying bills always asks a human. Most of the rest are the new recipient check asking before a message goes to someone the user never named (slack and workspace). The shell corpus flags none of 90 everyday developer commands, cold or after a poisoned read.
 
 Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in the loop: we replay AgentDojo's ground-truth call sequences, so a real hijacked model might phrase calls differently.
 
 ## Known limits
 
 > **Read this before you trust it.**
-> - **Same OS user = defence in depth, not a sandbox.** Tripwire keeps no admin key on disk. The token your agent's hooks use can only send a task, tool outputs and actions to check. It can't answer an ASK, change settings, reset, or pair a browser. Only a paired dashboard can, and a browser is paired only through a person: a one-time link printed straight to the terminal running `tripwire serve` (never to a log), or a 6-digit code from `tripwire open` that you type into that terminal or approve in a dashboard you already paired. While a session has seen hidden instructions, nobody can loosen autonomy and no new link is printed. This stops an agent that can read every file in ~/.tripwire and talk to the daemon directly. It does not stop a process running as your OS user that reads your browser's cookies, attaches a debugger to the daemon, or kills it and starts its own copy. For that, `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. A session that saw hidden instructions can't be re-tasked over the API, and a reset never forgets what it saw. On top of that, the engine blocks the routes to the guard that reviews found (each is a test in `tests/test_redteam*.py` and `tests/test_guard4.py`), but the control above doesn't depend on catching every one. Steps: [docs/HARDENING.md](docs/HARDENING.md).
+> - **Same OS user = defence in depth, not a sandbox.** Tripwire keeps no admin key on disk. The token your agent's hooks use can only send a task, tool outputs and actions to check. It can't answer an ASK, change settings, reset, or pair a browser. Only a paired dashboard can, and a browser is paired only through a person: a one-time link printed straight to the terminal running `tripwire serve` (never to a log), or a 6-digit code from `tripwire open` that you type into that terminal or approve in a dashboard you already paired. While a session has seen hidden instructions, nobody can loosen autonomy and no new link is printed. This stops an agent that can read every file in ~/.tripwire and talk to the daemon directly. It does not stop a process running as your OS user that reads your browser's cookies, attaches a debugger to the daemon, or kills it and puts its own server on the port. The engine blocks the agent's kills that can reach the daemon and anything it starts on the daemon's port, and the hook denies verdicts that aren't signed with the daemon's per-boot key or whose daemon PID is gone. A program running as you outside the agent can still read that key, so this raises the bar, not a wall. For that, `tripwire harden` runs the daemon as its own OS user, which is a real OS boundary. A session that saw hidden instructions can't be re-tasked over the API, and a reset never forgets what it saw. On top of that, the engine blocks the routes to the guard that reviews found (each is a test in `tests/test_redteam*.py` and `tests/test_guard4.py`), but the control above doesn't depend on catching every one. Steps: [docs/HARDENING.md](docs/HARDENING.md).
 > - **The hijacked agent in the demo is scripted.** Real models we tried locally (qwen2.5 3B and 1.5B) never fell for the injections, and real Claude Code refused them on its own. So Act 1 uses a scripted stand-in that obeys any order it reads. Tripwire's verdicts are real; the "agent fell for it" part is staged.
 > - **Intent is keyword matching.** If your prompt says "send", "reply" or "pay", that kind of action counts as expected. A send to an address taken from data can still pass if the email carried no hidden-instruction phrasing and the recipient check does not catch it.
 > - **The phrase list is a list.** Without it, AgentDojo drops from 96.2% to 92.0% stopped, and hard blocks from 92.1% to 45.3%. A new wording gets the lower number.
@@ -205,8 +205,9 @@ Other limits:
 - Scripts the agent runs (`bash x.sh`, `./x`, `make`, `pytest`'s conftest, `npm test`, `pip install -e .`) are read from disk and judged when they run, and text written through `>`, heredocs, `tee` or `sed -i` is judged like a Write. Code reached only through deeper imports (a test file importing a planted module) is not followed.
 - The MCP poisoned-description check looks for fixed shapes (orders to the AI, "don't tell the user", quiet recipients, key paths, a few languages). A description that dodges all of them is still pinned on first use.
 - Tool calls that do not pass through a hook or the proxy are invisible.
-- A host the attacker already runs code on can stop Tripwire.
-- Shell tricks and secret patterns are finite. With no poisoned context, 5 of 84 shell attacks get an ask, not a block. Every verdict is in `bench/results/shell.json`.
+- A host the attacker already runs code on can stop Tripwire. In default mode that includes a program running as you outside the agent: it can kill the daemon and, after reading `~/.tripwire/daemon.json`, sign verdicts like it. `tripwire harden` closes that.
+- Commands that run other commands are unwrapped for the common runners (`find -exec`, `xargs`, `awk system()`, `git -c core.pager`/`sshCommand`/`alias`, `GIT_SSH_COMMAND`, `make -f -`, `sed e`, `vim -c '!'`, `parallel`, `env -S`, `timeout`, `sudo`). A runner not on that list is judged only by its own name and arguments.
+- Shell tricks and secret patterns are finite. With no poisoned context, 5 of 96 shell attacks get an ask, not a block. The corpus is ours; review 5 added rows for nested commands and for stopping the guard. Every verdict is in `bench/results/shell.json`.
 - The Claude Code adapter never widens Claude Code's own permissions. An "allow" from Tripwire still goes through Claude Code's normal prompt unless `TRIPWIRE_AUTO_APPROVE=1`.
 
 ## Credits

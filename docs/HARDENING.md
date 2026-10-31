@@ -37,13 +37,31 @@ A process running as your OS user can still do what you can. Be clear about it:
   the cookie is the dashboard.
 - **The daemon's memory.** A same-user process can attach a debugger to the daemon (ptrace) unless macOS's
   protections or Linux's `ptrace_scope` stop it.
-- **Restarting the daemon.** It can stop the daemon and start its own copy in a terminal it controls (a fake
-  terminal from `script` or Python's `pty`), and that copy prints it a link. It can also edit Tripwire's code, its
-  folder, or `~/.claude/settings.json`.
+- **Stopping or replacing the daemon.** A same-user process can kill the daemon. It can then start anything that
+  answers on the daemon's port. It can also edit Tripwire's code, its folder, or `~/.claude/settings.json`.
 
-Tripwire's engine blocks the agent's known routes to all of these (reading `~/.tripwire`, listing hidden folders to
-find it, calls to the daemon's port, running or importing Tripwire, switching hooks off, stopping the daemon). That
-raises the bar. It is not an OS boundary. For that, run the daemon as its own user.
+What the engine blocks when the agent tries it (review 5, `tests/test_redteam5.py`):
+
+- Kills that can reach the daemon: `pkill`/`pgrep | xargs kill`/`killall` whose pattern matches the daemon's real
+  command line or process names (`pkill -f serve`, `killall Python`, `pkill python`), `kill` of its PID or of
+  `kill -1`, `kill $(lsof -ti :PORT)` on its port (computed ports too), `ps | grep | xargs kill` chains, the same
+  from Python (`os.kill` after `pgrep`), and `launchctl`/`systemctl` stopping it.
+- Anything that serves on the daemon's port: `python -m http.server 7777`, `nc -l`, `socat`, `uvicorn --port`,
+  `PORT=7777`, `ssh -L 7777:...`, and code (written, run or inline) that binds it, including `int('77'+'77')`.
+- Reading `~/.tripwire`, listing hidden folders to find it, calls to the daemon's port, and running or importing
+  Tripwire.
+
+Normal process work still runs: `kill %1`, `kill $(lsof -ti:3000)`, `pkill -f "npm run dev"`, `killall node`.
+
+The hook also checks who answers. At startup the daemon writes a per-boot key, its PID and its start time to
+`~/.tripwire/daemon.json` (0600). Each PreToolUse sends a fresh nonce, and the daemon signs its verdict with
+HMAC-SHA256 over the nonce, the decision and the request. The hook (and the MCP proxy) deny when the signature is
+missing or wrong, or when the PID that wrote the key is gone. So a fake that says "allow" after a kill is refused
+("Something other than Tripwire is answering on port 7777"). Cost: under 0.5 ms per call.
+
+Be honest about what that is. A program running as you, outside the agent's tool calls, can read `daemon.json` too
+and sign like the daemon. The check raises the bar (a fake must read the key and keep the real PID alive). It is not
+an OS boundary. For that, run the daemon as its own user.
 
 ## Hardened mode: the daemon as its own OS user
 

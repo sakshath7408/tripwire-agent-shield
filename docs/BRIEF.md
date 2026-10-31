@@ -20,7 +20,7 @@ Filtering the user's prompt does not create a trustworthy boundary for tool perm
 **Challenge.** Build a defensive layer that monitors and constrains an AI agent or tool-driven assistant in a
 simulated environment. It must:
 - [x] distinguish legitimate tasks from unauthorized instructions arriving through untrusted content. Proof: `src/tripwire/taint.py`; `demo/run_demo.py --scenario all --offline --delay 0 --approve auto` (task calls allowed, injected calls blocked, task done in all 5)
-- [x] prevent at least one category of unsafe tool action. Proof: exfiltration, remote exec, money, out-of-role tools all blocked in the demo; `bench/results/shell.md` (84 of 84 shell attacks caught)
+- [x] prevent at least one category of unsafe tool action. Proof: exfiltration, remote exec, money, out-of-role tools all blocked in the demo; `bench/results/shell.md` (96 of 96 shell attacks caught, our own corpus)
 - [x] give an inspectable reason for each decision. Proof: `Finding.message` on every verdict (`models.py`), shown in the demo output, the dashboard evidence panel and `tripwire audit tail`
 
 **Minimum build (24 h)**
@@ -38,7 +38,7 @@ simulated environment. It must:
 **Must show**
 - [x] explicit allow / deny / require-approval decisions. Proof: `Decision` in `models.py`; demo prints ALLOW / ASK / BLOCK on every call
 - [x] user confirmation for high-impact actions. Proof: `impact.money` in `engine.py`; `--approve dashboard` holds the call until Allow or Block (`?wait=N`, timeout blocks: `tests/test_audit.py::test_timeout_resolution_is_chained`)
-- [x] fail-closed behaviour when confidence or policy is insufficient. Proof: unknown tool asks, unknown profile blocks (`tests/test_engine.py`), engine crash blocks, daemon down denies (seen live: "Tripwire is unreachable (ConnectError), so nothing runs"; `tests/test_adapters.py::test_proxy_fails_closed_when_daemon_down`)
+- [x] fail-closed behaviour when confidence or policy is insufficient. Proof: unknown tool asks, unknown profile blocks (`tests/test_engine.py`), engine crash blocks, daemon down denies (seen live: "Tripwire is unreachable (ConnectError), so nothing runs"; `tests/test_adapters.py::test_proxy_fails_closed_when_daemon_down`), and an impostor on the daemon's port is denied too (unsigned verdict or dead daemon PID, `tests/test_redteam5.py`; a same-user program outside the agent can still read the key, so harden for a real boundary)
 
 **Optional extensions**
 - [x] MCP gateway. Proof: `src/tripwire/adapters/mcp_proxy.py`, `tests/test_adapters.py::test_proxy_passes_benign_blocks_injected`
@@ -50,7 +50,7 @@ simulated environment. It must:
 ## Judging criteria (brochure)
 - [x] 1. **Security problem and threat relevance.** Real, current, clearly defined. The threat model names what is at risk and who the attacker is. Proof: `demo/THREAT_MODEL.md`
 - [x] 2. **Verified cybersecurity effectiveness.** Show the attack succeeding before the fix and failing after it. Proof: Act 1 vs Act 2 in `demo/run_demo.py` (all 5 pass in `scripts/preflight.sh`), `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`, `bench/results/summary.md`, live at https://tripwire-agent-shield.vercel.app (checked: no guard 3 items stolen, guarded 0). Hard floor (`--approve all`, the hosted **Hard floor** switch: the human allows everything): the four stage attacks, 13 of 13 attack steps blocked on its own, attacker got nothing
-- [x] 3. **Technical implementation.** Sound, complete, well engineered. Proof: `docs/ARCHITECTURE.md`, `uv run pytest -q` (1,283 passed, 1 xfailed)
+- [x] 3. **Technical implementation.** Sound, complete, well engineered. Proof: `docs/ARCHITECTURE.md`, `uv run pytest -q` (1,400 passed, 1 xfailed)
 - [x] 4. **Innovation and originality.** A fresh approach, not a re-skinned tutorial. Proof: provenance at the tool boundary (`taint.py`), signed MCP pins, shell AST, tamper-evident cross-agent audit chain
 - [x] 5. **UI/UX.** Security people will actually use: clear, intuitive, low friction. Proof: `src/tripwire/static/`, checked by eye 31 Oct at 1280x720 and phone, light and dark
 - [x] 6. **Safety, privacy and responsible engineering.** Tested within scope, data handled responsibly, rules of engagement followed. Proof: binds 127.0.0.1, no network lookups in the guard, args redacted before storage (`secrets.redact`), synthetic data only, no admin key on disk and dashboard-only control (`auth.py`, `tests/test_guard4.py`), `tripwire harden` for a real OS boundary, `tests/test_redteam*.py`
@@ -68,8 +68,8 @@ simulated environment. It must:
 
 ## Release checklist (run before submission)
 - [x] every box above ticked, each with a file or demo step that proves it (see README requirement table). Checked 31 Oct
-- [x] `uv run pytest -q` all green. 1,283 passed, 1 xfailed
-- [x] `uv run python bench/run_all.py` rerun, numbers copied into README and the pitch deck. Run 31 Oct 2026 04:38; README, pitch slide 5, `bench/README.md`, `demo/SCRIPT.md` match `bench/results/matrix.md`. Same tables under `PYTHONHASHSEED=0` and `=2`
+- [x] `uv run pytest -q` all green. 1,400 passed, 1 xfailed
+- [x] `uv run python bench/run_all.py` rerun, numbers copied into README and the pitch deck. Run 31 Oct 2026 05:40; README, pitch slide 5, `bench/README.md`, `demo/SCRIPT.md` match `bench/results/matrix.md`. Same tables under `PYTHONHASHSEED=0` and `=2`
 - [x] all 5 demo scenarios pass both acts (`demo/run_demo.py --scenario all --offline --delay 0 --approve auto`). Also all green in `scripts/preflight.sh 7796` on a scratch daemon
 - [x] dashboard checked by eye at 1280x720 and phone, light and dark. Scratch daemon, after two guarded runs
 - [ ] demo rehearsed against demo/SCRIPT.md in under 5 minutes, fallbacks tested. Not ticked: needs a human run on the stage laptop and projector. The offline and test fallbacks work; backup videos re-recorded 31 Oct for balanced mode
