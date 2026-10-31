@@ -2,6 +2,7 @@ import os
 import time
 
 import pytest
+from timing import check_fast
 
 from tripwire.analyzers.shell import analyze_shell
 from tripwire.models import CRITICAL, HIGH, LOW, MEDIUM
@@ -388,7 +389,7 @@ def test_fast():
     for c in cmds:
         analyze_shell(c, sess())
     per = (time.perf_counter() - t0) * 1000 / len(cmds)
-    assert per < 5, f"{per:.2f} ms per command"
+    check_fast(per, 5, "ms per command")
 
 
 def test_engine_end_to_end():
@@ -413,7 +414,7 @@ def test_bashlex_hang_inputs_return_quickly():
     for cmd in ["-'${'", "a'${&' }", "x'${' && rm -rf ~ }", "(`eval?]|(-'{${&]<<<EOF'>\n${rm{])~$("]:
         t0 = time.perf_counter()
         got = analyze_shell(cmd, sess())
-        assert time.perf_counter() - t0 < 0.5
+        check_fast(time.perf_counter() - t0, 0.5, cmd)
         assert isinstance(got, list)
     assert top("x'${' ; rm -rf ~") >= CRITICAL
 
@@ -520,6 +521,6 @@ def test_nested_payloads_never_raise_and_stay_fast():
     for cmd in odd:
         t0 = time.perf_counter()
         got = analyze_shell(cmd, sess())
-        assert time.perf_counter() - t0 < 0.5, cmd
+        check_fast(time.perf_counter() - t0, 0.5, cmd)
         assert isinstance(got, list)
         assert not any(f.rule == "shell.analyzer_error" for f in got), (cmd, got)

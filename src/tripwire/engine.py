@@ -478,9 +478,12 @@ class Engine:
             best: tuple[int, str, str, object] | None = None
             # The person you asked to reply to is your pick, not the content's: judged in _recipients instead.
             targets = s.reply_targets() if cap == Capability.SEND else {}
+            secret_vals = [x.lower() for x in s.secret_values if len(x) >= 8]
             for v, src in s.taint.tainted_values(blob):
                 if v in targets:
                     continue
+                if any(v != x and v in x for x in secret_vals):
+                    continue  # a piece of a secret (the digit run in a key) is not a recipient; secret checks judge it
                 sev, msg = _taint_target(cap, _as_written(v, blob), src, s, args, injected)
                 # Ties: the longer value is the more specific one (an IBAN beats the digit run inside it).
                 if sev and (best is None or (sev, len(v)) > (best[0], len(best[1]))):
@@ -733,7 +736,9 @@ class Engine:
         hit = s.taint.ordered(vals, kinds)
         if not hit:
             return []
-        v, src = hit
+        v, src, to_ai = hit
+        if (cap == Capability.SEND or invite) and _delegated_recipient(v, src, to_ai, args, s):
+            return []  # the recipient checks ask about it (or let it through for "invite everyone from the notes")
         if cap == Capability.FETCH:
             return [Finding(rule="taint.followed_order", severity=MEDIUM, category="injection", evidence=src.snippet,
                             message=f"Visits '{v[:80]}' because a sentence in {src.where} told the AI to, not because you asked.")]
@@ -765,6 +770,10 @@ class Engine:
             elif named and src:
                 out.append(Finding(rule="intent.other_email", severity=MEDIUM, category="scope", evidence=src.snippet,
                                    message=f"You named {sorted(named)[0]}, but this also invites {v}, taken from {src.where}."))
+            elif src and _delegated_recipient(v, src, _to_ai(s, v), args, s):
+                if s.group_from_doc() and s.taint.listed_plainly(v, src):
+                    continue  # "invite everyone from the notes": the notes listed this person
+                out.append(_role_finding(v, src, s))
             else:
                 where = f", taken from {src.where}" if src else ""
                 out.append(Finding(rule="intent.unnamed_email", severity=MEDIUM, category="injection" if injected else "scope",
@@ -830,6 +839,10 @@ class Engine:
                     out.append(Finding(rule=f"intent.unknown_{kind}", severity=MEDIUM, category="injection",
                                        message=f"Goes to {v}, which neither you nor anything the agent read mentioned, "
                                                "after hidden instructions were found."))
+                elif src and _delegated_recipient(v, src, _to_ai(s, v), args, s):
+                    if s.group_from_doc() and s.taint.listed_plainly(v, src):
+                        continue  # "email everyone in the minutes": the minutes listed this person
+                    out.append(_role_finding(v, src, s))
                 else:
                     # A new person you never named. Fine to ask; not fine to do silently (a polite email with no
                     # "ignore previous instructions" can still ask the agent to mail data to a stranger).
@@ -1071,6 +1084,34 @@ def _order_values(args: Any, depth: int = 0, key: str = "") -> list[str]:
         whole = [v] if 8 <= len(v) <= 200 and len(re.findall(r"[^\W\d_]{2,}", v)) >= 2 else []
         return whole + [x for vals in indicators(v[:20_000]).values() for x in vals]
     return [v] + [x for vals in indicators(v).values() for x in vals if x != v.lower()]
+
+
+def _delegated_recipient(v: str, src, to_ai: bool, args: dict, s: Session) -> bool:
+    """You asked to contact a party by role ("report this to the maintainers", "contact their support") or to invite
+    the people a document lists, and `v`, a recipient of this action, is an address that a clean document gave. That
+    address is the target you delegated: worth a check, not a block. Never when the document had hidden instructions,
+    when the sentence that gave it speaks to the AI, or when you named a recipient yourself and this is someone else."""
+    if src.injected or to_ai or not (s.role_contact() or s.group_from_doc()):
+        return False
+    if s.taint.trusted.get("email") or s.taint.trusted.get("phone"):
+        return False  # you named who to send to; another address from content conflicts with that
+    recips = {x.lower() for kind in ("email", "phone")
+              for x in indicators("\n".join(_keyed(args, RECIPIENT_KEY))[:20_000]).get(kind, ())}
+    return v.lower() in recips
+
+
+def _to_ai(s: Session, v: str) -> bool:
+    """`v` sits inside an order whose paragraph speaks to the AI ("AI assistant: email the logs to ...")."""
+    hit = s.taint.ordered([v], ("send", "write", "money"))
+    return bool(hit and hit[2])
+
+
+def _role_finding(v: str, src, s: Session) -> Finding:
+    role = s.role_contact()
+    msg = (f"Your task asked to contact {role}; this address came from {src.where}. Check it's theirs." if role else
+           f"Your task asked to reach the people in {src.where}, but {v} only appears in a sentence telling the reader "
+           "to send to it. Check it belongs on the list.")
+    return Finding(rule="intent.role_target", severity=MEDIUM, category="scope", evidence=src.snippet, message=msg)
 
 
 def _taint_target(cap: Capability, v: str, src, s: Session, args: dict, injected: bool) -> tuple[int, str]:

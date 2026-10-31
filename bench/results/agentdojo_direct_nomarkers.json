@@ -38,10 +38,11 @@
    "triggered_rules_on_attack": {
     "taint.followed_order": 219,
     "taint.send_target": 160,
-    "intent.unnamed_email": 155,
+    "intent.unnamed_email": 150,
     "intent.unrequested_send": 104,
     "intent.unrequested_delete": 76,
-    "intent.other_email": 45
+    "intent.other_email": 45,
+    "intent.role_target": 5
    },
    "false_positive_rules": {}
   },
@@ -183,8 +184,8 @@
   "attack_pairs": 609,
   "attack_stopped": 99.5,
   "attack_stopped_by_block": 87.2,
-  "median_latency_ms": 0.763,
-  "p95_latency_ms": 13.526,
+  "median_latency_ms": 0.253,
+  "p95_latency_ms": 1.203,
   "evaluations": 2058
  },
  "missed": [

@@ -64,6 +64,36 @@ DELEGATE = re.compile(
 DELEGATE_MONEY = re.compile(r"\b(?:pay|settle|process)\w*\s+(?:the\s+|this\s+|that\s+|my\s+|our\s+)?(?:\w+\s+){0,2}?"
                             r"(?:bill|invoice|statement|dues|fee|fine)s?\b", re.I)
 
+# You asked to contact someone by their role, not their address: "report this bug to the maintainers", "contact their
+# support", "let the landlord know", "email my manager". The address has to come from somewhere you pointed at (a
+# README, a help page, a signature), so a clean document's address for that role is the target you delegated.
+# "the project", "their billing": a determiner and up to two describing words. Never a pronoun or a question word, or
+# "tell me the hotel (with the best rating)" reads as contacting the hotel.
+_DET = (r"(?:(?:the|their|its|his|her|my|our|your|this|that|these|those)\s+)?"
+        r"(?:(?!(?:me|us|you|him|her|it|them|what|which|who|how|whether|if|about|when|where|why|the|a|an)\b)[\w'-]{1,24}\s+){0,2}?")
+_ROLE = (r"(?:maintainers?|support(?:\s+(?:team|desk|staff|line))?|customer\s+(?:service|support|care)|help\s?desk|"
+         r"service\s+desk|helpline|team|authors?|vendors?|owners?|sender|manager|boss|supervisor|hr|human\s+resources|"
+         r"landlord|landlady|letting\s+agent|property\s+manager|admins?|administrators?|developers?|devs|sellers?|"
+         r"suppliers?|company|organi[sz]ers?|host|contributors?|security(?:\s+team)?|billing(?:\s+(?:team|department))?|"
+         r"sales(?:\s+team)?|accounts\s+(?:team|department)|upstream|recruiter|agency|school|teacher|office|"
+         r"department|provider|publisher|editor|moderators?|mods|creator|merchant|store|shop|bank|insurer|airline|"
+         r"hotel|restaurant|venue|front\s+desk|reception|them|(?-i:IT))")
+ROLE_SEND = re.compile(
+    r"\b(?:contact\w*|e-?mail(?:ing)?|message|send|notify(?:ing)?|inform(?:ing)?|ping|tell|text|dm|cc|let|"
+    r"reach(?:ing)?\s+out\s+to|get(?:ting)?\s+in\s+touch\s+with|write\s+(?:back\s+)?to|reply\s+to|respond\s+to|"
+    r"escalat\w*\s+(?:it\s+|this\s+)?to)\s+(" + _DET + _ROLE + r")(?![\w-])|"
+    r"\b(?:report\w*|send\w*|forward\w*|submit\w*|file|raise|flag|escalat\w*|mention|explain|complain\w*|pass|write)\b"
+    r"[^.!?\n;]{0,60}?\b(?:to|with)\s+(" + _DET + _ROLE + r")(?![\w-])", re.I)
+# "Invite everyone from the notes", "email all the attendees in the minutes": the people a document lists are the
+# people you meant.
+GROUP_FROM_DOC = re.compile(
+    r"\b(?:invite\w*|add|include|e-?mail|message|send\w*|cc|share\w*|notify|contact|loop\s+in)\b[^.!?\n;]{0,40}?"
+    r"\b(?:all|every(?:one|body)|each|people|attendees|participants|members|contacts|guests|names|addresses|invitees|"
+    r"folks)\b[^.!?\n;]{0,40}?\b(?:from|in|on|of|at|listed\s+in|mentioned\s+in|named\s+in)\s+(?:the|my|our|this|that|these|"
+    r"those|his|her|their|today'?s|yesterday'?s|last)?\s*(?:[\w'-]{1,24}\s+){0,2}?(?:notes?|minutes|docs?|documents?|"
+    r"files?|e-?mails?|messages?|lists?|sheets?|spreadsheets?|threads?|agenda|pages?|chats?|channels?|summary|recap)\b",
+    re.I)
+
 
 @dataclass
 class Session:
@@ -109,13 +139,23 @@ class Session:
         if pat.search(self.task):
             return True
         return cap == Capability.SEND and bool(SEND_WEAK.search(self.task) or SEND_TO_NAME.search(self.task)
-                                               or SEND_WRITE_MSG.search(self.task) or ANSWER_MSG.search(self.task))
+                                               or SEND_WRITE_MSG.search(self.task) or ANSWER_MSG.search(self.task)
+                                               or ROLE_SEND.search(self.task) or GROUP_FROM_DOC.search(self.task))
 
     def delegates(self, money: bool = False) -> bool:
         """Did you tell the agent to do what some content says (so orders found in it are partly yours)?"""
         if not self.task:
             return False
         return bool(DELEGATE.search(self.task) or (money and DELEGATE_MONEY.search(self.task)))
+
+    def role_contact(self) -> str:
+        """The party you asked to contact by role ("the maintainers", "their support"), or "" if none."""
+        m = ROLE_SEND.search(self.task) if self.task else None
+        return " ".join((m.group(1) or m.group(2)).split()) if m else ""
+
+    def group_from_doc(self) -> bool:
+        """Did you ask to invite or message the people a document lists ("invite everyone from the notes")?"""
+        return bool(self.task and GROUP_FROM_DOC.search(self.task))
 
     def asked_to_reply(self) -> bool:
         return bool(self.task and REPLY_WORDS.search(self.task))
@@ -178,7 +218,8 @@ def session_to_dict(s: Session) -> dict:
                   "injection_seen": [_src(x, sv) for x in t.injection_seen[-50:]], "seen": t.seen,
                   "senders": t.senders, "listed": t.listed, "unverified": sorted(t.unverified)[:500],
                   "messages": t.messages[-500:], "reply_to": t.reply_to, "in_orders": sorted(t.in_orders)[:2000],
-                  "orders": [[n, list(k), _src(src, sv)] for n, k, src in t.orders[-500:] if _clean(n, sv)]},
+                  "orders": [[n, list(k), _src(src, sv), bool(r and r[0])] for n, k, src, *r in t.orders[-500:]
+                             if _clean(n, sv)]},
     }
 
 
@@ -193,7 +234,8 @@ def session_from_dict(d: dict) -> Session:
         unverified=set(t.get("unverified") or []),
         messages=[[str(r[0]), [str(x) for x in r[1]], bool(r[2]), int(r[3])] for r in t.get("messages") or []],
         reply_to=dict(t.get("reply_to") or {}), in_orders=set(t.get("in_orders") or []),
-        orders=[[str(r[0]), [str(x) for x in r[1]], _unsrc(r[2])] for r in t.get("orders") or []])
+        orders=[[str(r[0]), [str(x) for x in r[1]], _unsrc(r[2]), bool(len(r) > 3 and r[3])]
+                for r in t.get("orders") or []])
     s = Session(id=d["id"], cwd=d.get("cwd"), task=d.get("task") or "", profile=d.get("profile"), taint=taint,
                 secrets_read=list(d.get("secrets_read") or []),
                 pending_secrets={k: (v[0], v[1]) for k, v in (d.get("pending_secrets") or {}).items()},

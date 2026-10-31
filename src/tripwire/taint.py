@@ -21,7 +21,8 @@ EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}
 IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
 UPI = re.compile(r"(?<![\w.-])[\w.-]{2,64}@(?:ok\w+|ybl|paytm|upi|ibl|axl|apl|sbi|icici|hdfc\w*|ptyes|yapl)\b", re.I)
 IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b")
-PHONE = re.compile(r"(?<![\d])\+?\d[\d -]{8,18}\d")
+# Glued to letters or digits it is part of something else (the tail of a key "sk-...0000000000", an id), not a phone.
+PHONE = re.compile(r"(?<![\w+])\+?\d[\d -]{8,18}\d(?!\w)")
 DOMAIN = re.compile(r"(?<![\w.-])(?:[a-z0-9-]{1,63}\.){1,8}(?:com|net|org|io|xyz|ru|cn|top|sh|dev|app|co|in|me|info|biz|site|online|tk)\b", re.I)
 
 MAX_OBSERVE = 1_000_000  # characters scanned per tool output; keeps a giant output from stalling the guard
@@ -244,8 +245,24 @@ _ORDER_STRIP = re.compile(r"^[\s\-*•>#\d.)\]\"'`]{0,12}(?:[(\[<{][^)\]>}\n]{0,
 # heading marker glued to a word ("External_## Send ...").
 _SENT_SPLIT = re.compile(r"(?<=[.!?;:])['\"]?\s{1,6}(?=[\"'(\[]?[^\W_a-z])|(?<=[.!?])\s{0,6}(?=[#\[(<*>]{1,6}[\w(])|(?<=\S)(?=#{2,6}[\s(\[\w])|\n")
 _WORD = re.compile(r"[^\W\d_][\w'-]{0,30}")
+# A paragraph that speaks to the AI reading it, not to a person: "AI assistant: ...", "Note to the agent", "if you are
+# an LLM", "Claude, please ...". An order there is never the user's, whatever the task says. ("agent" alone is a job:
+# "contact your travel agent".)
+_AI_WHO = (r"(?:ai|a\.i\.|llms?|chatbots?|bots?|language models?|claude|chatgpt|gpt-?\d?|copilot|gemini|"
+           r"(?:ai|virtual|digital|coding|automated|autonomous) (?:assistants?|agents?|models?)|assistants?|agents?|models?)")
+AI_ADDRESS = re.compile(
+    rf"(?:^|[.!?:]\s{{1,4}})[\W_]{{0,4}}(?:(?:dear|hey|hi|hello|attention|note (?:to|for)|message (?:to|for)|instructions? "
+    rf"(?:to|for)|to|for) )?(?:the |an? |any |all )?{_AI_WHO}\s{{0,2}}[:,]|"
+    rf"\b(?:dear|hey|attention|note (?:to|for)|message (?:to|for)|instructions? (?:to|for)) (?:the |an? |any |all )?{_AI_WHO}\b|"
+    rf"\bif you(?:'re| are) (?:an? |the )?{_AI_WHO}\b|\b(?:ai|llm|language model|chatbot) (?:reading|processing|summari[sz]ing) this\b"
+    rf"|\bto you,?\s{{0,2}}(?:the |an? )?{_AI_WHO}\b|\byou are (?:an? )?(?:ai|llm|language model|chatbot)\b|\b(?:claude|chatgpt|gpt-?\d?|copilot|gemini)\s{{0,2}},", re.I)
 MAX_ORDERS = 500  # order sentences remembered per session (newest kept)
 MAX_ORDER_SCAN = 200_000  # characters of each output read for orders
+
+
+def _unescape(text: str) -> str:
+    """YAML and JSON escapes ("the\\ \\ AI language model") read as spaces, so an address to the AI is still seen."""
+    return re.sub(r"\s{2,}", " ", text.replace("\\n", " ").replace("\\", " ")) if "\\" in text else text
 
 
 def _paragraphs(text: str) -> list[list[str]]:
@@ -380,17 +397,19 @@ class TaintStore:
             if 8 <= len(n) <= 400:
                 self.untrusted_lines.append((n, TaintSource(tool, line.strip()[:160], injected=bool(m), label=label, seq=seq)))
         self.untrusted_lines = self.untrusted_lines[-5000:]
+        spoke_to_ai = False  # once a text speaks to the AI ("a message to you, GPT-4."), what follows is for it too
         for para in _paragraphs(text[:MAX_ORDER_SCAN]):
             # An order and the sentences after it in the same paragraph ("Create an event on May 1. The title should
             # be 'X'.") are one instruction: the details belong to the order.
             kinds: tuple[str, ...] = ()
+            to_ai = spoke_to_ai = spoke_to_ai or any(AI_ADDRESS.search(_unescape(x[:1000])) for x in para)
             for sent in para:
                 if len(sent) > 1000:
                     continue
                 kinds = tuple(dict.fromkeys(kinds + order_kinds(sent)))
                 if kinds:
                     src = TaintSource(tool, " ".join(sent.split())[:200], injected=bool(m), label=label, seq=seq)
-                    self.orders.append([_norm(canon(sent)), list(kinds), src])
+                    self.orders.append([_norm(canon(sent)), list(kinds), src, to_ai])
         self.orders = self.orders[-MAX_ORDERS:]
         heads = []
         for sm in SENDER_LINE.finditer(text):
@@ -452,9 +471,10 @@ class TaintStore:
             out[a] = any(r[2] for r in self.messages if r[0] == a) or a in self.in_orders
         return out
 
-    def ordered(self, values: list[str], kinds: tuple[str, ...]) -> tuple[str, TaintSource] | None:
+    def ordered(self, values: list[str], kinds: tuple[str, ...]) -> tuple[str, TaintSource, bool] | None:
         """A value the action uses that sits inside a sentence in content ordering the reader to take this kind of
-        action, and that you never named yourself. Longest value first (the most specific), then by name."""
+        action, and that you never named yourself. Longest value first (the most specific), then by name. The flag
+        says the order's paragraph speaks to the AI ("AI assistant: ...", "if you are an agent")."""
         if not self.orders:
             return None
         cands = sorted({_norm(canon(v)).strip("'\" ") for v in values if v}, key=lambda v: (-len(v), v))
@@ -462,13 +482,34 @@ class TaintStore:
             if not (2 <= len(v) <= 200) or self.is_trusted_value(v) or _whole(v, self.trusted_text):
                 continue
             pat = None
-            for sent, ks, src in reversed(self.orders):
+            for sent, ks, src, *rest in reversed(self.orders):
                 if v not in sent or not any(k in kinds for k in ks):
                     continue
                 pat = pat or re.compile(rf"(?<![\w@+-]){re.escape(v)}(?![\w@+-]|\.[\w])")
                 if pat.search(sent):
-                    return v, src
+                    return v, src, bool(rest and rest[0])
         return None
+
+    def listed_plainly(self, value: str, where: TaintSource | None = None) -> bool:
+        """`value` sits on a line of clean content that gives no orders ("Attendees: Ana (ana@x.com), Raj (...)"), so
+        the document lists it, rather than only a sentence telling the reader to send something to it. With `where`,
+        only lines of that same tool output count (the document that supplied the address, not a later inbox)."""
+        v = _norm(canon(value))
+        order_text = [o[0] for o in self.orders if v in o[0]]
+        for line, src in reversed(self.untrusted_lines[-5000:]):
+            if src.injected or not _whole(v, line):
+                continue
+            if where is not None and (src.seq, src.tool, src.label) != (where.seq, where.tool, where.label):
+                continue
+            if any(order_kinds(sent) for para in _paragraphs(line) for sent in para):
+                continue
+            piece = _norm(canon(line.replace("\\n", " ").replace("''", "'")))  # as _paragraphs reads it
+            # The words of this line's sentence up to the address: inside an order, the line is a wrapped piece of it.
+            frags = [x.strip()[:x.strip().index(v) + len(v)] for x in re.split(r"(?<=[.!?;])\s{1,6}", piece) if v in x]
+            if any(x in o for x in frags for o in order_text):
+                continue  # a wrapped piece of an order ("...the code to\n  x@y.com before Friday. Thanks")
+            return True
+        return False
 
     def is_trusted_value(self, value: str) -> bool:
         """Did the user name exactly this value? Whole values only: naming alice@corp.com does not vouch for

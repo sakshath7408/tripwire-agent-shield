@@ -8,6 +8,7 @@ so the day one gets fixed the suite says so.
 import time
 
 import pytest
+from timing import check_fast
 
 from tripwire.classify import classify
 from tripwire.engine import Engine
@@ -283,7 +284,8 @@ def test_deeply_nested_args_fail_closed_fast():
         cur = cur["a"]
     t = time.perf_counter()
     v = ev(session(), "send_email", to="bob@acme.com", body=deep)
-    assert v.decision == Decision.BLOCK and time.perf_counter() - t < 2
+    assert v.decision == Decision.BLOCK
+    check_fast(time.perf_counter() - t, 2, "evaluate")
 
 
 def test_padding_past_the_shell_limit_is_not_allowed():
@@ -300,14 +302,14 @@ def test_padding_past_the_shell_limit_is_not_allowed():
 def test_evaluate_regexes_stay_fast(tool, args):
     t = time.perf_counter()
     ev(session(), tool, **args)
-    assert time.perf_counter() - t < 3
+    check_fast(time.perf_counter() - t, 3, "evaluate")
 
 
 def test_huge_secretish_observation_is_fast():
     e = session()
     t = time.perf_counter()
     e.observe(Observation(session_id="s", tool="Read", output="X_SECRET" * 125_000))
-    assert time.perf_counter() - t < 3
+    check_fast(time.perf_counter() - t, 3, "observe")
 
 
 # ---------------------------------------------------------------- judge review 31 Oct (fixes in analyzers, taint, classify)
@@ -452,7 +454,7 @@ def test_obfuscated_address_scan_is_fast():
     t = time.perf_counter()
     indicators("look at this (at) thing [dot] " * 33_000)
     indicators("a at b dot " * 90_000)
-    assert time.perf_counter() - t < 3
+    check_fast(time.perf_counter() - t, 3, "indicators")
 
 
 # 6. "IMPORTANT!" is everyday email, not an injection marker.

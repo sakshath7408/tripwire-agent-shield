@@ -375,6 +375,17 @@ def _under_home(full: str) -> bool:
     return full == home or full.startswith(home.rstrip("/") + "/")
 
 
+HOME_SECRET_DIRS = (".ssh/", ".aws/", ".gnupg/", ".config/gh/", ".config/gcloud/", ".kube/", ".docker/", ".azure/",
+                    ".netrc", ".git-credentials", ".pgpass", ".vault-token")
+
+
+def _holds_home_secrets(full: str) -> bool:
+    """A folder that contains one of the usual credential stores in your home folder (the home folder itself, a parent
+    of it, or ~/.config)."""
+    root = full.rstrip("/") + "/" if full != "/" else "/"
+    return any((HOME.rstrip("/") + "/" + d).startswith(root) for d in HOME_SECRET_DIRS)
+
+
 def _guard_home() -> str:
     return os.path.normpath(os.environ.get("TRIPWIRE_HOME") or os.path.join(HOME, ".tripwire"))
 
@@ -2729,6 +2740,12 @@ class _Analyzer:
                     dirs.append(x)
                 continue
             dirs.append(x)
+        for d in dirs:
+            full = os.path.normpath(self.expand_path(self.expand(d)))
+            if _holds_home_secrets(full):
+                # Your home folder (or ~/.config, or /) holds ~/.ssh, ~/.aws, token stores: archiving it reads them all,
+                # wherever Tripwire's own folder lives, so sending the archive anywhere is sending your keys.
+                inf.traits.add("secret_read")
         for d in dirs:
             full = os.path.normpath(self.expand_path(self.expand(d)))
             if full == gh or gh.startswith(full.rstrip("/") + "/"):

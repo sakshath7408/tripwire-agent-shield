@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from timing import check_fast
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "web"))
@@ -116,7 +117,7 @@ def test_freeform_parser_is_fast_on_hostile_text():
     for blob in ("a" * 4096, "run " * 1000, "@" * 4096, "$1" * 2000, "https://" + "a." * 2000, "`" * 4096, "send " + "x@y." * 1000):
         t0 = time.perf_counter()
         freeform_plan(blob, "README.md")
-        assert time.perf_counter() - t0 < 0.5, blob[:20]
+        check_fast(time.perf_counter() - t0, 0.5, blob[:20])
 
 
 @pytest.mark.parametrize("place,task", [(p, t) for p in demo_runner.TASKS for t in demo_runner.TASKS[p]])
@@ -131,7 +132,8 @@ def test_custom_attack_succeeds_without_tripwire_and_fails_with_it(place, task, 
     assert on["task_completed"], on["detail"]
     assert on["verdicts"]["block"] + on["verdicts"]["ask"] > 0  # an ASK the simulated human refused also stops it
     assert all(not s["executed"] for s in on["steps"] if s["why"] != "task" and s["tool"] not in ("read_file", "get_balance", "read_inbox"))
-    assert not on["out_of_time"] and on["server_ms"] < 4500
+    assert not on["out_of_time"]
+    check_fast(on["server_ms"], 4500, "server ms")
 
 
 @pytest.mark.parametrize("place", list(demo_runner.TASKS))

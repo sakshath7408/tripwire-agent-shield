@@ -417,9 +417,11 @@ def run_act(sc: Scenario, guarded: bool, args: argparse.Namespace, planner: Plan
             print(DIM(f"      ({call.why})"))
         v = guard.evaluate(call)
         decision = v["decision"]
-        tripwire.append(decision if guarded else "")
+        # A verdict a person already answered (the daemon held it for the dashboard, or it timed out) was an ask.
+        shown = "ask" if v.get("resolved_by") else decision
+        tripwire.append(shown if guarded else "")
         if guarded:
-            counts[decision] = counts.get(decision, 0) + 1
+            counts[shown] = counts.get(shown, 0) + 1
             colour = {"allow": GREEN, "ask": YELLOW, "block": RED}[decision]
             print(f"      Tripwire: {colour(decision.upper())}  {v.get('summary', '')}")
             if decision == "ask":

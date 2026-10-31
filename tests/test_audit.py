@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
+from timing import check_fast
 from fastapi.testclient import TestClient
 
 from tripwire import audit as A
@@ -191,7 +192,7 @@ def test_verify_10k_records_under_2s(tmp_path):
     r = check(a)
     elapsed = time.perf_counter() - t0
     assert r.ok and r.checked == 10_001
-    assert elapsed < 2.0, f"verify took {elapsed:.2f}s"
+    check_fast(elapsed, 2.0, "verify (s)")
 
 
 def test_migrates_old_format_db(tmp_path):
@@ -384,6 +385,6 @@ def test_evaluate_latency_with_audit(client):
         client.post("/v1/evaluate", json=body)
         t.append((time.perf_counter() - t0) * 1000)
     t.sort()
-    assert t[100] < 20, f"p50 {t[100]:.2f} ms"
+    check_fast(t[100], 20, "p50 (ms)")
     assert client.audit.flush(5)
     assert client.get("/v1/audit/verify").json()["checked"] >= 202
