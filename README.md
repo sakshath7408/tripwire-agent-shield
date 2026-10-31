@@ -177,7 +177,7 @@ We tested it on AgentDojo and a plain rule won. The rule: once hidden instructio
 
 ## Benchmarks and evidence
 
-Run on 31 Oct 2026 05:40 with `uv run python bench/run_all.py` (about 30 s, no LLM, no cost). Same numbers under any `PYTHONHASHSEED`. Rerun before quoting.
+Run on 31 Oct 2026 09:10 with `uv run --group bench python bench/run_all.py` (about 30 s, no LLM, no cost). Same numbers under any `PYTHONHASHSEED`. Rerun before quoting.
 
 Three words, used the same way everywhere:
 
@@ -187,7 +187,7 @@ Three words, used the same way everywhere:
 
 | Benchmark | Stopped | Hard block | Size | Benign allowed |
 |---|---|---|---|---|
-| AgentDojo (4 suites, important_instructions) | 99.8% | 97.9% | 609 pairs | 95.9% tasks (92.9% calls) |
+| AgentDojo (4 suites, important_instructions) | 99.8% | 97.9% | 609 pairs | 95.9% tasks (93.8% calls) |
 | Shell attacks, no poisoned context (our own corpus) | 100.0% | 94.8% | 96 cmds | 90 of 90 (0 flagged) |
 | Shell attacks, after reading poisoned file (our own corpus) | 100.0% | 100.0% | 96 cmds | 90 of 90 (0 flagged) |
 
@@ -230,7 +230,7 @@ Before the recipient and provenance hardening of 30 Oct, the floor was 62.6% sto
 
 ### False positives and reproducibility
 
-False positives, said plainly: on AgentDojo, 7.1% of benign ground-truth calls get an ask or a block. Half of those are in the banking suite, where paying bills always asks a human. Most of the rest are the new recipient check asking before a message goes to someone the user never named (slack and workspace). The shell corpus flags none of 90 everyday developer commands, cold or after a poisoned read.
+False positives, said plainly: on AgentDojo, 6.2% of benign ground-truth calls get an ask or a block. Half of those are in the banking suite, where paying bills always asks a human. Most of the rest are the new recipient check asking before a message goes to someone the user never named (slack and workspace). The shell corpus flags none of 90 everyday developer commands, cold or after a poisoned read.
 
 Read [bench/README.md](bench/README.md) before quoting these. There is no LLM in the loop: we replay AgentDojo's ground-truth call sequences, so a real hijacked model might phrase calls differently. To reproduce, run `uv run --group bench python bench/run_all.py`. The end-to-end proof that an attack succeeds without the guard and fails with it is `tests/test_bench.py::test_attack_succeeds_without_guard_and_fails_with_it`.
 

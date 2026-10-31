@@ -262,7 +262,9 @@
     if (blocked.length) html += `<b>Tripwire blocked ${pending.length || askedBlocked ? n(blocked.length, "action", "actions") : blocked.length === 1 ? "it" : "all " + blocked.length}.</b> `;
     if (askedBlocked) html += `<b>${blocked.length ? `${askedBlocked} more` : askedBlocked === 1 ? "It was" : `All ${askedBlocked} were`} blocked after asking you.</b> `;
     if (pending.length) html += `<b>${n(pending.length, "action is", "actions are")} waiting for you.</b> `;
-    if (allowed.length) html += `<span class="dim">Your ${n(allowed.length, "task action", "task actions")} went through.</span>`;
+    const okd = vs.filter((v) => v.decision === "allow" && wentToHuman(v)).length;
+    if (allowed.length) html += `<span class="dim">Your ${n(allowed.length, "task action", "task actions")} went through${okd ? `, and ${okd} more after your OK` : ""}.</span>`;
+    else if (okd) html += `<span class="dim">${n(okd, "action", "actions")} went through after your OK.</span>`;
     return { good: false, html };
   }
 

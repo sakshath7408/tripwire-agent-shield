@@ -142,7 +142,8 @@ Stop at about 4:45. Take questions.
 The list knows AgentDojo's template, so we publish both numbers, and five other attack texts too.
 Without the list, a sentence that orders the reader to send, pay or delete, aimed at a target you never named,
 is still blocked. That's grammar, not phrases. That's what a brand-new wording gets."
-(Proof on screen: `cat bench/results/matrix.md`. Rerun live: `uv run python bench/agentdojo_replay.py --no-markers`, about 40 s.)
+(Proof on screen: `cat bench/results/matrix.md`. Rerun live: `uv run --group bench python bench/agentdojo_replay.py --no-markers`, about 30 s.
+It rewrites the latency line in `bench/results/agentdojo_nomarkers.*`; `git checkout bench/results` afterwards.)
 
 **"Your agent runs as me. Can't it just switch Tripwire off?"**
 "There's no admin key on disk to steal. The agent's hook token can only ask for verdicts.

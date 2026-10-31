@@ -60,7 +60,10 @@ def test_score_counts_by_who_stopped_it():
     assert run_demo.score(rows) == {"attack_steps": 4, "stopped_alone": 1, "stopped_by_human": 1, "let_through": 2}
 
 
-def test_approve_all_is_the_hard_floor(tmp_path):
+def test_approve_all_is_the_hard_floor(tmp_path, monkeypatch):
+    from world import world as w
+    # Never the shared demo/world: resetting it empties the presenter's attacker inbox mid-act.
+    monkeypatch.setattr(run_demo, "World", lambda: w.World(root=tmp_path / "sandbox", drop_path=tmp_path / "drop.json"))
     out = tmp_path / "r.json"
     assert run_demo.main(["--scenario", "all", "--offline", "--delay", "0", "--approve", "all", "--guard-only",
                           "--json", str(out)]) == 0

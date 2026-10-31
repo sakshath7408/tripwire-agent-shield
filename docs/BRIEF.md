@@ -69,7 +69,7 @@ simulated environment. It must:
 ## Release checklist (run before submission)
 - [x] every box above ticked, each with a file or demo step that proves it (see README requirement table). Checked 31 Oct
 - [x] `uv run pytest -q` all green. 1,484 passed, 1 xfailed
-- [x] `uv run python bench/run_all.py` rerun, numbers copied into README and the pitch deck. Run 31 Oct 2026 05:40; README, pitch slide 5, `bench/README.md`, `demo/SCRIPT.md` match `bench/results/matrix.md`. Same tables under `PYTHONHASHSEED=0` and `=2`
+- [x] `uv run python bench/run_all.py` rerun, numbers copied into README and the pitch deck. Run 31 Oct 2026 09:10; README, pitch slide 5, `bench/README.md`, `demo/SCRIPT.md` match `bench/results/matrix.md`. Same tables under `PYTHONHASHSEED=0` and `=2`
 - [x] all 5 demo scenarios pass both acts (`demo/run_demo.py --scenario all --offline --delay 0 --approve auto`). Also all green in `scripts/preflight.sh 7796` on a scratch daemon
 - [x] dashboard checked by eye at 1280x720 and phone, light and dark. Scratch daemon, after two guarded runs
 - [ ] demo rehearsed against demo/SCRIPT.md in under 5 minutes, fallbacks tested. Not ticked: needs a human run on the stage laptop and projector. The offline and test fallbacks work; backup videos re-recorded 31 Oct for balanced mode

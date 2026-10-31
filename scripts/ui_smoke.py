@@ -222,6 +222,16 @@ def web(browser, eng: str, base: str, live: bool) -> None:
     done = "!document.getElementById('run-on').disabled"
     # Leaving the Demo tab mid-run stops the run and clears it (both tabs used to stay selected).
     p.click("#tab-demo")
+    # The Demo tab's own three tips open 600 ms after its first click; finish them by keyboard and check they stay closed.
+    p.wait_for_selector("#coach:not([hidden])", timeout=5000)
+    for _ in range(3):
+        p.keyboard.press("ArrowRight")
+        p.wait_for_timeout(200)
+    check(p.locator("#coach:not([hidden])").count() == 0, f"{eng}: the Demo tab's tips finish with →")
+    p.click("#tab-live")
+    p.click("#tab-demo")
+    p.wait_for_timeout(900)
+    check(p.locator("#coach:not([hidden])").count() == 0, f"{eng}: the Demo tab's tips don't come back")
     p.click("[data-scn=injected-web]")
     p.click("#run-on")
     p.wait_for_selector("#timeline .row", timeout=60000)
